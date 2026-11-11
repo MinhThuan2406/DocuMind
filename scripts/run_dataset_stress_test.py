@@ -182,29 +182,35 @@ def run_tier1_dataset_benchmark(
         for d_idx, d in enumerate(dets):
             if d.get("ignore", False):
                 continue
-            poly = d.get("poly", [])
-            if len(poly) >= 8:
-                xs = poly[0::2]
-                ys = poly[1::2]
-                bbox = [min(xs), min(ys), max(xs), max(ys)]
-            else:
-                bbox = [0, 0, 0, 0]
-
+            if d.get("order") is None:
+                continue
             cat_type = d.get("category_type", "text")
+            if cat_type in ("abandon", "text_mask", "table_mask", "chart_mask", "equation_semantic", "list_group"):
+                continue
+
+            box = d.get("polygon") or d.get("poly") or d.get("bbox") or []
+            bbox = None
+            if len(box) >= 4:
+                if len(box) == 4:
+                    bbox = [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+                elif len(box) >= 8:
+                    xs = [float(box[k]) for k in range(0, len(box), 2)]
+                    ys = [float(box[k]) for k in range(1, len(box), 2)]
+                    bbox = [min(xs), min(ys), max(xs), max(ys)]
+
+            if not bbox:
+                continue
+
             if cat_type in ("figure", "picture"):
                 n_figures += 1
             elif cat_type == "table":
                 n_tables += 1
 
-            gt_ord = d.get("order")
-            if gt_ord is None:
-                gt_ord = d_idx
-
             elems.append({
                 "id": f"elem_{d_idx:04d}",
                 "type": cat_type,
                 "bbox": bbox,
-                "gt_order": int(gt_ord),
+                "gt_order": int(d["order"]),
                 "text": d.get("text", "")[:40],
             })
 
@@ -587,6 +593,12 @@ def run_tier2_end_to_end_test(
         for d_idx, d in enumerate(gt_dets):
             if d.get("ignore", False):
                 continue
+            if d.get("order") is None:
+                continue
+            cat = d.get("category_type", "text")
+            if cat in ("abandon", "text_mask", "table_mask", "chart_mask", "equation_semantic", "list_group"):
+                continue
+
             box = d.get("polygon") or d.get("poly") or d.get("bbox") or []
             bbox = None
             if len(box) >= 4:
@@ -597,14 +609,13 @@ def run_tier2_end_to_end_test(
                     ys = [float(box[k]) for k in range(1, len(box), 2)]
                     bbox = [min(xs), min(ys), max(xs), max(ys)]
 
-            gt_ord = d.get("order")
-            if gt_ord is None:
-                gt_ord = d_idx + 1
+            if not bbox:
+                continue
 
             gt_elements.append({
                 "id": f"gt_{d_idx+1}",
-                "order": int(gt_ord),
-                "type": d.get("category_type", "text"),
+                "order": int(d["order"]),
+                "type": cat,
                 "bbox": bbox,
             })
 
@@ -815,6 +826,12 @@ def generate_highlighted_issue_artifacts(
         for d_idx, d in enumerate(gt_it.get("layout_dets", [])):
             if d.get("ignore", False):
                 continue
+            if d.get("order") is None:
+                continue
+            cat = d.get("category_type", "text")
+            if cat in ("abandon", "text_mask", "table_mask", "chart_mask", "equation_semantic", "list_group"):
+                continue
+
             box = d.get("polygon") or d.get("poly") or d.get("bbox") or []
             bbox = None
             if len(box) >= 4:
@@ -825,13 +842,12 @@ def generate_highlighted_issue_artifacts(
                     ys = [float(box[k]) for k in range(1, len(box), 2)]
                     bbox = [min(xs), min(ys), max(xs), max(ys)]
 
-            gt_ord = d.get("order")
-            if gt_ord is None:
-                gt_ord = d_idx + 1
+            if not bbox:
+                continue
 
             gt_elems.append({
-                "order": int(gt_ord),
-                "type": d.get("category_type", "text"),
+                "order": int(d["order"]),
+                "type": cat,
                 "bbox": bbox,
             })
 
