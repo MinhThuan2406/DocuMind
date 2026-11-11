@@ -114,10 +114,13 @@ Khi sơ đồ gồm các nút hình chữ nhật và đường nối có hướn
 ### Bước 2: Tìm Đường Bao Ngoài (External Contours)
 Sử dụng `cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)` để tìm các vùng bao ngoài cùng.
 
-### Bước 3: Lọc Vùng Ứng Viên Hợp Lệ (Semantic Container Filtering)
+### Bước 3: Lọc Vùng Ứng Viên Hợp Lệ & Semantic Guard
 Lọc bỏ các contour không thỏa mãn:
 - **Loại nhiễu nhỏ:** Bỏ các vùng có $\text{Area} < 1.500\text{px}^2$ hoặc chiều rộng/chiều cao $< 40\text{px}$.
 - **Loại viền toàn trang:** Bỏ các vùng có diện tích chiếm $> 85\%$ toàn trang giấy (thường là viền trang trí khung trang).
+- **Semantic Area Guard (Chặn Over-merging trên nền màu):**
+  + Nếu một visual container chiếm diện tích $> 35\%$ trang ($> 0.35 \cdot W \cdot H$), tự động bỏ qua để tránh nuốt các khối chữ của trang vào một diagram khổng lồ.
+  + Nếu bên trong một visual container chứa $\ge 2$ tiêu đề phân mục (`section_header` / `title`), hệ thống coi đây là Layout Section / Card phân vùng trang thay vì 1 Diagram duy nhất, loại bỏ triệt để hiện tượng over-merging trên sách giáo khoa nhiều màu sắc (`colorful_textbook`).
 
 ### Bước 4: Gom Cụm Không Gian & Hợp Nhất Chứa (Containment Merge)
 Duyệt danh sách các khối Docling (hình ảnh, chữ):

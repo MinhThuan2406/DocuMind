@@ -328,10 +328,26 @@ def group_whole_diagrams_image(
 
     # Strategy A: Containment inside distinct visual card containers
     for vc in visual_containers:
+        vc_w = vc[2] - vc[0]
+        vc_h = vc[3] - vc[1]
+        vc_area = vc_w * vc_h
+
+        # Semantic Guard 1: Ignore massive background containers occupying > 35% of page area
+        if vc_area > 0.35 * img_w * img_h:
+            continue
+
+        # Semantic Guard 2: Ignore containers enclosing >= 2 section headers / titles
+        n_headers_inside = sum(
+            1 for it in pixel_items
+            if it["label"] in ("section_header", "title") and box_inside_box(it["bbox"], vc, tolerance=0.15)
+        )
+        if n_headers_inside >= 2:
+            continue
+
         contained_indices = []
         for i, it in enumerate(pixel_items):
             # Don't group structural headers or list items into cards
-            if it["label"] in ("section_header", "list_item"):
+            if it["label"] in ("section_header", "list_item", "title"):
                 continue
             if box_inside_box(it["bbox"], vc, tolerance=0.15):
                 contained_indices.append(i)
