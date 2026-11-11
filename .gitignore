@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Data & outputs
+datasets/
+outputs/
+
+# Project raw documents & temporary files
+AI_5_problem_statements_FA_AI.docx
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
+.venv/
+
