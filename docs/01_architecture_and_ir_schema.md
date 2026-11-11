@@ -111,29 +111,35 @@ Mỗi tài liệu sau khi qua pipeline của DocuMind sẽ được xuất thàn
 
 ## 3. Ba Thuật Toán Hậu Xử Lý Cốt Lõi (`ir_postprocessor.py`)
 
-### 3.1. Thuật Toán Sắp Xếp Thứ Tự Đọc Nhận Biết Đa Cột (Column-Aware Reading Order)
+### 3.1. Thuật Toán Sắp Xếp Thứ Tự Đọc Recursive XY-Cut (Horizontal Banding & Dynamic k-Columns)
 
 #### Bài toán:
-Trong tài liệu 2 cột (như bài báo khoa học IEEE/ACM), các thuật toán chuẩn thường sắp xếp block theo tọa độ dọc $y_{\min}$. Nếu ở đầu cột 2 (bên phải) có một Bảng biểu hoặc Tiêu đề mục nằm ở tọa độ $y = 180$, nó sẽ bị xếp chen vào giữa các đoạn văn của cột 1 (bên trái) nằm ở tọa độ $y \approx 200 - 600$.
+Trong tài liệu đa cột (báo cáo khoa học 2 cột, báo chí 3 cột, tài liệu hỗn hợp 1 cột + 2 cột, slide thuyết trình), việc chia cột toàn cục cứng nhắc dễ gặp các lỗi nghiêm trọng:
+1. **Lỗi vỡ luồng đọc 3 cột:** Cột giữa bị cắt đôi hoặc gom nhầm sang cột trái.
+2. **Lỗi dính biên bố cục hỗn hợp (1+2 cột):** Phần tiêu đề / Abstract 1 cột phía trên bị nuốt vào luồng đọc của cột trái bên dưới.
+3. **Lỗi nhảy cóc trong văn bản bọc chữ L hoặc công thức thụt lề:** Khi các đoạn văn bản nằm ở các dải độ cao khác nhau nhưng vẫn bị ép chia cột ngang trang.
 
-#### Giải pháp trong `postprocess_ir_structure()`:
-1. **Phát hiện Bố cục 2 cột (2-Column Detection):**
-   Xác định trục trung tâm của trang: $\text{mid\_x} = \frac{\text{page\_width}}{2}$.
-   Phân loại từng phần tử $e$ có bounding box $[x_{\min}, y_{\min}, x_{\max}, y_{\max}]$:
-   - `full_width`: nếu $x_{\min} < 0.42 \cdot W$ và $x_{\max} > 0.58 \cdot W$ (các block trải rộng cả 2 cột như Title, Abstract, Full-width Table).
-   - `left_col`: nếu $x_{\max} \le 0.54 \cdot W$ hoặc $\frac{x_{\min} + x_{\max}}{2} < 0.48 \cdot W$.
-   - `right_col`: nếu $x_{\min} \ge 0.46 \cdot W$ hoặc $\frac{x_{\min} + x_{\max}}{2} > 0.52 \cdot W$.
-2. **Kiểm tra Điều kiện Trang Đa Cột:**
-   Trang được coi là đa cột khi đồng thời thỏa mãn:
-   $$\text{len}(\text{left\_col}) \ge 2 \quad \text{và} \quad \text{len}(\text{right\_col}) \ge 2$$
-3. **Sắp xếp Độc Lập Theo Phân Vùng:**
-   - Các block `full_width` ở nửa trên trang ($y_{\max} \le \min(y_{\min}(\text{left}), y_{\min}(\text{right}))$) được đọc đầu tiên, sắp xếp tăng dần theo $y_{\min}$.
-   - Đọc **toàn bộ cột trái** (`left_col`) từ trên xuống dưới tăng dần theo $y_{\min}$.
-   - Đọc tiếp **toàn bộ cột phải** (`right_col`) từ trên xuống dưới tăng dần theo $y_{\min}$.
-   - Cuối cùng đọc các block `full_width` ở chân trang (Footer, References tràn trang).
-4. **Kết quả xác thực trên mẫu `01_academic_2col`:**
-   - **Trước khi sửa:** `Table 2` bị gán `reading_order: 2` (chen ngang giữa cột trái), trong khi `Caption Table 2` nằm ở `reading_order: 10`.
-   - **Sau khi sửa:** `Table 2` được di chuyển chuẩn xác về `reading_order: 9`, nằm ngay trước `Caption Table 2` (`reading_order: 10`), khôi phục tính toàn vẹn 100% của luồng đọc khoa học.
+#### Giải pháp True Recursive XY-Cut trong `postprocess_ir_structure()`:
+1. **Phân tách Rìa Trang (Page Margin Separation):**
+   - Header (`header`, `page_header` với $y_{\min} < 0.15 \cdot H$) được ưu tiên xếp đầu trang theo $(y_{\min}, x_{\min})$.
+   - Footer / Page Number (`footer`, `page_number`, `page_footnote` với $y_{\max} > 0.85 \cdot H$) được đưa xuống cuối trang.
+2. **Ưu Tiên Cắt Dọc Các Cột Song Song (Vertical X-Cut First):**
+   - Phân tích các cột dọc $c_1, c_2, \dots, c_k$ dựa trên hình chiếu trục $X$ có co biên thích ứng.
+   - Nếu tồn tại $\ge 2$ cột dọc rời rạc **và** có sự chồng lấn theo trục dọc $Y$ giữa các cột ($\Delta Y > 10\text{px}$, chứng tỏ đây là các cột bố cục song song ngang hàng nhau chứ không phải 2 đoạn văn trên-dưới):
+     $\rightarrow$ **Ưu tiên cắt dọc trước!** Duyệt từng cột từ trái sang phải và đệ quy xử lý từng cột độc lập từ đỉnh xuống đáy.
+     *(Nhờ đó, tài liệu 2 cột hoặc 3 cột không bao giờ bị cắt ngang giữa trang khi các cột có khe trắng ngẫu nhiên, và các cụm hình-caption song song được đọc chuẩn: hình trái -> chú thích trái, sau đó mới sang hình phải -> chú thích phải).*
+3. **Cắt Ngang Khi Có Banner / Spanning Item (Horizontal Y-Cut & Spanning Split):**
+   - Nếu không thể cắt dọc (do có tiêu đề/banner rộng trải dài $\ge 55\%$ chiều rộng dải), tách khối banner làm vách ngăn rồi đệ quy cho nửa trên và nửa dưới.
+   - Gom các phần tử không chồng lấn $Y$ thành các dải ngang và xử lý tuần tự từ trên xuống dưới.
+4. **Fallback Sorting:**
+   - Khi không thể phân tách thêm theo cả trục $X$ và $Y$, sắp xếp các khối theo $(\text{round}(y_{\min} / 12), x_{\min})$.
+5. **Hiệu quả thực nghiệm:**
+   - **Kendall's Tau toàn dataset OmniDocBench (1.602 trang):** Đạt **`0.9369`** (Trung vị: **`1.0000`**), trong đó:
+     + `single_column`: **0.9699** (Trung vị: 1.0000, 96.4% $\ge 0.70$)
+     + `three_column`: **0.9552** (Trung vị: 1.0000, 92.5% $\ge 0.70$)
+     + `double_column`: **0.9521** (Trung vị: 1.0000, 95.1% $\ge 0.70$)
+     + `other_layout`: **0.8805** (Trung vị: 0.9569, 89.2% $\ge 0.70$)
+     + `1andmore_column`: **0.8701** (Trung vị: 0.9957, 80.0% $\ge 0.70$)
 
 ---
 

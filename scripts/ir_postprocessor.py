@@ -87,7 +87,7 @@ def compute_iou(box1: List[float], box2: List[float]) -> float:
 
 
 # ----------------------------------------------------------------------
-# 1. Column-Aware Reading Order Sorting
+# 1. Recursive XY-Cut Reading Order Sorting (Horizontal Banding + Dynamic k-Columns)
 # ----------------------------------------------------------------------
 def sort_elements_reading_order(
     elements: List[Dict[str, Any]],
@@ -95,81 +95,138 @@ def sort_elements_reading_order(
     page_h: float,
 ) -> List[Dict[str, Any]]:
     """
-    Identifies 2-column layout and sorts elements:
-    - Full-width header blocks (top of page)
-    - Left column (top to bottom)
-    - Full-width body blocks (if any, placed between columns)
-    - Right column (top to bottom)
-    - Full-width footer blocks (bottom of page)
+    Applies Recursive XY-Cut algorithm with dynamic k-column detection and horizontal banding:
+    - Step 1: Separates page-level header and footer blocks.
+    - Step 2: Recursively cuts horizontal projection valleys (horizontal bands).
+    - Step 3: Within each band, dynamically splits vertical columns (k = 1, 2, 3...) or detects gutters.
+    - Step 4: Fallback to reading flow order (top-to-bottom, left-to-right).
     """
-    mid_x = page_w / 2.0
-    classified = []
+    valid_items = [it for it in elements if it.get("bbox") and len(it["bbox"]) == 4]
+    invalid_items = [it for it in elements if not it.get("bbox") or len(it["bbox"]) != 4]
 
-    for e in elements:
-        bbox = e.get("bbox")
-        if not bbox or len(bbox) < 4:
-            classified.append(("full_width", e))
-            continue
-        xmin, ymin, xmax, ymax = bbox
-        cx = (xmin + xmax) / 2.0
-        w_ratio = (xmax - xmin) / page_w
+    if len(valid_items) <= 1:
+        return valid_items + invalid_items
 
-        # Thresholds per specification
-        if (xmin < 0.42 * page_w and xmax > 0.58 * page_w) or w_ratio > 0.72:
-            col = "full_width"
-        elif xmax <= 0.54 * page_w or cx < 0.48 * page_w:
-            col = "left_col"
-        elif xmin >= 0.46 * page_w or cx > 0.52 * page_w:
-            col = "right_col"
+    # 1. Separate Top Headers and Bottom Footers if at page margin
+    headers = []
+    footers = []
+    body = []
+    for it in valid_items:
+        t = (it.get("type") or it.get("label", "")).lower()
+        b = it["bbox"]
+        if t in ("header", "page_header") and b[1] < 0.15 * page_h:
+            headers.append(it)
+        elif t in ("footer", "page_footer", "page_number", "page_footnote") and b[3] > 0.85 * page_h:
+            footers.append(it)
         else:
-            col = "left_col" if cx < mid_x else "right_col"
+            body.append(it)
 
-        classified.append((col, e))
+    headers.sort(key=lambda it: (it["bbox"][1], it["bbox"][0]))
+    footers.sort(key=lambda it: (it["bbox"][1], it["bbox"][0]))
 
-    n_left = sum(1 for c, _ in classified if c == "left_col")
-    n_right = sum(1 for c, _ in classified if c == "right_col")
-    is_2col = (n_left >= 2 and n_right >= 2)
+    def _xy_cut_recursive(box_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if len(box_items) <= 1:
+            return box_items
 
-    if not is_2col:
-        # Single column layout: sort top-to-bottom
-        return sorted(
-            elements,
-            key=lambda it: (it["bbox"][1] if it.get("bbox") else 0, it["bbox"][0] if it.get("bbox") else 0),
-        )
+        min_x = min(it["bbox"][0] for it in box_items)
+        max_x = max(it["bbox"][2] for it in box_items)
+        group_w = max_x - min_x
 
-    # 2-column layout separation
-    left_elems = [e for c, e in classified if c == "left_col"]
-    right_elems = [e for c, e in classified if c == "right_col"]
-    full_elems = [e for c, e in classified if c == "full_width"]
+        # -------------------------------------------------------------
+        # STEP 1: Try Vertical X-Cut first (Parallel Columns Detection)
+        # -------------------------------------------------------------
+        x_sorted = sorted(box_items, key=lambda it: it["bbox"][0])
+        cols = []
+        cur_col = [x_sorted[0]]
+        b0 = x_sorted[0]["bbox"]
+        ins0 = min(8.0, 0.05 * (b0[2] - b0[0]))
+        cur_max_x = b0[2] - ins0
 
-    left_min_y = min((e["bbox"][1] for e in left_elems if e.get("bbox")), default=0)
-    right_min_y = min((e["bbox"][1] for e in right_elems if e.get("bbox")), default=0)
-    col_start_y = min(left_min_y, right_min_y)
+        for item in x_sorted[1:]:
+            b = item["bbox"]
+            ins = min(8.0, 0.05 * (b[2] - b[0]))
+            item_min_x = b[0] + ins
+            item_max_x = b[2] - ins
+            if item_min_x >= cur_max_x - 1.0:
+                cols.append(cur_col)
+                cur_col = [item]
+                cur_max_x = item_max_x
+            else:
+                cur_col.append(item)
+                cur_max_x = max(cur_max_x, item_max_x)
+        if cur_col:
+            cols.append(cur_col)
 
-    left_max_y = max((e["bbox"][3] for e in left_elems if e.get("bbox")), default=page_h)
-    right_max_y = max((e["bbox"][3] for e in right_elems if e.get("bbox")), default=page_h)
-    col_end_y = max(left_max_y, right_max_y)
+        # Check if columns are truly parallel side-by-side (overlap in Y)
+        if len(cols) >= 2:
+            has_parallel_overlap = False
+            for c_i in range(len(cols) - 1):
+                col_a = cols[c_i]
+                col_b = cols[c_i + 1]
+                min_ya = min(it["bbox"][1] for it in col_a)
+                max_ya = max(it["bbox"][3] for it in col_a)
+                min_yb = min(it["bbox"][1] for it in col_b)
+                max_yb = max(it["bbox"][3] for it in col_b)
+                # Overlap in Y?
+                if min(max_ya, max_yb) - max(min_ya, min_yb) > 10.0:
+                    has_parallel_overlap = True
+                    break
 
-    top_full = []
-    bottom_full = []
-    body_full = []
-    for e in full_elems:
-        bbox = e.get("bbox", [0, 0, 0, 0])
-        if bbox[3] <= col_start_y + 15:
-            top_full.append(e)
-        elif bbox[1] >= col_end_y - 15:
-            bottom_full.append(e)
-        else:
-            body_full.append(e)
+            if has_parallel_overlap:
+                res = []
+                for col in cols:
+                    res.extend(_xy_cut_recursive(col))
+                return res
 
-    top_full.sort(key=lambda it: it["bbox"][1] if it.get("bbox") else 0)
-    left_elems.sort(key=lambda it: it["bbox"][1] if it.get("bbox") else 0)
-    right_elems.sort(key=lambda it: it["bbox"][1] if it.get("bbox") else 0)
-    bottom_full.sort(key=lambda it: it["bbox"][1] if it.get("bbox") else 0)
-    body_full.sort(key=lambda it: it["bbox"][1] if it.get("bbox") else 0)
+        # -------------------------------------------------------------
+        # STEP 2: When X-Cut not possible, check for wide spanning banner
+        # -------------------------------------------------------------
+        if len(box_items) >= 3 and group_w > 0:
+            top_item = min(box_items, key=lambda it: it["bbox"][1])
+            top_w = top_item["bbox"][2] - top_item["bbox"][0]
+            if top_w >= 0.55 * group_w:
+                rest = [it for it in box_items if it != top_item]
+                return [top_item] + _xy_cut_recursive(rest)
 
-    # In 2-column layout: Left column first, then Right column
-    return top_full + left_elems + body_full + right_elems + bottom_full
+            bot_item = max(box_items, key=lambda it: it["bbox"][3])
+            bot_w = bot_item["bbox"][2] - bot_item["bbox"][0]
+            if bot_w >= 0.55 * group_w:
+                rest = [it for it in box_items if it != bot_item]
+                return _xy_cut_recursive(rest) + [bot_item]
+
+        # -------------------------------------------------------------
+        # STEP 3: Horizontal Y-Cut (Banding)
+        # -------------------------------------------------------------
+        y_sorted = sorted(box_items, key=lambda it: (it["bbox"][1], it["bbox"][0]))
+        bands = []
+        cur_band = [y_sorted[0]]
+        cur_max_y = y_sorted[0]["bbox"][3]
+
+        for item in y_sorted[1:]:
+            b = item["bbox"]
+            if b[1] >= cur_max_y - 2.0:
+                bands.append(cur_band)
+                cur_band = [item]
+                cur_max_y = b[3]
+            else:
+                cur_band.append(item)
+                cur_max_y = max(cur_max_y, b[3])
+        if cur_band:
+            bands.append(cur_band)
+
+        if len(bands) >= 2:
+            res = []
+            for band in bands:
+                res.extend(_xy_cut_recursive(band))
+            return res
+
+        # -------------------------------------------------------------
+        # STEP 4: Fallback Sorting (top-to-bottom, left-to-right)
+        # -------------------------------------------------------------
+        return sorted(box_items, key=lambda it: (round(it["bbox"][1] / 12.0), it["bbox"][0]))
+
+    body_sorted = _xy_cut_recursive(body)
+    return headers + body_sorted + footers + invalid_items
 
 
 # ----------------------------------------------------------------------
