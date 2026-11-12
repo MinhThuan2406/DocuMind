@@ -8,6 +8,7 @@ Supports both:
 2. Flattened Images / Raster PDFs (OpenCV Contours + Spatial Clustering & Containment Merge)
 """
 
+import argparse
 import json
 import math
 import os
@@ -265,6 +266,63 @@ def detect_visual_containers_opencv(image_path: str) -> List[List[float]]:
             filtered.append(b)
 
     return filtered
+
+
+def scale_items_to_pixels(
+    docling_items: List[Dict[str, Any]],
+    image_size: Tuple[int, int],
+    docling_page_size: Tuple[float, float],
+) -> List[Dict[str, Any]]:
+    """
+    Docling page units -> image pixels. Same scaling and item structure as the first
+    step of group_whole_diagrams_image() (duplicated here so that function stays untouched).
+    Used when grouping is OFF so bboxes still come out in pixel coordinates.
+    """
+    img_w, img_h = image_size
+    dw, dh = docling_page_size
+    sx = img_w / dw if dw > 0 else 1.0
+    sy = img_h / dh if dh > 0 else 1.0
+
+    pixel_items = []
+    for item in docling_items:
+        bbox = item.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        px_box = [
+            round(bbox[0] * sx, 1),
+            round(bbox[1] * sy, 1),
+            round(bbox[2] * sx, 1),
+            round(bbox[3] * sy, 1),
+        ]
+        pixel_items.append({
+            "orig_item": item,
+            "order": item.get("order", 0),
+            "label": item.get("label", "text"),
+            "text": item.get("text", ""),
+            "bbox": px_box,
+        })
+    return pixel_items
+
+
+def raw_picture_groups(pixel_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Grouping OFF: one diagram entry per raw picture/figure item, in the same dict shape as
+    group_whole_diagrams_image()["diagram_groups"] but unpadded and with a single member.
+    """
+    groups = []
+    for idx, it in enumerate(pixel_items):
+        if it["label"] not in ("picture", "figure"):
+            continue
+        groups.append({
+            "group_id": len(groups) + 1,
+            "label": "raw_picture",
+            "bbox": list(it["bbox"]),
+            "merged_blocks_count": 1,
+            "merged_element_indices": [idx],
+            "contained_labels": [it["label"]],
+            "text": "",
+        })
+    return groups
 
 
 def group_whole_diagrams_image(
@@ -688,6 +746,14 @@ def generate_synthetic_flowchart_pdf(output_pdf_path: str) -> str:
 # 6. Main Orchestrator
 # ----------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(description="Diagram grouping demo (raster + vector)")
+    parser.add_argument(
+        "--group-diagrams",
+        action="store_true",
+        help="Run group_whole_diagrams_image() (v1 grouping). Default: keep raw Docling picture boxes.",
+    )
+    args = parser.parse_args()
+
     root_dir = Path("C:/Workspace/DocuMind")
     images_dir = root_dir / "datasets/OmniDocBench/images"
     output_dir = root_dir / "outputs/02_diagram_grouping"
@@ -697,6 +763,7 @@ def main():
 
     print("================================================================================")
     print(" TESTING DIAGRAM GROUPING ALGORITHM (group_whole_diagrams)")
+    print(f" Grouping: {'ON (v1 group_whole_diagrams_image)' if args.group_diagrams else 'OFF (raw picture boxes)'}")
     print("================================================================================")
 
     # Initialize Docling Converter
@@ -974,18 +1041,23 @@ def main():
                 })
                 order += 1
 
-            # Run Raster Diagram Grouping
-            print(f"  -> Running group_whole_diagrams_image() algorithm...")
-            group_res = group_whole_diagrams_image(
-                str(image_path),
-                docling_items,
-                (img_w, img_h),
-                p_size,
-            )
-
-            before_items = group_res["original_items"]
-            after_items = group_res["grouped_items"]
-            diagram_groups = group_res["diagram_groups"]
+            # Raster Diagram Grouping (v1) only with --group-diagrams; default keeps raw picture boxes
+            if args.group_diagrams:
+                print(f"  -> Running group_whole_diagrams_image() algorithm...")
+                group_res = group_whole_diagrams_image(
+                    str(image_path),
+                    docling_items,
+                    (img_w, img_h),
+                    p_size,
+                )
+                before_items = group_res["original_items"]
+                after_items = group_res["grouped_items"]
+                diagram_groups = group_res["diagram_groups"]
+            else:
+                print(f"  -> Grouping OFF: raw picture/figure boxes in pixel coords")
+                before_items = scale_items_to_pixels(docling_items, (img_w, img_h), p_size)
+                after_items = before_items
+                diagram_groups = raw_picture_groups(before_items)
 
             print(f"  -> Before grouping: {len(before_items)} fragmented Docling items")
             print(f"  -> After grouping: {len(diagram_groups)} consolidated Diagram Groups formed!")
