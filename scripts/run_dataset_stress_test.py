@@ -3,7 +3,6 @@ DocuMind Large-Scale Dataset Stress Test (2-Tier Evaluation on OmniDocBench)
 ===========================================================================
 Tier 1: Full-Dataset (1,651 pages) Structural Benchmark
   - Evaluates Kendall's Tau for reading order across all 1,651 pages by layout & source.
-  - Runs OpenCV morphological & spatial clustering tests on graphic-dense pages.
   - Automatically surfaces failure modes on complex layouts (3-col, mixed 1+2 col, L-wrap, etc.).
 
 Tier 2: Stratified Hard Subset End-to-End Stress Test (20 Samples)
@@ -139,10 +138,6 @@ def run_tier1_dataset_benchmark(
     low_scoring_samples = []
     pages_skipped_lt2 = 0  # pages with < 2 scorable GT elements: Kendall Tau undefined, excluded
 
-    # Fast OpenCV diagram grouping stats on 200 graphic pages
-    diagram_test_pages = []
-    diagram_clustering_results = []
-
     for idx, item in enumerate(data):
         p_info = item.get("page_info", {})
         attr = p_info.get("page_attribute", {})
@@ -230,18 +225,6 @@ def run_tier1_dataset_benchmark(
                 "num_tables": n_tables,
             })
 
-        # Track graphic-dense pages for fast diagram grouping check
-        if n_figures >= 3 and len(diagram_test_pages) < 150:
-            diagram_test_pages.append({
-                "image_path": img_fn,
-                "data_source": source,
-                "layout": layout,
-                "elements": elems,
-                "num_figures": n_figures,
-                "width": pw,
-                "height": ph,
-            })
-
     elapsed_t1 = time.time() - t0
     print(f"Tier 1 completed in {elapsed_t1:.2f}s across {len(all_scores)} evaluated pages "
           f"({pages_skipped_lt2} pages skipped: < 2 scorable elements).")
@@ -281,42 +264,6 @@ def run_tier1_dataset_benchmark(
                 "median_tau": round(sorted(scs)[len(scs) // 2], 4),
             }
 
-    # Fast diagram grouping test on graphic dense pages
-    print(f"\nRunning spatial clustering validation on {len(diagram_test_pages)} graphic-dense pages...")
-    overmerge_candidates = []
-    for dp in diagram_test_pages[:80]:
-        img_p = images_dir / dp["image_path"]
-        if not img_p.exists():
-            continue
-        try:
-            # Run spatial grouping
-            group_res = group_whole_diagrams_image(
-                str(img_p),
-                dp["elements"],
-                (dp["width"], dp["height"]),
-                (dp["width"], dp["height"]),
-            )
-            dgs = group_res.get("diagram_groups", [])
-            # Detect over-merging: single group merged >= 12 blocks across > 60% of page area
-            for g in dgs:
-                b = g["bbox"]
-                w_b = b[2] - b[0]
-                h_b = b[3] - b[1]
-                area_ratio = (w_b * h_b) / (dp["width"] * dp["height"])
-                if g.get("merged_blocks_count", 0) >= 8 and area_ratio > 0.45:
-                    overmerge_candidates.append({
-                        "image_path": dp["image_path"],
-                        "data_source": dp["data_source"],
-                        "layout": dp["layout"],
-                        "merged_blocks_count": g.get("merged_blocks_count", 0),
-                        "area_ratio": round(area_ratio, 3),
-                        "bbox": b,
-                    })
-        except Exception:
-            pass
-
-    print(f"Identified {len(overmerge_candidates)} potential over-merging candidates.")
-
     return {
         "total_pages_evaluated": len(all_scores),
         "total_pages_in_dataset": len(data),
@@ -329,8 +276,6 @@ def run_tier1_dataset_benchmark(
         "issue_statistics": issue_stats,
         "low_scoring_count": len(low_scoring_samples),
         "sample_low_scoring": low_scoring_samples[:25],
-        "overmerge_candidates_count": len(overmerge_candidates),
-        "sample_overmerge_candidates": overmerge_candidates[:10],
     }
 
 
