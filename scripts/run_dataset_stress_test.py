@@ -43,29 +43,7 @@ from test_diagram_grouping import (
     draw_before_after_visualization,
     group_whole_diagrams_image,
 )
-
-
-def compute_kendall_tau(ranks_a: List[int], ranks_b: List[int]) -> float:
-    """Calculate Kendall's Tau rank correlation coefficient [-1.0, 1.0]."""
-    valid_pairs = [(a, b) for a, b in zip(ranks_a, ranks_b) if a is not None and b is not None]
-    n = len(valid_pairs)
-    if n < 2:
-        return 1.0
-    r_a = [p[0] for p in valid_pairs]
-    r_b = [p[1] for p in valid_pairs]
-    concordant = 0
-    discordant = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            diff_a = r_a[i] - r_a[j]
-            diff_b = r_b[i] - r_b[j]
-            prod = diff_a * diff_b
-            if prod > 0:
-                concordant += 1
-            elif prod < 0:
-                discordant += 1
-    total_pairs = n * (n - 1) / 2.0
-    return (concordant - discordant) / total_pairs if total_pairs > 0 else 1.0
+from eval_utils import compute_kendall_tau  # returns None when n < 2 (not 1.0)
 
 
 def draw_side_by_side_issue_comparison(
@@ -159,6 +137,7 @@ def run_tier1_dataset_benchmark(
     scores_by_issue = defaultdict(list)
     all_scores = []
     low_scoring_samples = []
+    pages_skipped_lt2 = 0  # pages with < 2 scorable GT elements: Kendall Tau undefined, excluded
 
     # Fast OpenCV diagram grouping stats on 200 graphic pages
     diagram_test_pages = []
@@ -215,6 +194,7 @@ def run_tier1_dataset_benchmark(
             })
 
         if len(elems) < 2:
+            pages_skipped_lt2 += 1
             continue
 
         # Evaluate Kendall's Tau of sort_elements_reading_order
@@ -225,6 +205,9 @@ def run_tier1_dataset_benchmark(
         pred_orders = [pred_ranks[e["id"]] for e in elems]
 
         tau = compute_kendall_tau(gt_orders, pred_orders)
+        if tau is None:
+            pages_skipped_lt2 += 1
+            continue
         all_scores.append(tau)
         scores_by_layout[layout].append(tau)
         scores_by_source[source].append(tau)
@@ -260,7 +243,8 @@ def run_tier1_dataset_benchmark(
             })
 
     elapsed_t1 = time.time() - t0
-    print(f"Tier 1 completed in {elapsed_t1:.2f}s across {len(all_scores)} evaluated pages.")
+    print(f"Tier 1 completed in {elapsed_t1:.2f}s across {len(all_scores)} evaluated pages "
+          f"({pages_skipped_lt2} pages skipped: < 2 scorable elements).")
     print(f"Overall Dataset Mean Kendall Tau: {sum(all_scores) / len(all_scores):.4f}")
 
     # Summary by layout
@@ -335,6 +319,8 @@ def run_tier1_dataset_benchmark(
 
     return {
         "total_pages_evaluated": len(all_scores),
+        "total_pages_in_dataset": len(data),
+        "pages_skipped_lt2": pages_skipped_lt2,
         "overall_mean_kendall_tau": round(sum(all_scores) / len(all_scores), 4),
         "overall_median_kendall_tau": round(sorted(all_scores)[len(all_scores) // 2], 4),
         "processing_time_sec": round(elapsed_t1, 2),
@@ -638,19 +624,20 @@ def run_tier2_end_to_end_test(
                 pred_orders_matched.append(pe["reading_order"])
                 gt_orders_matched.append(best_gt["order"])
 
+        # None when fewer than 2 GT boxes were matched: the score is undefined, not perfect.
         tau = compute_kendall_tau(gt_orders_matched, pred_orders_matched)
         total_time = round(time.time() - t_start, 2)
 
         # 5. Detect and Classify Specific Issues
         sample_issues = []
-        if layout == "three_column" and tau < 0.65:
+        if layout == "three_column" and tau is not None and tau < 0.65:
             sample_issues.append({
                 "category": "three_column_reading_order_collapse",
                 "severity": "High",
                 "description": "Bố cục 3 cột bị thuật toán 2 cột ép thành 2 cột khiến cột giữa bị đọc ngắt quãng.",
             })
 
-        if layout == "1andmore_column" and tau < 0.60:
+        if layout == "1andmore_column" and tau is not None and tau < 0.60:
             sample_issues.append({
                 "category": "mixed_layout_boundary_bleed",
                 "severity": "Medium",
@@ -711,7 +698,8 @@ def run_tier2_end_to_end_test(
             "docling_blocks_count": len(processed_ir["elements"]),
             "docling_tables_count": len(docling_tables),
             "diagram_groups_count": len(unified_diagrams),
-            "kendall_tau": round(tau, 4),
+            "matched_pairs_count": len(gt_orders_matched),
+            "kendall_tau": round(tau, 4) if tau is not None else None,
             "issues_detected": sample_issues,
             "artifacts": {
                 "json_ir": str(json_out_path.name),
@@ -721,11 +709,14 @@ def run_tier2_end_to_end_test(
         results.append(record)
         issues_discovered.extend(sample_issues)
 
-        print(f"  [+] Saved {short_name}.json & .md | Kendall Tau: {tau:.4f} | Issues detected: {len(sample_issues)}")
+        tau_str = f"{tau:.4f}" if tau is not None else "n/a (<2 matched)"
+        print(f"  [+] Saved {short_name}.json & .md | Kendall Tau: {tau_str} | Issues detected: {len(sample_issues)}")
 
+    scored = [r["kendall_tau"] for r in results if r["kendall_tau"] is not None]
     return {
         "samples_evaluated": len(results),
-        "mean_kendall_tau": round(sum(r["kendall_tau"] for r in results) / len(results), 4),
+        "samples_tau_undefined": len(results) - len(scored),
+        "mean_kendall_tau": round(sum(scored) / len(scored), 4) if scored else None,
         "samples": results,
         "total_issues_detected": len(issues_discovered),
     }
@@ -958,15 +949,17 @@ def generate_markdown_stress_report(report_data: Dict[str, Any], output_path: Pa
     lines.append("---\n")
 
     lines.append("## 1. TỔNG QUAN KẾT QUẢ KIỂM THỬ 2 TẦNG (EXECUTIVE SUMMARY)\n")
-    lines.append(f"- **Tầng 1 (100% Dataset - {t1['total_pages_evaluated']} trang):** Đánh giá toàn diện thuật toán phân loại cột, thứ tự đọc (Kendall's Tau) và khả năng phân cụm đồ thị OpenCV.")
+    lines.append(f"- **Tầng 1 ({t1['total_pages_evaluated']} / {t1.get('total_pages_in_dataset', '?')} trang có >= 2 phần tử GT):** Đánh giá toàn diện thuật toán phân loại cột, thứ tự đọc (Kendall's Tau) và khả năng phân cụm đồ thị OpenCV.")
+    lines.append(f"  + **Số trang bị loại (< 2 phần tử GT, Tau không xác định):** `{t1.get('pages_skipped_lt2', 0)}`.")
     lines.append(f"  + **Điểm Kendall's Tau trung bình toàn bộ Dataset:** `{t1['overall_mean_kendall_tau']:.4f}` (Trung vị: `{t1['overall_median_kendall_tau']:.4f}`).")
     lines.append(f"  + **Thời gian duyệt 1.651 trang:** `{t1['processing_time_sec']:.2f}s`.")
     lines.append(f"- **Tầng 2 (Stratified Hard Subset - 20 trang khó nhất):** Chạy End-to-End toàn bộ pipeline `Docling -> group_whole_diagrams -> postprocess_ir_structure` bao phủ đủ 10 loại tài liệu và 5 kiểu bố cục.")
-    lines.append(f"  + **Điểm Kendall's Tau trung bình trên tập 20 trang khó:** `{t2['mean_kendall_tau']:.4f}`.")
+    t2_mean = f"{t2['mean_kendall_tau']:.4f}" if t2.get('mean_kendall_tau') is not None else "n/a"
+    lines.append(f"  + **Điểm Kendall's Tau trung bình trên tập 20 trang khó:** `{t2_mean}` (không tính {t2.get('samples_tau_undefined', 0)} mẫu có < 2 box khớp).")
     lines.append(f"  + **Tổng số vấn đề/edge cases mới được phân loại:** `{t2['total_issues_detected']}` ca.")
 
     lines.append("\n---\n")
-    lines.append("## 2. KẾT QUẢ TẦNG 1: THỐNG KÊ KENDALL'S TAU TRÊN 1.651 TRANG\n")
+    lines.append(f"## 2. KẾT QUẢ TẦNG 1: THỐNG KÊ KENDALL'S TAU TRÊN {t1['total_pages_evaluated']} TRANG (BỎ QUA {t1.get('pages_skipped_lt2', 0)} TRANG < 2 PHẦN TỬ GT)\n")
     lines.append("### A. Phân rã theo Kiểu Bố cục (Layout Statistics)\n")
     lines.append(r"| Kiểu Bố Cục (Layout) | Số Trang | Mean Kendall Tau | Median | Min | Max | Tỷ lệ Đạt Chuẩn ($\ge 0.70$) | Tỷ lệ Kém ($< 0.50$) |")
     lines.append("|---|---|---|---|---|---|---|---|")
@@ -1054,7 +1047,8 @@ def generate_markdown_stress_report(report_data: Dict[str, Any], output_path: Pa
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for s in t2["samples"]:
         issues_str = ", ".join(s.get("special_issues", [])) if s.get("special_issues") else "None"
-        lines.append(f"| {s['sample_id']} | `{s['short_name']}` | `{s['data_source']}` | `{s['layout']}` | `{issues_str}` | {s['processing_time_sec']}s | {s['docling_blocks_count']} | {s['docling_tables_count']} | {s['diagram_groups_count']} | **{s['kendall_tau']}** |")
+        kt_str = s['kendall_tau'] if s['kendall_tau'] is not None else "n/a"
+        lines.append(f"| {s['sample_id']} | `{s['short_name']}` | `{s['data_source']}` | `{s['layout']}` | `{issues_str}` | {s['processing_time_sec']}s | {s['docling_blocks_count']} | {s['docling_tables_count']} | {s['diagram_groups_count']} | **{kt_str}** |")
 
     lines.append("\n---\n")
     lines.append("## 5. KẾT LUẬN & ĐỀ XUẤT CHO KẾ HOẠCH PHÁT TRIỂN TIẾP THEO\n")
