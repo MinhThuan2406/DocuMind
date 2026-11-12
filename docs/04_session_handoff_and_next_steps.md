@@ -1,8 +1,8 @@
 # BÁO CÁO BÀN GIAO SESSION & PHƯƠNG HƯỚNG TIẾP THEO
 
-> Ngày: 2026-11-11 → 2026-11-12 · Nhánh: `feat/structure-and-diagram-recovery` (commit cuối: `13abb2c`) · Người đọc: session mới tiếp quản dự án.
+> Ngày: 2026-11-11 → 2026-11-12 · Nhánh: `feat/structure-and-diagram-recovery` (nội dung từ mục 1 đến 9 viết tại commit `37d0ab2`; **các thay đổi sau đó nằm ở mục 10**) · Người đọc: session mới tiếp quản dự án.
 > File này tóm tắt **những gì đã làm/đo được, trạng thái repo và môi trường, các lỗi/rủi ro đã biết, và việc cần làm tiếp**. Mọi con số lấy từ các lần chạy thật trong session; chỗ nào là suy luận chưa kiểm chứng đều được đánh dấu **[CHƯA KIỂM CHỨNG]**.
-> **Kết luận quan trọng nhất (đọc mục 4.4 và 6):** phép đo "gom sơ đồ" trên OmniDocBench **không thể** kiểm chứng mục tiêu "chụp tổng thể cả cụm/diagram", vì nhãn `figure` của dataset không nhất quán về độ chi tiết. Đã đề xuất **dừng tinh chỉnh nhánh ảnh phẳng** và chuyển sang kiểm chứng trên PDF số kiểu AUTOSAR.
+> **Kết luận quan trọng nhất (đọc mục 4.4 và 6):** phép đo "gom sơ đồ" trên OmniDocBench **không thể** kiểm chứng mục tiêu "chụp tổng thể cả cụm/diagram", vì nhãn `figure` của dataset không nhất quán về độ chi tiết. Đã đề xuất **dừng tinh chỉnh nhánh ảnh phẳng** và chuyển sang kiểm chứng trên PDF số kiểu AUTOSAR. Mục 10 ghi lại việc đã làm tiếp theo kết luận này (tắt gom mặc định, thử thêm hai veto, sửa lỗi IR, cập nhật docs).
 
 ---
 
@@ -37,7 +37,7 @@ Các thay đổi dưới đây đã được commit theo thứ tự phụ thuộ
 
 - Commit chỉ được tạo khi người dùng yêu cầu (đã yêu cầu cuối session). `master` không bị đụng tới.
 - Các thư mục kết quả nằm trong `outputs/` (bị `.gitignore`): `04_e2e_eval/`, `04_e2e_eval_gpu_test/`, `05_diagram_crop_eval/`.
-- Không sửa logic `sort_elements_reading_order`, `postprocess_ir_structure` (`scripts/ir_postprocessor.py`) và `group_whole_diagrams_*`. Chỉ có thay đổi đọc ảnh Unicode-safe ở `test_diagram_grouping.py` (ở trên).
+- Tại thời điểm viết mục 1-9: không sửa logic `sort_elements_reading_order`, `postprocess_ir_structure` và `group_whole_diagrams_*`; chỉ có thay đổi đọc ảnh Unicode-safe ở `test_diagram_grouping.py`. **Điều này không còn đúng** sau các commit ở mục 10 (`postprocess_ir_structure` đã sửa; `group_whole_diagrams_image` vẫn nguyên thân hàm).
 
 ---
 
@@ -120,7 +120,7 @@ Phân loại GT theo box thô: **nguyên vẹn** 1.057 (76,3%) · **bị vỡ** 
   - Các ca "bị vỡ" phần lớn là **nhóm panel anh em do người chú thích gộp thành một `figure`**: 4 cặp biểu đồ vòng (61%/67%…) mỗi cặp một GT; hàng 3 hình clip-art (mì/bánh sandwich/hamburger); hai sơ đồ hình học đặt cạnh nhau; dải sản phẩm (máy giặt + bảng giá + tủ lạnh). Chúng không phải "một sơ đồ bị Docling xé vụn".
   - **Nhãn GT không nhất quán:** trang con dấu có lưới 2×2 bốn hình nhỏ nhưng GT tách thành **4 figure riêng** (R5 gộp thành 1); trong khi các hàng clip-art tương tự lại được gộp thành 1 GT.
   - Ca R5 hại thật: gộp **hai biểu đồ riêng** (图14 + 图15) thành một box, và nở theo khung container bao cả tiêu đề, chú thích nguồn (cho mục tiêu "chụp tổng thể" việc kèm tiêu đề có thể chấp nhận được, nhưng GT không tính vậy). Cũng có một box dương giả ở logo/hình trang trí đầu trang.
-- **Kết luận:** nhóm 38 ca "vỡ" phần lớn đo **quy ước gán nhãn**, không đo mục tiêu "chụp cả diagram". OmniDocBench **không phải bài kiểm thử phù hợp** cho mục tiêu này. Lỗi lớn nhất của nhánh ảnh phẳng là **bỏ sót hoàn toàn** (19,9%, gấp ~7 lần số vỡ): 43,3% trong số đó có diện tích <1% trang, 68,4% nằm trong một container OpenCV nhưng chỉ 25,1% có container khớp hình (IoU ≥0,5) → phát hiện từ pixel có triển vọng một phần.
+- **Kết luận:** nhóm 38 ca "vỡ" phần lớn đo **quy ước gán nhãn**, không đo mục tiêu "chụp cả diagram". OmniDocBench **không phải bài kiểm thử phù hợp** cho mục tiêu này. Lỗi lớn nhất của nhánh ảnh phẳng là **bỏ sót hoàn toàn** (19,9%, gấp ~7 lần số vỡ): 43,3% trong số đó có diện tích <1% trang, 73,1% (201/275) nằm trong một container OpenCV nhưng chỉ 26,5% (73/275) có container khớp hình (IoU ≥0,5); 21 hình (7,6%) bị một box Docling khác phủ ≥0,5 (số liệu từ `results_v3.json` sau khi sửa lỗi Unicode; bản trước đó ghi 68,4% và 25,1% là số **trước** khi sửa) → phát hiện từ pixel có triển vọng một phần.
 - **Với ảnh phẳng, OCR tắt: mặc định nên dùng box `picture` thô của Docling** (F1@0,5 = 0,766; recall 0,825; IoU khớp TB 0,929).
 - Giới hạn: định nghĩa "bị vỡ" dựa vào box Docling; chỉ 38 ca (CI rộng: 0/38 = [0; 9,2%], 3/38 = [2,7; 20,8%], 31/38 = [66,6; 90,8%]); ngưỡng cạnh 80 px của định nghĩa "hình gần nhau" là định nghĩa đánh giá cũ; chưa đo trên PDF vector.
 - Báo cáo đầy đủ: `outputs/05_diagram_crop_eval/{report_v2.md,report_v3.md,results_v3.json,pair_features.json}`; bản trước khi sửa lỗi Unicode: `*_before_unicode_fix.*`.
@@ -138,15 +138,15 @@ Phân loại GT theo box thô: **nguyên vẹn** 1.057 (76,3%) · **bị vỡ** 
 Từ lần review kiến trúc đầu session (đã xác minh bằng đọc code `ir_postprocessor.py` và `run_dataset_stress_test.py`):
 
 1. **`ir_postprocessor.py:372`** — `header`/`page_header` bị xử lý như `section_header` trong hierarchy: running header đầu trang trở thành `current_section_id`, toàn bộ nội dung sau thành con của nó. **Lưu ý:** nếu đưa FURNITURE vào pipeline sản xuất thì lỗi này sẽ bộc lộ rõ.
-2. **`ir_postprocessor.py:321-323`** — khi IoU liên kết bảng = 0, fallback gán `table_elements[0]` → liên kết sai im lặng, không có confidence/cảnh báo.
+2. **`ir_postprocessor.py:321-323`** — khi IoU liên kết bảng = 0, fallback gán `table_elements[0]` → liên kết sai im lặng, không có confidence/cảnh báo. **[ĐÃ SỬA, mục 10]**: không liên kết, ghi `metadata.link_warning`.
 3. Hierarchy phẳng: `level = 1 if no title else 2`; docs nói nhận diện "1.1", "A." nhưng code **không** làm.
 4. Ngưỡng **pixel tuyệt đối** (8, 10, 12, 80, 300 px, hệ số 0,55…) trên ảnh có độ phân giải khác nhau; cần chuyển sang đơn vị tương đối.
 5. Chữ dọc / RTL: `historical_document` cho Tau âm (trên 300 trang chỉ 2 trang; toàn dataset 5 trang −0,80). Chưa có phát hiện hướng viết.
 6. Chỉ xử lý **một trang đơn lẻ**; chưa có schema đa trang, bảng ngắt trang, hierarchy xuyên trang.
 7. Topic3 cần DOCX/XLSX/PPTX, đối chiếu mâu thuẫn liên tài liệu có `source_ref` + confidence, và các độ đo TEDS / Graph F1 — **chưa có**.
-8. Chỉ số "0 over-merging" của Tầng 1 cũ gần như tautology (guard chặn container >35%, bộ phát hiện chỉ báo khi >45%; khối bọc `except Exception: pass`) → **không có giá trị**; đo v2/v3 cho thấy over-merge thật.
+8. **[ĐÃ XÓA, mục 10]** Chỉ số "0 over-merging" của Tầng 1 cũ gần như tautology (guard chặn container >35%, bộ phát hiện chỉ báo khi >45%; khối bọc `except Exception: pass`) → **không có giá trị**; đo v2/v3 cho thấy over-merge thật.
 9. Cấu trúc repo: không có package/`pyproject`, không có CI; logic lõi nằm trong `scripts/`; `compute_iou` lặp 3 file; các file `test_*.py` thực chất là script chạy pipeline (ngoại trừ `test_eval_utils.py`).
-10. **Docs lệch code/số liệu:** `docs/03_benchmark_and_stress_test.md` (mục 3–6 còn số cũ, mục 5–6 mô tả vấn đề đã sửa như chưa sửa, "Kendall Tau tập khó: 0.4798" cũ); `docs/01` schema khác code (`table_id`/`caption_id` ở top-level vs nằm trong `metadata`; khoá `id`); docs ghi PyMuPDF 1.25 nhưng `.venv` có 2.1; README nói "1.651 trang" cho Tầng 1; docs ca ngợi gom sơ đồ nhưng đo cho thấy làm hại.
+10. **[ĐÃ CẬP NHẬT, mục 10]** **Docs lệch code/số liệu:** `docs/03_benchmark_and_stress_test.md` (mục 3–6 còn số cũ, mục 5–6 mô tả vấn đề đã sửa như chưa sửa, "Kendall Tau tập khó: 0.4798" cũ); `docs/01` schema khác code (`table_id`/`caption_id` ở top-level vs nằm trong `metadata`; khoá `id`); docs ghi PyMuPDF 1.25 nhưng `.venv` có 2.1; README nói "1.651 trang" cho Tầng 1; docs ca ngợi gom sơ đồ nhưng đo cho thấy làm hại.
 11. Nhánh vector `group_whole_diagrams_vector` chưa từng được kiểm chứng trên PDF thật; dilation cố định 12–14 px, Union-Find O(n²), nguy cơ gộp cả khung bảng/đường kẻ trang.
 
 ---
@@ -157,7 +157,7 @@ Từ lần review kiến trúc đầu session (đã xác minh bằng đọc code
 
 - Kết luận ở 4.4: phép đo không kiểm chứng được mục tiêu, và đặc trưng khoảng cách không phân biệt được. Không giao thêm việc tinh chỉnh `group_whole_diagrams_image` cho tới khi có dữ liệu phù hợp.
 - Mặc định cho ảnh phẳng (OCR tắt): **box `picture` thô của Docling**.
-- Ý tưởng raster còn lại, **chưa thử**, chỉ làm nếu người dùng muốn tiếp tục nhánh ảnh: OCR tắt + `keep_empty_clusters=True` để giữ box `caption`/chữ làm tín hiệu "hai hình riêng" (caption riêng là manh mối mạnh). Cũng có thể xử lý phần "bỏ sót" 19,9% bằng phát hiện từ pixel (OpenCV container), nhưng đó là bài toán khác.
+- **Đã thử thêm ở mục 10** (veto caption oracle và veto khoảng trắng trên nền v2): không đạt tiêu chí. Ý tưởng raster dưới đây vẫn **chưa thử** ở dạng Docling thật, chỉ làm nếu người dùng muốn tiếp tục nhánh ảnh: OCR tắt + `keep_empty_clusters=True` để giữ box `caption`/chữ làm tín hiệu "hai hình riêng" (caption riêng là manh mối mạnh). Cũng có thể xử lý phần "bỏ sót" 19,9% bằng phát hiện từ pixel (OpenCV container), nhưng đó là bài toán khác.
 
 ### P2 — Chuyển sang PDF số kiểu AUTOSAR (dữ liệu đích thật)
 
@@ -172,11 +172,11 @@ Từ lần review kiến trúc đầu session (đã xác minh bằng đọc code
 - Quyết định có đưa header/footer vào pipeline sản xuất không (xem mục 9); nếu có, sửa lỗi hierarchy ở mục 5.1 trước.
 - Cân nhắc đánh giá toàn bộ 1.651 trang (ước tính ~2,2 giờ với torch GPU) và **thiết lập tập giữ riêng** (chia theo `data_source`) khi so sánh XY-Cut để xử lý tune-on-test.
 
-### P4 — Cập nhật docs/README theo số liệu thật
+### P4 — Cập nhật docs/README theo số liệu thật **[ĐÃ LÀM ở mục 10; xem các việc còn lại ở đó]**
 
 Cần sửa: "Kendall's Tau 0,9369 là thành tích pipeline" (thực chất oracle trên box GT, 1.602 trang; end-to-end ~0,64–0,67); "đột phá" 2/3 cột (end-to-end không cải thiện so với Docling); "0 over-merging"; gom sơ đồ "hoàn hảo" (đo cho thấy làm hại trên ảnh phẳng); mục 5–6 `docs/03`; schema `docs/01` vs code; phiên bản thư viện; hướng dẫn cài đặt (torch CUDA, `uv` index); lưu ý Unicode path trên Windows.
 
-### P5 — Sửa các lỗi code ở mục 5 (ưu tiên 1, 2, 4), rồi hierarchy nhiều cấp.
+### P5 — Sửa các lỗi code ở mục 5 (ưu tiên 1, 2, 4), rồi hierarchy nhiều cấp. **[Một phần: mục 5.2 và 5.8 đã xử lý ở mục 10; 5.1 (header) và 5.4 (ngưỡng pixel) còn lại]**
 
 ### P6 — Đóng gói và kiểm thử
 
@@ -204,8 +204,14 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 .venv\Scripts\python scripts\run_diagram_crop_eval_v3.py        # leave-source-out, ~4-5 phút
 .venv\Scripts\python scripts\analyze_pair_features.py           # đặc trưng cặp mảnh
 
-# Tier 1/2 cũ (đã sửa xử lý None)
+# Tier 1/2 (mặc định: box picture thô; thêm --group-diagrams để chạy gom v1). GHI ĐÈ outputs/03_dataset_stress_test/
 .venv\Scripts\python scripts\run_dataset_stress_test.py
+
+# Veto over-merge (mục 10.2), ~3-4 phút
+.venv\Scripts\python scripts\run_diagram_crop_eval_v4.py
+
+# Test hậu xử lý IR (6 test)
+.venv\Scripts\python scripts\test_ir_postprocessor.py
 ```
 
 - Đầu ra: `outputs/04_e2e_eval/{report.md,results.json,report_furniture.md,results_furniture.json,run*.log,cache_ocr-*}`, `outputs/05_diagram_crop_eval/{report_v2.md,report_v3.md,results_v*.json,pair_features.json,viz*/}`.
@@ -219,7 +225,7 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 - **Tiến trình nền:** chạy bằng tác vụ nền của harness (`run_in_background`) để nhận thông báo khi xong; tiến trình tự `nohup` thì không có thông báo. Trên Windows, python của venv sinh tiến trình con nên mỗi lần chạy thấy 2 PID — bình thường. `sleep` đứng trước lệnh khác bị chặn bởi harness.
 - **Windows + OpenCV:** luôn đọc ảnh qua `read_image_bgr` (Unicode-safe); `cv2.imread` thất bại im lặng với tên file không-ASCII.
 - Subagent trong session này **nhiều lần kết thúc lượt mà không gửi báo cáo cuối** (dù được dặn bắt buộc) và gửi lại bản rút gọn; luôn **tự kiểm tra file/log trên đĩa** thay vì chỉ tin báo cáo. Agent điều phối đã đối chiếu các bảng chính với `report*.md`/`results*.json` và xem lại 6 ảnh minh hoạ.
-- Không tin `README.md`/`docs/03` ở các điểm nêu ở mục 5.10 cho tới khi cập nhật.
+- `README.md` và `docs/01`-`docs/03` đã được đối chiếu lại với code ở mục 10; vẫn nên kiểm tra với code khi sửa thuật toán.
 - Hiểu nhầm đã xảy ra: câu "cứ để furniture như cũ" từng bị hiểu là "không đưa FURNITURE vào", nhưng ý đúng là **đưa header vào**. Với các chỉ dẫn mơ hồ, hãy xác nhận lại.
 
 ---
@@ -227,8 +233,50 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 ## 9. Các câu hỏi còn mở cho người dùng
 
 1. Người dùng có thể **gửi mẫu PDF kiểu AUTOSAR** (hoặc cho phép tải specification công khai) để bắt đầu P2 không?
-2. (Đã xong) Các thay đổi đã commit và push lên nhánh `feat/structure-and-diagram-recovery`. Còn lại: có muốn mở PR vào `master` không? Lưu ý có một thay đổi ở file đã track `scripts/test_diagram_grouping.py` (đọc ảnh Unicode-safe).
+2. (Đã xong cho mục 1-9) Các thay đổi đó đã commit và push. Các commit của mục 10 **chưa được push** khi viết. Có muốn push và mở PR vào `master` không? PR sẽ gồm toàn bộ các commit của nhánh so với `master` (`git rev-list --count master..HEAD`).
 3. **Áp dụng `--include-furniture` (header/footer) cho pipeline sản xuất** (sinh IR/Markdown) hay chỉ cho phần đánh giá? Nếu có, cần sửa lỗi hierarchy 5.1.
 4. Thống nhất cấu hình OCR cho sản xuất: cắt ảnh = OCR tắt; IR đầy đủ với ảnh phẳng = OCR bật (torch GPU); PDF số = đọc text layer bằng code?
 5. Có muốn mở rộng đánh giá thứ tự đọc ra 1.651 trang (~2,2 giờ) và thiết lập tập giữ riêng cho XY-Cut không?
 6. Có muốn thử ý tưởng raster còn lại (OCR tắt + `keep_empty_clusters=True`) không, hay bỏ hẳn nhánh ảnh phẳng?
+
+---
+
+## 10. Cập nhật sau handoff (2026-11-12, các commit sau `37d0ab2`)
+
+### 10.1. Hai thay đổi hành vi
+- **Gom sơ đồ ảnh phẳng tắt mặc định.** `scripts/test_diagram_grouping.py` có `scale_items_to_pixels` (cùng phép đổi tọa độ như bước đầu của `group_whole_diagrams_image`, giữ tọa độ pixel mà các ngưỡng 80/300 px của IR giả định) và `raw_picture_groups` (một mục cho mỗi `picture`/`figure`). Demo và Tầng 2 dùng chúng trừ khi truyền `--group-diagrams`. Thân hàm `group_whole_diagrams_image` **không đổi** (baseline R3 của v3/v4 và test dựa vào nó). Căn cứ: OCR bật, 100 trang, micro-F1 0,766 (box thô) so với 0,281 (sau gom v1) trong `results.json`.
+- **Tầng 2 cắt ảnh thật:** mỗi diagram được cắt vào `<output>/crops/` và `cropped_image` được điền (trước đây luôn rỗng). Bbox bảng và ô được đổi sang pixel như các item: nếu không, việc bỏ fallback `table_elements[0]` làm lộ 3/20 trang có kích thước trang Docling khác ảnh (tỉ lệ ~2,78) bị mất liên kết bảng. **Chưa tìm nguyên nhân gốc** của việc kích thước khác nhau; cùng rủi ro còn ở `run_e2e_reading_order_eval.py:356,367` (dùng `page_info.width/height` cho box đã scale, **[CHƯA KIỂM CHỨNG]**).
+- Kiểm chứng trên 20 trang Tầng 2 (grouping tắt): 45 picture Docling = 45 mục `diagrams[]` = 45 file crop; không có `cropped_image` rỗng; không bbox vượt kích thước ảnh. Chỉ kiểm tra số lượng và hình học, **chưa đánh giá chất lượng crop**.
+
+### 10.2. Thử veto chống over-merge trên nền v2 (kết quả âm)
+`scripts/run_diagram_crop_eval_v4.py` (`veto` là tham số tùy chọn mới của `group_whole_diagrams_image_v2`, mặc định `None`). Đặt trên v2 với `GroupParamsV2()` mặc định (cấu hình "deployed" chỉ tạo 7 nhóm nên không có gì để chặn), leave-source-out 5 fold, tiêu chí đăng ký trước: sửa ≥ 5/38 hình vỡ, hại ≤ 1% hình nguyên vẹn (≤ 10), near-merge ≤ R1 + 1 điểm %.
+
+| Hệ thống | Sửa | Hại | near-merge (R1 = 10,7%) | whole@0,5 (R1 = 1057/1385) |
+|---|---|---|---|---|
+| v2 mặc định, không veto | 13/38 | 197/1.057 | 33,2% | 873 |
+| + caption oracle (caption GT, cận trên) | 14/38 | 137 | 24,7% | 934 |
+| + khoảng trắng tự chuẩn hóa (OOF) | 3/38 | 15 | 12,5% | 1045 |
+| + cả hai (OOF) | 3/38 | 10 | 12,2% | 1050 |
+
+**Không veto nào đạt tiêu chí và mọi cấu hình đều thấp hơn box thô.** Caption oracle chỉ chặn 56/200 cặp gộp sai (và 1/79 cặp gộp đúng); caption Docling chỉ có ở 107/613 trang (cache OCR bật). Veto khoảng trắng chặn lẫn lộn cặp đúng và sai. Trần lý thuyết: gom hoàn hảo cứu tối đa 31/1.385 hình (+2,2 điểm %), trong khi 275 hình (19,9%) bị bỏ sót hoàn toàn. Kết luận của mục 4.4 (dừng nhánh ảnh phẳng, dùng box thô) được củng cố. Mặc định `GroupParamsV2()` vẫn là cấu hình có hại (docstring "DO-NO-HARM" của `diagram_grouping_v2.py` không đúng với default); v2 hiện chỉ được gọi từ mã đánh giá và test, không có luồng sản xuất nào gọi nó. Lưu ý thước đo: `harm_intact` dùng chính nhãn GT không nhất quán, nên một phần "hại" là bất đồng quy ước nhãn.
+
+### 10.3. Sửa lỗi code
+- `postprocess_ir_structure` (`scripts/ir_postprocessor.py`): (a) caption liên kết với bảng/hình được xử lý ở **lượt thứ hai** để `level = target.level + 1` đúng cả khi caption đứng trước đích; (b) bỏ fallback `table_elements[0]`, ghi `tables[].metadata.link_warning` khi không có phần tử bảng giao nhau. Bảng như vậy không xuất hiện trong Markdown (Markdown duyệt theo `elements`); trên 20 trang Tầng 2 còn 3 bảng như thế (cùng một trang). Lỗi `header`/`page_header` bị coi là `section_header` **chưa sửa** (hoãn vì chỉ lộ ra khi bật FURNITURE).
+- `scripts/test_ir_postprocessor.py` (mới, 6 test). Chạy trên bản cũ của `ir_postprocessor.py`: 2/6 fail đúng chỗ (caption trước hình, bảng không giao nhau), nên test phân biệt được lỗi. `test_eval_utils.py` vẫn 35/35.
+- `scripts/run_dataset_stress_test.py`: xóa khối kiểm tra over-merge của Tầng 1 (đọc sai khóa nhãn và nuốt lỗi); thêm `--group-diagrams`.
+
+### 10.4. Quan sát khi xem trực tiếp crop Tầng 2 (mới xem vài ảnh, chưa phải đánh giá hệ thống)
+- Hình bị chữ bao quanh vẫn lẫn chữ (hình túi da ở `sample_03`: box chữ nhật của Docling chồng lên vài cột chữ).
+- Hình trang trí nhỏ (ngôi sao, linh vật, icon, logo) thành crop riêng; chưa có bộ lọc.
+- Chú thích nằm ngoài box bị mất (nhãn bên cạnh bảng lịch ở `sample_10`).
+- Hồ sơ 275 hình bị bỏ sót (`results_v3.json`, `missed_summary`): <1% trang: 119; 1-5%: 80; 5-20%: 61; ≥20%: 15; 201 nằm trong container OpenCV; 21 bị một box Docling khác phủ; nhiều nhất `exam_paper` (77) và `colorful_textbook` (61).
+- Đã bàn nhưng **chưa làm**, kèm đánh giá: (1) cờ hình trang trí chỉ có ý nghĩa nếu có đoạn mã đọc nó; không dùng luật theo tỉ lệ khung hình (banner rộng vẫn là nội dung); nên kiểm tra bộ phân loại picture của Docling (`do_picture_classification`) trước, và cần quyết định icon nhỏ có tính là "hình" hay không (OmniDocBench GT tính, mục tiêu AUTOSAR nhiều khả năng không). (2) co box khỏi box chữ chồng một phần (chỉ các box chữ nằm chủ yếu ngoài hình, vì chữ nằm trọn trong hình thường là nhãn sơ đồ), đo trực tiếp bằng "phần crop bị box chữ GT phủ giảm" và "phần hình GT nằm trong crop không giảm", **không** dùng IoU@0,5; box chữ Docling chỉ có ở cache OCR bật (107 trang có hình), nếu dùng box chữ GT thì phải ghi rõ là oracle. (3) cứu hình bị bỏ sót bằng container OpenCV: hoãn (xung đột với (1), cần thêm chỉ số precision).
+
+### 10.5. Docs đã cập nhật
+`README.md`, `docs/01`, `docs/02`, `docs/03` được sửa cho khớp với code và số liệu đo (không còn: `row_idx`/`col_idx`, `table_id`/`caption_id` ở top-level `tables`, `Δy <= 80 px` cho caption, ngưỡng IoU 0,8, reading_order bắt đầu từ 1, tên hàm `group_whole_diagrams_pdf_vector`, mô tả lọc nét < 3 px/dilation 12 px, "0 over-merging", mục tiêu "nâng 0,5881 lên 0,85" mâu thuẫn với 0,9369, "1.651 trang" cho Tầng 1; các liên kết `file:///C:/...` đã đổi sang tương đối). `outputs/README.md` nằm trong thư mục bị `.gitignore`, **chưa được sửa** và có thể còn mô tả thuật toán cũ.
+
+### 10.6. Việc còn lại / câu hỏi mở thêm
+- Quyết định: icon, logo nhỏ có tính là "hình" không (chặn hướng lọc trang trí và cứu hình bị bỏ sót).
+- `outputs/README.md` (cục bộ) chưa cập nhật; đường dẫn `C:/Workspace/DocuMind` vẫn hard-code trong 4 hàm `main()`; ngưỡng pixel tuyệt đối trong `ir_postprocessor.py` (80/300 px) và gom v1; `compute_iou` trùng lặp; chưa có `pyproject`/CI/pytest.
+- Đường `--group-diagrams` bật chưa chạy Tier 2 đầy đủ; demo `test_diagram_grouping.py` chưa chạy end-to-end sau thay đổi (sẽ ghi đè `outputs/02_diagram_grouping/`).
+- Nhánh vector vẫn chưa được kiểm chứng trên PDF thật; các rủi ro suy ra từ code (đường kẻ bảng/header nối chuỗi, hút chữ dồn dần, không thấy ảnh nhúng) cần dữ liệu AUTOSAR hoặc PDF tổng hợp nhiều dạng hơn để xác nhận.
