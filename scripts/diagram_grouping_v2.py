@@ -32,7 +32,7 @@ Usage:
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 PICTURE_LABELS = ("picture", "figure")
 CONT_MULT = 1.35            # container area <= CONT_MULT x union area (kept from v1)
@@ -162,6 +162,7 @@ def group_whole_diagrams_image_v2(
     containers: Optional[Sequence[Sequence[float]]] = None,
     image_path: Optional[str] = None,
     params: GroupParamsV2 = GroupParamsV2(),
+    veto: Optional[Callable[[Sequence[float], Sequence[float]], bool]] = None,
 ) -> Dict[str, Any]:
     """
     items: dicts with 'label' and pixel 'bbox' [x0, y0, x1, y1] (cached Docling items).
@@ -203,7 +204,8 @@ def group_whole_diagrams_image_v2(
 
     for i in range(n):
         for j in range(i + 1, n):
-            if pair_eligible(pieces[i], pieces[j], others, containers, page_area, params):
+            if pair_eligible(pieces[i], pieces[j], others, containers, page_area, params) and (
+                    veto is None or not veto(pieces[i], pieces[j])):
                 ri, rj = find(i), find(j)
                 if ri != rj:
                     parent[rj] = ri
