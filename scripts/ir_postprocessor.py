@@ -318,9 +318,9 @@ def postprocess_ir_structure(
                         best_iou = iou
                         best_elem = te
 
-        # Fallback if IoU was 0 (e.g. single table)
-        if best_elem is None and table_elements:
-            best_elem = table_elements[0]
+        # No overlapping table element (IoU == 0): do not guess a link, only flag it
+        if best_elem is None:
+            tbl.setdefault("metadata", {})["link_warning"] = "no overlapping table element"
 
         if best_elem is not None:
             tbl_id = tbl["id"]
@@ -359,6 +359,7 @@ def postprocess_ir_structure(
     current_section_level = 1
     last_text_id = None
     last_text_level = 2
+    pending_captions = []  # (caption, target) pairs resolved in the second pass below
 
     for e in sorted_elements:
         t = e.get("type", "text")
@@ -394,8 +395,8 @@ def postprocess_ir_structure(
                             nearest_target = cand
 
             if nearest_target and min_dist < 300:
-                e["parent_id"] = nearest_target["id"]
-                e["level"] = nearest_target.get("level", 2) + 1
+                # Target may not have its level yet (it can follow the caption): resolve in pass 2
+                pending_captions.append((e, nearest_target))
             else:
                 e["parent_id"] = current_section_id
                 e["level"] = current_section_level + 1
@@ -421,6 +422,15 @@ def postprocess_ir_structure(
                 if e["id"] == mid:
                     e["parent_id"] = diag_id
                     e["level"] = 3
+
+    # Second pass: caption linked to a table/figure gets target level + 1 (targets are final now).
+    # Captions merged into a diagram group keep the diagram parent, as before.
+    diagram_member_ids = {mid for dg in diagrams for mid in dg.get("merged_element_ids", [])}
+    for cap, target in pending_captions:
+        if cap["id"] in diagram_member_ids:
+            continue
+        cap["parent_id"] = target["id"]
+        cap["level"] = target.get("level", 2) + 1
 
     # Update elements list
     doc_ir["elements"] = sorted_elements
