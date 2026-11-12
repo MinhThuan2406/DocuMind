@@ -1,8 +1,8 @@
 # BÁO CÁO BÀN GIAO SESSION & PHƯƠNG HƯỚNG TIẾP THEO
 
-> Ngày: 2026-11-11 → 2026-11-12 · Nhánh: `feat/structure-and-diagram-recovery` (nội dung từ mục 1 đến 9 viết tại commit `37d0ab2`; **các thay đổi sau đó nằm ở mục 10**) · Người đọc: session mới tiếp quản dự án.
+> Ngày: 2026-11-11 → 2026-11-12 · Nhánh: `feat/structure-and-diagram-recovery` (nội dung từ mục 1 đến 9 viết tại commit `37d0ab2`; **các thay đổi sau đó nằm ở mục 10 và 11**) · Người đọc: session mới tiếp quản dự án.
 > File này tóm tắt **những gì đã làm/đo được, trạng thái repo và môi trường, các lỗi/rủi ro đã biết, và việc cần làm tiếp**. Mọi con số lấy từ các lần chạy thật trong session; chỗ nào là suy luận chưa kiểm chứng đều được đánh dấu **[CHƯA KIỂM CHỨNG]**.
-> **Kết luận quan trọng nhất (đọc mục 4.4 và 6):** phép đo "gom sơ đồ" trên OmniDocBench **không thể** kiểm chứng mục tiêu "chụp tổng thể cả cụm/diagram", vì nhãn `figure` của dataset không nhất quán về độ chi tiết. Đã đề xuất **dừng tinh chỉnh nhánh ảnh phẳng** và chuyển sang kiểm chứng trên PDF số kiểu AUTOSAR. Mục 10 ghi lại việc đã làm tiếp theo kết luận này (tắt gom mặc định, thử thêm hai veto, sửa lỗi IR, cập nhật docs).
+> **Kết luận quan trọng nhất (đọc mục 4.4 và 6):** phép đo "gom sơ đồ" trên OmniDocBench **không thể** kiểm chứng mục tiêu "chụp tổng thể cả cụm/diagram", vì nhãn `figure` của dataset không nhất quán về độ chi tiết. Đã đề xuất **dừng tinh chỉnh nhánh ảnh phẳng** và chuyển sang kiểm chứng trên PDF số kiểu AUTOSAR. Mục 10 ghi lại việc đã làm tiếp theo kết luận này (tắt gom mặc định, thử thêm hai veto, sửa lỗi IR, cập nhật docs). **Mục 11 ghi lại bước chuyển sang PDF AUTOSAR** (tải 4 file, pipeline PDF → crop hình, đo trên một file có ground truth gán tay, luật neo cho v1).
 
 ---
 
@@ -11,7 +11,7 @@
 - Hướng chung: DocuMind (Topic3, 8 tuần) — khôi phục thứ tự đọc, hierarchy, bảng, và **sơ đồ khối**.
 - Mục tiêu **hiện tại, đã được người dùng làm rõ**: chỉ cần *trích xuất ảnh sao cho đúng*; nếu là **một cụm ảnh liên quan nhau hoặc một diagram** thì thuật toán phải **chụp tổng thể (một box bao trọn cả cụm)**, không chụp từng ảnh/mảnh riêng. **Việc xem trong ảnh có gì (OCR, nhãn, node–edge) tính sau.** Không cần OCR cho mục tiêu này.
 - Thiết kế người dùng chốt: **chữ → parse bằng code thuần** (text layer của file số); **ảnh → chỉ cắt (extract), chưa cần biết nội dung**.
-- Dữ liệu đích thật: tài liệu **kiểu AUTOSAR** (PDF số có text layer, nhiều diagram vector/block diagram). **Hiện tại cứ dùng OmniDocBench để test trước** (người dùng nói vậy). OmniDocBench là ảnh phẳng, nên các kết luận ở đây chỉ chuyển sang AUTOSAR một phần.
+- Dữ liệu đích thật: tài liệu **kiểu AUTOSAR** (PDF số có text layer, nhiều diagram vector/block diagram). **Hiện tại cứ dùng OmniDocBench để test trước** (người dùng nói vậy). **[CẬP NHẬT: sau đó người dùng chuyển sang test trên AUTOSAR, xem mục 11.]** OmniDocBench là ảnh phẳng, nên các kết luận ở đây chỉ chuyển sang AUTOSAR một phần.
 - Quyết định về header/footer: người dùng muốn **đưa header (lớp FURNITURE của Docling) vào** khi đánh giá thứ tự đọc. Đã thực hiện bằng `--include-furniture` (mặc định của script vẫn tắt). **Chưa quyết** có áp dụng cho pipeline sản xuất (sinh IR/Markdown) hay không (xem mục 9).
 - Phong cách làm việc của người dùng trong session này (session mới nên hỏi lại): nói tiếng Việt; yêu cầu **giao toàn bộ tác vụ code cho một subagent** (model Haiku, effort xhigh), agent chính điều phối, kiểm tra và báo cáo. ID subagent chỉ có hiệu lực trong session cũ.
 
@@ -147,7 +147,7 @@ Từ lần review kiến trúc đầu session (đã xác minh bằng đọc code
 8. **[ĐÃ XÓA, mục 10]** Chỉ số "0 over-merging" của Tầng 1 cũ gần như tautology (guard chặn container >35%, bộ phát hiện chỉ báo khi >45%; khối bọc `except Exception: pass`) → **không có giá trị**; đo v2/v3 cho thấy over-merge thật.
 9. Cấu trúc repo: không có package/`pyproject`, không có CI; logic lõi nằm trong `scripts/`; `compute_iou` lặp 3 file; các file `test_*.py` thực chất là script chạy pipeline (ngoại trừ `test_eval_utils.py`).
 10. **[ĐÃ CẬP NHẬT, mục 10]** **Docs lệch code/số liệu:** `docs/03_benchmark_and_stress_test.md` (mục 3–6 còn số cũ, mục 5–6 mô tả vấn đề đã sửa như chưa sửa, "Kendall Tau tập khó: 0.4798" cũ); `docs/01` schema khác code (`table_id`/`caption_id` ở top-level vs nằm trong `metadata`; khoá `id`); docs ghi PyMuPDF 1.25 nhưng `.venv` có 2.1; README nói "1.651 trang" cho Tầng 1; docs ca ngợi gom sơ đồ nhưng đo cho thấy làm hại.
-11. Nhánh vector `group_whole_diagrams_vector` chưa từng được kiểm chứng trên PDF thật; dilation cố định 12–14 px, Union-Find O(n²), nguy cơ gộp cả khung bảng/đường kẻ trang.
+11. **[ĐÃ ĐO, mục 11]** Nhánh vector `group_whole_diagrams_vector` (đo trên PDF AUTOSAR: F1 chặt 0,416, hút chữ và khoanh bảng); dilation cố định 12–14 px, Union-Find O(n²), nguy cơ gộp cả khung bảng/đường kẻ trang.
 
 ---
 
@@ -159,9 +159,9 @@ Từ lần review kiến trúc đầu session (đã xác minh bằng đọc code
 - Mặc định cho ảnh phẳng (OCR tắt): **box `picture` thô của Docling**.
 - **Đã thử thêm ở mục 10** (veto caption oracle và veto khoảng trắng trên nền v2): không đạt tiêu chí. Ý tưởng raster dưới đây vẫn **chưa thử** ở dạng Docling thật, chỉ làm nếu người dùng muốn tiếp tục nhánh ảnh: OCR tắt + `keep_empty_clusters=True` để giữ box `caption`/chữ làm tín hiệu "hai hình riêng" (caption riêng là manh mối mạnh). Cũng có thể xử lý phần "bỏ sót" 19,9% bằng phát hiện từ pixel (OpenCV container), nhưng đó là bài toán khác.
 
-### P2 — Chuyển sang PDF số kiểu AUTOSAR (dữ liệu đích thật)
+### P2 — Chuyển sang PDF số kiểu AUTOSAR (dữ liệu đích thật) **[ĐÃ BẮT ĐẦU, mục 11]**
 
-- Cần ~20–50 trang AUTOSAR-like có diagram, **tự gán nhãn box "cả diagram"** (hoặc người dùng cung cấp file). **Hỏi người dùng** gửi file, hoặc **xin phép** trước khi tải các specification AUTOSAR công khai. **Không tự tải khi chưa được cho phép.**
+- Cần ~20–50 trang AUTOSAR-like có diagram, **tự gán nhãn box "cả diagram"** (hoặc người dùng cung cấp file). **Hỏi người dùng** gửi file, hoặc **xin phép** trước khi tải các specification AUTOSAR công khai. **Không tự tải khi chưa được cho phép.** **[Đã giải quyết: người dùng yêu cầu tải; 4 PDF ở `datasets/AUTOSAR/`, mục 11.]**
 - Chia nguồn thông tin: chữ + toạ độ bằng code (PyMuPDF `get_text("words"/"blocks")` hoặc `docling-parse`), hình khối/mũi tên bằng `page.get_drawings()`, ảnh nhúng bằng toạ độ từ PDF rồi cắt. Nhãn chữ trong sơ đồ có sẵn miễn phí → đây là lợi thế lớn so với nhánh ảnh.
 - Đo `group_whole_diagrams_vector` (và biến thể cải tiến): khung bao cả diagram, không gộp nhầm khung bảng/đường kẻ trang, dilation tương đối thay vì 12–14 px cố định.
 - Có thể bổ sung dữ liệu có ground truth: **nhóm shape trong PPTX** xuất sang PDF/ảnh, hoặc dữ liệu tổng hợp có kiểm soát (`generate_synthetic_flowchart_pdf`).
@@ -184,7 +184,7 @@ Cần sửa: "Kendall's Tau 0,9369 là thành tích pipeline" (thực chất ora
 
 ### Thứ tự khuyến nghị
 
-P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSAR) → P4 → P5 → P3 → P6. Sau đó mới quay lại phạm vi Topic3 (đa định dạng, đối chiếu liên tài liệu).
+P1 (dừng) → P2 (đã bắt đầu, mục 11) → P4 → P5 → P3 → P6. Sau đó mới quay lại phạm vi Topic3 (đa định dạng, đối chiếu liên tài liệu).
 
 ---
 
@@ -212,6 +212,11 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 
 # Test hậu xử lý IR (6 test)
 .venv\Scripts\python scripts\test_ir_postprocessor.py
+
+# PDF AUTOSAR -> crop hình (mục 11), ~0,3 s/trang với Docling OCR tắt trên GPU; cache Docling theo trang
+.venv\Scripts\python scripts\run_pdf_figure_crops.py datasets\AUTOSAR\AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf --add-vector-missing
+.venv\Scripts\python scripts\eval_pdf_figure_variants.py datasets\AUTOSAR\AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf   # chấm với 30 box gán tay
+.venv\Scripts\python scripts\run_figure_variants_all.py datasets\AUTOSAR\*.pdf   # 9 biến thể x 4 PDF, ảnh ghép cho trang bất đồng
 ```
 
 - Đầu ra: `outputs/04_e2e_eval/{report.md,results.json,report_furniture.md,results_furniture.json,run*.log,cache_ocr-*}`, `outputs/05_diagram_crop_eval/{report_v2.md,report_v3.md,results_v*.json,pair_features.json,viz*/}`.
@@ -232,7 +237,7 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 
 ## 9. Các câu hỏi còn mở cho người dùng
 
-1. Người dùng có thể **gửi mẫu PDF kiểu AUTOSAR** (hoặc cho phép tải specification công khai) để bắt đầu P2 không?
+1. ~~Người dùng có thể **gửi mẫu PDF kiểu AUTOSAR** (hoặc cho phép tải specification công khai) để bắt đầu P2 không?~~ **[Đã trả lời: có, 4 PDF đã tải, mục 11.]**
 2. (Đã xong cho mục 1-9) Các thay đổi đó đã commit và push. Các commit của mục 10 **chưa được push** khi viết. Có muốn push và mở PR vào `master` không? PR sẽ gồm toàn bộ các commit của nhánh so với `master` (`git rev-list --count master..HEAD`).
 3. **Áp dụng `--include-furniture` (header/footer) cho pipeline sản xuất** (sinh IR/Markdown) hay chỉ cho phần đánh giá? Nếu có, cần sửa lỗi hierarchy 5.1.
 4. Thống nhất cấu hình OCR cho sản xuất: cắt ảnh = OCR tắt; IR đầy đủ với ảnh phẳng = OCR bật (torch GPU); PDF số = đọc text layer bằng code?
@@ -279,4 +284,33 @@ P1 (dừng) → P2 (cần người dùng cung cấp/cho phép dữ liệu AUTOSA
 - Quyết định: icon, logo nhỏ có tính là "hình" không (chặn hướng lọc trang trí và cứu hình bị bỏ sót).
 - `outputs/README.md` (cục bộ) chưa cập nhật; đường dẫn `C:/Workspace/DocuMind` vẫn hard-code trong 4 hàm `main()`; ngưỡng pixel tuyệt đối trong `ir_postprocessor.py` (80/300 px) và gom v1; `compute_iou` trùng lặp; chưa có `pyproject`/CI/pytest.
 - Đường `--group-diagrams` bật chưa chạy Tier 2 đầy đủ; demo `test_diagram_grouping.py` chưa chạy end-to-end sau thay đổi (sẽ ghi đè `outputs/02_diagram_grouping/`).
-- Nhánh vector vẫn chưa được kiểm chứng trên PDF thật; các rủi ro suy ra từ code (đường kẻ bảng/header nối chuỗi, hút chữ dồn dần, không thấy ảnh nhúng) cần dữ liệu AUTOSAR hoặc PDF tổng hợp nhiều dạng hơn để xác nhận.
+- ~~Nhánh vector vẫn chưa được kiểm chứng trên PDF thật~~ **[ĐÃ ĐO ở mục 11]**: các rủi ro suy ra từ code (khoanh bảng, hút chữ) được xác nhận trên PDF AUTOSAR.
+
+---
+
+## 11. Cập nhật: thử nghiệm trên PDF AUTOSAR (2026-11-12)
+
+### 11.1. Bối cảnh và quyết định của người dùng
+- Người dùng yêu cầu tải vài tài liệu AUTOSAR về repo và test trên đó. Đã tải 4 PDF Classic Platform R24-11 từ `autosar.org` vào `datasets/AUTOSAR/` (gitignore; spec có điều khoản sử dụng riêng, kiểm tra trước khi chia sẻ): `LayeredSoftwareArchitecture` (185 trang, slide), `VFB` (147), `SWS_ECUStateManager` (245), `SWS_OS` (407). Cả bốn file đều có text layer; sơ đồ ở dạng nét vẽ vector kèm vài ảnh nhúng nhỏ.
+- **Mục tiêu hiện tại (người dùng nói rõ):** chỉ cần crop hình cho đúng; xử lý nội dung trong hình để sau. **Chữ dính thêm quanh hình chấp nhận được** (khi đưa hình cho agent có thể dặn bỏ qua chữ lẫn vào). Không cần phân biệt "ảnh thường" với "diagram": mỗi khối đồ họa là một crop. Vì vậy tiêu chí "dung sai" (hình trọn vẹn trong một box, box không quá 2 lần hình) được dùng song song với IoU.
+
+### 11.2. Đã thêm vào repo
+- `scripts/run_pdf_figure_crops.py`: pipeline PDF → crop hình (render trang, Docling OCR tắt, gom v1 + luật neo, tùy chọn `--refine-vector` và `--add-vector-missing`, lọc logo/chân trang, crop và `manifest.json`). Mô tả ở `docs/02` mục 6. Thân `group_whole_diagrams_image` không bị sửa (baseline R3 của v3/v4 và test dựa vào nó); luật neo đặt trong `v1_group_boxes`.
+- `scripts/run_figure_variants_all.py`: chạy 9 biến thể trên nhiều PDF, ghi box, crop của 3 biến thể chính và ảnh ghép 4 biến thể cho các trang bất đồng.
+- `scripts/eval_pdf_figure_variants.py` và `scripts/ground_truth/autosar_layered_figures.json`: chấm điểm với 30 box gán tay (44 trang, bỏ 3 trang mơ hồ).
+- Test hiện có chạy lại sau thay đổi: `test_eval_utils.py` 35/35, `test_ir_postprocessor.py` 6/6.
+
+### 11.3. Kết quả (chi tiết và bảng ở `docs/02` mục 5.3-5.4)
+- Trên `LayeredSoftwareArchitecture`, Docling + v1 hơn hẳn nhánh vector (F1 chặt 0,885 so với 0,416; dung sai 0,852 so với 0,364). Vector đơn thuần hụt vì box quá lớn (hút chữ) và khoanh bảng.
+- v1 **không** chặn việc khoanh nhầm bảng ở spec nhiều bảng: trên OS và ECUStateManager, mọi box chỉ có ở v1 (67 và 29) đều chứa bảng. Luật neo loại hết; sau đó trên 3 file spec mọi biến thể Docling cho kết quả giống hệt box `picture` thô.
+- `refine` không giúp dưới tiêu chí dung sai; `add` thêm khoảng 1 hình. Cấu hình hiện được khuyến nghị: Docling (OCR tắt) + v1 + neo + `--add-vector-missing` (F1 0,918 chặt, 0,885 dung sai trên Layered). Đây là kết quả trên **một tài liệu, 30 box gán tay**, các ngưỡng chỉnh trên chính tập này; chênh lệch 1-2 hình giữa các cấu hình sát nhau không có ý nghĩa thống kê (tune-on-test như đã nêu ở mục 4.2).
+- Quá trình có hỏi ý kiến phản biện độc lập: kết luận là không sửa thân hàm v1, luật "phải có picture" chưa đủ (đã thay bằng luật neo), không tinh chỉnh `refine`, và không gọi một cấu hình là "tốt nhất" khi chênh lệch chỉ 1-2 hình.
+
+### 11.4. Việc còn lại và lưu ý
+1. **Ground truth cho spec nhiều bảng (OS, ECUStateManager) chưa có**: chưa biết recall thật của box thô/anchor ở đó. Nên gán tay 15-20 trang, ưu tiên các trang có box lớn hơn nửa trang (ECUStateManager 25 box, mới xem 2 là sơ đồ thật; danh sách ở `outputs/12_autosar_all_variants_anchor/huge_boxes.md`, cục bộ).
+2. Chưa có đường **PDF → IR**: pipeline PDF chỉ cắt hình. Còn thiếu: IR nhiều trang (`page` đang ghi cứng 1), thứ tự đọc, bảng, chữ lấy từ text layer thay vì OCR, nối crop vào đúng section. Phần IR hiện chỉ xử lý một trang ảnh.
+3. Chưa tách đóng góp của từng luật A/B/C của v1 trên AUTOSAR; mọi ngưỡng v1 là pixel tuyệt đối, chỉ thử ở 150 DPI.
+4. Các hộp "chỉ từ vector" của `add` (trang 83, 121, 137, 139 của Layered) mới có trang 121 trong mẫu có ground truth; các trang khác chưa kiểm tra.
+5. Việc "phân biệt ảnh thường và diagram" không còn cần cho mục tiêu hiện tại; nếu cần sau này, PDF cho tín hiệu nguồn gốc (ảnh nhúng so với nét vẽ vector) rẻ hơn đoán từ pixel.
+6. Một lần chạy Docling OCR bật (torch) trên các trang AUTOSAR bị dừng giữa chừng, nên mọi số liệu ở mục 11 là OCR tắt.
+7. `outputs/` (cục bộ, gitignore) chứa kết quả: `07_autosar_branch_compare`, `08_pdf_figure_crops`, `09_refine_vector_compare`, `10_autosar_all_variants` (v1 chưa neo), `11_v1_rule_compare`, `12_autosar_all_variants_anchor` (v1 có neo).
