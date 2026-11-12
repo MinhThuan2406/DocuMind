@@ -8,10 +8,13 @@ Tier 1: Full-Dataset (1,651 pages) Structural Benchmark
 Tier 2: Stratified Hard Subset End-to-End Stress Test (20 Samples)
   - 2 hard pages per data_source (10 sources = 20 pages).
   - Covers three_column, 1andmore_column, other_layout, wireless_line, table_vertical, L-wrap, colorful_textbook.
-  - Runs full pipeline: Docling -> group_whole_diagrams -> postprocess_ir_structure.
+  - Runs full pipeline: Docling -> (diagrams: raw picture boxes by default, or
+    group_whole_diagrams with --group-diagrams) -> postprocess_ir_structure.
+  - Each diagram bbox is cropped to <output>/crops/; diagram cropped_image is filled.
   - Analyzes new issues, generates comparison images, JSON IR, and Markdown files.
 """
 
+import argparse
 import json
 import math
 import os
@@ -41,6 +44,8 @@ from test_diagram_grouping import (
     crop_diagram_groups,
     draw_before_after_visualization,
     group_whole_diagrams_image,
+    raw_picture_groups,
+    scale_items_to_pixels,
 )
 from eval_utils import compute_kendall_tau  # returns None when n < 2 (not 1.0)
 
@@ -337,9 +342,11 @@ def run_tier2_end_to_end_test(
     selected_20: List[Dict[str, Any]],
     images_dir: Path,
     output_dir: Path,
+    group_diagrams: bool = False,
 ) -> Dict[str, Any]:
     print("\n" + "=" * 80)
     print(" TIER 2: 20-SAMPLE STRATIFIED HARD END-TO-END TEST")
+    print(f" Diagrams: {'v1 group_whole_diagrams_image' if group_diagrams else 'raw Docling picture boxes (no grouping)'}")
     print("=" * 80)
 
     converter = DocumentConverter()
@@ -372,6 +379,9 @@ def run_tier2_end_to_end_test(
         print(f"  -> Docling completed in {doc_time:.2f}s")
 
         p_size = (doc.pages[1].size.width, doc.pages[1].size.height) if (1 in doc.pages) else (float(pw), float(ph))
+        # Table/cell bboxes are not scaled by the item helper: bring them to image pixels as well
+        sx_t = pw / p_size[0] if p_size[0] > 0 else 1.0
+        sy_t = ph / p_size[1] if p_size[1] > 0 else 1.0
 
         # Extract docling items
         docling_items = []
@@ -400,7 +410,7 @@ def run_tier2_end_to_end_test(
             t_bbox = None
             if prov and len(prov) > 0 and hasattr(prov[0], "bbox"):
                 tb = prov[0].bbox.to_top_left_origin(p_size[1])
-                t_bbox = [round(tb.l, 2), round(tb.t, 2), round(tb.r, 2), round(tb.b, 2)]
+                t_bbox = [round(tb.l * sx_t, 2), round(tb.t * sy_t, 2), round(tb.r * sx_t, 2), round(tb.b * sy_t, 2)]
 
             t_cells = []
             if hasattr(t, "data") and hasattr(t.data, "table_cells") and t.data.table_cells:
@@ -416,7 +426,7 @@ def run_tier2_end_to_end_test(
                     if hasattr(c, "bbox") and c.bbox:
                         try:
                             cb = c.bbox.to_top_left_origin(p_size[1])
-                            c_bbox = [round(cb.l, 2), round(cb.t, 2), round(cb.r, 2), round(cb.b, 2)]
+                            c_bbox = [round(cb.l * sx_t, 2), round(cb.t * sy_t, 2), round(cb.r * sx_t, 2), round(cb.b * sy_t, 2)]
                         except Exception:
                             pass
                     t_cells.append({
@@ -442,16 +452,21 @@ def run_tier2_end_to_end_test(
                 "metadata": {},
             })
 
-        # 2. Run Diagram Grouping
-        print("  -> Running group_whole_diagrams_image()...")
-        group_res = group_whole_diagrams_image(
-            str(img_path),
-            docling_items,
-            (pw, ph),
-            p_size,
-        )
-        before_items = group_res["original_items"]
-        diagram_groups = group_res["diagram_groups"]
+        # 2. Diagrams: v1 grouping only with --group-diagrams; default keeps raw picture boxes.
+        #    Both paths return bboxes in image pixel coordinates (IR thresholds assume pixels).
+        if group_diagrams:
+            print("  -> Running group_whole_diagrams_image()...")
+            group_res = group_whole_diagrams_image(
+                str(img_path),
+                docling_items,
+                (pw, ph),
+                p_size,
+            )
+            before_items = group_res["original_items"]
+            diagram_groups = group_res["diagram_groups"]
+        else:
+            before_items = scale_items_to_pixels(docling_items, (pw, ph), p_size)
+            diagram_groups = raw_picture_groups(before_items)
 
         # Build elements for JSON IR
         unified_elements = []
@@ -487,8 +502,24 @@ def run_tier2_end_to_end_test(
                 "metadata": {
                     "merged_blocks_count": dg.get("merged_blocks_count", len(merged_ids)),
                     "contained_labels": dg.get("contained_labels", []),
+                    "grouping": "v1_group" if group_diagrams else "raw_picture",
                 },
             })
+
+        # Crop each diagram bbox from the page image into <output_dir>/crops/ (one call per diagram
+        # so each cropped_image maps 1:1 to its diagram; degenerate boxes give "")
+        if unified_diagrams:
+            base_img = Image.open(img_path).convert("RGB")
+            for ud, dg in zip(unified_diagrams, diagram_groups):
+                crop_rel = crop_diagram_groups(
+                    base_img,
+                    [dg],
+                    output_dir,
+                    short_name,
+                    custom_crop_names=[f"{short_name}_{ud['id']}.png"],
+                    crops_subdir=output_dir / "crops",
+                )
+                ud["cropped_image"] = crop_rel[0] if crop_rel else ""
 
         raw_ir = {
             "doc_id": short_name,
@@ -499,7 +530,7 @@ def run_tier2_end_to_end_test(
                 "description": f"Layout: {layout}, Issues: {issues}",
                 "page_width": pw,
                 "page_height": ph,
-                "parser": "Docling-2.150.0 + group_whole_diagrams",
+                "parser": "Docling-2.150.0 + " + ("group_whole_diagrams" if group_diagrams else "raw picture boxes"),
                 "processing_time_sec": round(time.time() - t_start, 2),
                 "custom_tags": [src, layout] + issues,
                 "extra": {
@@ -819,6 +850,15 @@ def generate_highlighted_issue_artifacts(
 # Main Execution Controller
 # ----------------------------------------------------------------------
 def main():
+    parser = argparse.ArgumentParser(description="DocuMind 2-tier dataset stress test")
+    parser.add_argument(
+        "--group-diagrams",
+        action="store_true",
+        help="Run v1 group_whole_diagrams_image() before IR postprocessing. "
+             "Default: keep raw Docling picture/figure boxes (no grouping).",
+    )
+    args = parser.parse_args()
+
     root_dir = Path("C:/Workspace/DocuMind")
     dataset_json_path = root_dir / "datasets/OmniDocBench/OmniDocBench.json"
     images_dir = root_dir / "datasets/OmniDocBench/images"
@@ -841,7 +881,9 @@ def main():
 
     # Tier 2: Select 20 stratified hard samples and run End-to-End Docling
     selected_20 = select_stratified_hard_20(all_data, images_dir)
-    tier2_report = run_tier2_end_to_end_test(selected_20, images_dir, output_dir)
+    tier2_report = run_tier2_end_to_end_test(
+        selected_20, images_dir, output_dir, group_diagrams=args.group_diagrams
+    )
 
     # Generate highlighted issue comparison images
     highlighted_issues = generate_highlighted_issue_artifacts(
