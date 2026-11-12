@@ -202,14 +202,29 @@ def group_whole_diagrams_vector(pdf_path: str, page_num: int = 0, pad: float = 1
 # ----------------------------------------------------------------------
 # 3. Image / Raster Algorithm: group_whole_diagrams_image()
 # ----------------------------------------------------------------------
+def read_image_bgr(image_path: str) -> np.ndarray:
+    """
+    Reads an image with OpenCV without depending on the file name encoding.
+    cv2.imread returns None for paths with non-ASCII characters on Windows (e.g. CJK file names),
+    which made detect_visual_containers_opencv return [] silently. np.fromfile + cv2.imdecode reads
+    the same bytes for any path. Raises FileNotFoundError when the file is missing and ValueError
+    when the bytes cannot be decoded as an image.
+    """
+    data = np.fromfile(image_path, dtype=np.uint8)
+    if data.size == 0:
+        raise ValueError(f"empty image file: {image_path}")
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"cannot decode image: {image_path}")
+    return img
+
+
 def detect_visual_containers_opencv(image_path: str) -> List[List[float]]:
     """
     Detects bounding boxes of visual diagram regions, card containers,
     and graphic frames using Canny + Morphological Closing + Contours.
     """
-    img = cv2.imread(image_path)
-    if img is None:
-        return []
+    img = read_image_bgr(image_path)
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
