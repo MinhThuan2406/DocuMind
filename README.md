@@ -9,7 +9,7 @@
 
 Hệ thống được thiết kế theo lộ trình nghiên cứu và phát triển 8 tuần theo tài liệu [Topic3_Document_Understanding_8_Weeks.md](Topic3_Document_Understanding_8_Weeks.md).
 
-> **Trạng thái hiện tại:** repo mới có nhánh **PDF/ảnh** (Docling + PyMuPDF + OpenCV), bộ hậu xử lý IR và bộ đánh giá. **Chưa có** DOCX/XLSX/PPTX, đối chiếu liên tài liệu, LLM, UI, TEDS và Graph F1. Không có entry point chung: mỗi script trong `scripts/` là một pipeline hoặc một bài đánh giá riêng. Gom sơ đồ trên ảnh phẳng **tắt mặc định** (đo cho thấy làm hại, xem `docs/02` mục 5); nhánh vector chưa kiểm chứng trên PDF thật. Bàn giao chi tiết: [docs/04](docs/04_session_handoff_and_next_steps.md).
+> **Trạng thái hiện tại:** repo có (1) pipeline **ảnh phẳng → IR** (Docling + hậu xử lý IR), (2) pipeline **PDF → crop hình** (`scripts/run_pdf_figure_crops.py`: Docling trên trang render + gom v1 có luật neo + cụm vector bổ sung, đo trên 4 PDF AUTOSAR) và (3) bộ đánh giá. Pipeline PDF **chưa đi qua IR**: không có thứ tự đọc, cây phân cấp, bảng hay OCR, chỉ cắt hình. **Chưa có** DOCX/XLSX/PPTX, đối chiếu liên tài liệu, LLM, UI, TEDS và Graph F1. Không có entry point chung: mỗi script trong `scripts/` là một pipeline hoặc một bài đánh giá riêng. Trong pipeline IR, gom sơ đồ trên ảnh phẳng **tắt mặc định** (đo trên OmniDocBench cho thấy làm hại, xem `docs/02` mục 5.1); trong pipeline PDF, gom v1 **bật** kèm luật neo vì trên AUTOSAR nó giúp (`docs/02` mục 5.3-5.4). Nhánh vector thuần (PyMuPDF) đã đo trên AUTOSAR và kém, chỉ dùng làm tín hiệu bổ sung. Bàn giao chi tiết: [docs/04](docs/04_session_handoff_and_next_steps.md).
 
 ---
 
@@ -26,7 +26,7 @@ flowchart TD
     subgraph L2["Tầng 2: Visual & Diagram Recovery Engine"]
         VEC --> UF["BBox Dilation + Union-Find (PDF Vector)"]
         DL --> CV["Box picture/figure của Docling (Ảnh phẳng/Scanned)"]
-        UF --> DIAG["group_whole_diagrams_vector(): Union Bounding Box (chưa kiểm chứng trên PDF thật)"]
+        UF --> DIAG["group_whole_diagrams_vector(): Union Bounding Box (đo trên AUTOSAR: kém khi dùng riêng, dùng bổ sung cho Docling)"]
         CV --> DIAG["Ảnh phẳng: box picture thô; gom v1 chỉ với --group-diagrams"]
     end
 
@@ -47,7 +47,7 @@ flowchart TD
 
 ### Các Thành Phần Nòng Cốt:
 1. **Multi-modal Parsing Layer:** Kết hợp mô hình Layout Analysis và TableFormer của IBM Docling để trích xuất bounding box, bảng có cấu trúc và văn bản.
-2. **Visual & Diagram Recovery (`group_whole_diagrams_*`, thử nghiệm):** nhánh vector gom nét vẽ và nhãn chữ của PDF số thành một **Union Bounding Box** (chưa kiểm chứng trên PDF thật). Với ảnh phẳng, pipeline mặc định giữ box `picture` thô của Docling và cắt ảnh từng box; gom cụm (v1) chỉ chạy khi truyền `--group-diagrams` vì đo trên 613 trang cho thấy nó làm hỏng nhiều hình đang đúng hơn số hình nó sửa. Node/edge và Mermaid chưa được trích xuất tự động.
+2. **Visual & Diagram Recovery (`group_whole_diagrams_*`, thử nghiệm):** nhánh vector gom nét vẽ và nhãn chữ của PDF số thành một **Union Bounding Box**; đo trên PDF AUTOSAR nó hút chữ kề sơ đồ và khoanh cả bảng (F1 chặt 0,416 so với 0,885 của Docling + v1), nên chỉ dùng bổ sung (`--add-vector-missing`). Với ảnh phẳng trong pipeline IR, mặc định giữ box `picture` thô của Docling và cắt ảnh từng box; gom cụm (v1) chỉ chạy khi truyền `--group-diagrams` vì đo trên 613 trang OmniDocBench cho thấy nó làm hỏng nhiều hình đang đúng hơn số hình nó sửa. Pipeline PDF → crop hình (mục 4.7) bật v1 kèm luật neo. Node/edge và Mermaid chưa được trích xuất tự động.
 3. **Unified IR Postprocessor (`postprocess_ir_structure`):** Chuẩn hóa toàn bộ dữ liệu theo đặc tả **Unified JSON IR Schema** (Mục 5.3):
    - Phân luồng thứ tự đọc nhận biết đa cột (Recursive XY-Cut).
    - Dựng cây phân cấp logic (`title` -> `section_header` -> `text` / `table` / `diagram` -> `caption`; hai cấp tiêu đề).
@@ -72,6 +72,10 @@ DocuMind/
 │   ├── ir_postprocessor.py                    <- Hậu xử lý IR: thứ tự đọc XY-Cut, cây phân cấp, liên kết bảng/caption, Markdown
 │   ├── test_diagram_grouping.py               <- Gom sơ đồ (vector + ảnh phẳng v1), cắt crop, demo (đặt tên test_ nhưng là module dùng chung)
 │   ├── diagram_grouping_v2.py                 <- Gom thận trọng v2 (chỉ dùng cho đánh giá)
+│   ├── run_pdf_figure_crops.py                <- PDF -> crop từng hình (Docling OCR tắt + gom v1 có luật neo + cụm vector bổ sung), không qua IR
+│   ├── run_figure_variants_all.py             <- Chạy 9 biến thể cắt hình trên nhiều PDF để so sánh bằng mắt
+│   ├── eval_pdf_figure_variants.py            <- Chấm điểm các biến thể với ground truth AUTOSAR (chặt IoU và dung sai)
+│   ├── ground_truth/autosar_layered_figures.json <- 30 box hình gán tay trên 44 trang LayeredSoftwareArchitecture
 │   ├── run_dataset_stress_test.py             <- Stress test 2 tầng (Tầng 1 trên box GT, Tầng 2 end-to-end 20 trang)
 │   ├── test_docling_omnidocbench.py           <- Benchmark Docling trên 4 mẫu đại diện
 │   ├── eval_utils.py                          <- Hàm đánh giá dùng chung (Kendall tau, Hungarian, IoU, phân loại hình)
@@ -81,17 +85,18 @@ DocuMind/
 │   ├── analyze_pair_features.py               <- Phân tích đặc trưng cặp mảnh hình
 │   ├── test_eval_utils.py                     <- 35 test cho eval_utils và v2 (assert thuần)
 │   └── test_ir_postprocessor.py               <- 6 test cho hậu xử lý IR (assert thuần)
-├── datasets/                                  <- Dữ liệu OmniDocBench v1.6 (Ignored in Git)
-│   └── OmniDocBench/
-│       ├── OmniDocBench.json
-│       └── images/
+├── datasets/                                  <- Dữ liệu (Ignored in Git)
+│   ├── OmniDocBench/                          <- OmniDocBench v1.6 (OmniDocBench.json, images/)
+│   └── AUTOSAR/                               <- 4 PDF AUTOSAR CP R24-11 tải từ autosar.org (điều khoản sử dụng riêng)
 └── outputs/                                   <- Thư mục chứa kết quả (Ignored in Git)
     ├── README.md                              <- Mục lục tra cứu file sinh ra (cục bộ, có thể lỗi thời)
     ├── 01_docling_benchmark/                  <- Mẫu benchmark Docling cơ sở
     ├── 02_diagram_grouping/                   <- Kết quả demo gom sơ đồ
     ├── 03_dataset_stress_test/                <- Kết quả stress test & issue overlays
     ├── 04_e2e_eval/                           <- Đánh giá thứ tự đọc end-to-end (+ cache Docling theo cấu hình)
-    └── 05_diagram_crop_eval/                  <- Đánh giá cắt hình (report_v2/v3/v4, results_*.json)
+    ├── 05_diagram_crop_eval/                  <- Đánh giá cắt hình (report_v2/v3/v4, results_*.json)
+    ├── 08_pdf_figure_crops/                   <- Crop hình từ PDF + cache Docling theo trang (run_pdf_figure_crops.py)
+    └── 10_.../12_autosar_all_variants_*/      <- So sánh 9 biến thể trên 4 PDF (run_figure_variants_all.py)
 ```
 
 ---
@@ -169,10 +174,29 @@ Demo trên slide cards, sơ đồ mạng, infographic và PDF vector lưu đồ 
 
 ---
 
+### 4.7. PDF → Crop Hình (không qua IR)
+Mỗi hình trong PDF (ảnh hoặc sơ đồ nhiều mảnh) ra một ảnh crop; nội dung trong hình xử lý sau. Docling chạy với OCR tắt trên trang render, nên nhanh (khoảng 0,3 giây/trang trên GPU, lần đầu có thêm thời gian tải model):
+```powershell
+.venv\Scripts\python scripts/run_pdf_figure_crops.py datasets/AUTOSAR/AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf
+# cấu hình khuyến nghị theo đo hiện tại (Docling + v1 có luật neo + thêm cụm vector bị sót):
+.venv\Scripts\python scripts/run_pdf_figure_crops.py file.pdf --add-vector-missing --pages 12-40
+# bỏ gom v1 hoặc đổi luật neo: --no-group, --v1-rule {anchor,picture-only,none}
+```
+*Kết quả xuất tại:* `outputs/08_pdf_figure_crops/<tên pdf>/` (`crops/`, `manifest.json`). Cache Docling theo trang nằm ở `_docling_cache_dpi150/` cùng thư mục gốc, nên chạy lại biến thể khác không phải chạy lại Docling.
+
+So sánh nhiều biến thể trên nhiều PDF (ảnh ghép 4 biến thể cho các trang bất đồng) và chấm điểm với ground truth:
+```powershell
+.venv\Scripts\python scripts/run_figure_variants_all.py datasets/AUTOSAR/*.pdf
+.venv\Scripts\python scripts/eval_pdf_figure_variants.py datasets/AUTOSAR/AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf
+```
+*Kết quả xuất tại:* `outputs/10_autosar_all_variants/`. Ground truth chỉ có cho `LayeredSoftwareArchitecture` (30 box gán tay); số liệu và giới hạn ở `docs/02` mục 5.3-5.4.
+
+---
+
 ## 5. Tài Liệu Kỹ Thuật Tham Khảo (Documentation)
 
 - [Topic3_Document_Understanding_8_Weeks.md](Topic3_Document_Understanding_8_Weeks.md): Bản đặc tả đề cương 8 tuần R&D.
 - [docs/01_architecture_and_ir_schema.md](docs/01_architecture_and_ir_schema.md): Cấu trúc Unified JSON IR thực tế & thuật toán hậu xử lý.
-- [docs/02_diagram_grouping_algorithm.md](docs/02_diagram_grouping_algorithm.md): Thuật toán gom sơ đồ khối, hạn chế và kết quả đo định lượng.
+- [docs/02_diagram_grouping_algorithm.md](docs/02_diagram_grouping_algorithm.md): Thuật toán gom sơ đồ khối, kết quả đo trên OmniDocBench và PDF AUTOSAR, và pipeline PDF → crop hình.
 - [docs/03_benchmark_and_stress_test.md](docs/03_benchmark_and_stress_test.md): Thực nghiệm OmniDocBench (Tầng 1 oracle, Tầng 2 end-to-end) và các edge case.
 - [docs/04_session_handoff_and_next_steps.md](docs/04_session_handoff_and_next_steps.md): Bàn giao session: số liệu đã kiểm chứng, lỗi đã biết, việc cần làm tiếp.
