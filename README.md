@@ -2,12 +2,14 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Package Manager](https://img.shields.io/badge/package%20manager-uv-green.svg)](https://github.com/astral-sh/uv)
-[![Parser](https://img.shields.io/badge/parser-Docling%20v2.15-orange.svg)](https://github.com/DS4SD/docling)
+[![Parser](https://img.shields.io/badge/parser-Docling%20v2.150-orange.svg)](https://github.com/DS4SD/docling)
 [![Benchmark](https://img.shields.io/badge/dataset-OmniDocBench%20v1.6-red.svg)](https://github.com/opendatalab/OmniDocBench)
 
 **DocuMind** là hệ thống xử lý, phân tích bố cục (Layout Analysis), nhận diện cấu trúc phân cấp (Hierarchy Tree) và phục hồi sơ đồ khối/bảng phức tạp cho các dạng tài liệu phi cấu trúc và bán cấu trúc (Báo cáo nghiên cứu 2 cột, bài báo khoa học, báo cáo tài chính có bảng merged cells, slide thuyết trình PPT2PDF và tài liệu kỹ thuật có biểu đồ phân mảnh).
 
-Hệ thống được thiết kế theo lộ trình nghiên cứu và phát triển 8 tuần theo tài liệu [Topic3_Document_Understanding_8_Weeks.md](file:///C:/Workspace/DocuMind/Topic3_Document_Understanding_8_Weeks.md).
+Hệ thống được thiết kế theo lộ trình nghiên cứu và phát triển 8 tuần theo tài liệu [Topic3_Document_Understanding_8_Weeks.md](Topic3_Document_Understanding_8_Weeks.md).
+
+> **Trạng thái hiện tại:** repo mới có nhánh **PDF/ảnh** (Docling + PyMuPDF + OpenCV), bộ hậu xử lý IR và bộ đánh giá. **Chưa có** DOCX/XLSX/PPTX, đối chiếu liên tài liệu, LLM, UI, TEDS và Graph F1. Không có entry point chung: mỗi script trong `scripts/` là một pipeline hoặc một bài đánh giá riêng. Gom sơ đồ trên ảnh phẳng **tắt mặc định** (đo cho thấy làm hại, xem `docs/02` mục 5); nhánh vector chưa kiểm chứng trên PDF thật. Bàn giao chi tiết: [docs/04](docs/04_session_handoff_and_next_steps.md).
 
 ---
 
@@ -23,15 +25,15 @@ flowchart TD
 
     subgraph L2["Tầng 2: Visual & Diagram Recovery Engine"]
         VEC --> UF["BBox Dilation + Union-Find (PDF Vector)"]
-        DL --> CV["OpenCV Spatial Clustering (Ảnh phẳng/Scanned)"]
-        UF --> DIAG["group_whole_diagrams(): Union Bounding Box"]
-        CV --> DIAG
+        DL --> CV["Box picture/figure của Docling (Ảnh phẳng/Scanned)"]
+        UF --> DIAG["group_whole_diagrams_vector(): Union Bounding Box (chưa kiểm chứng trên PDF thật)"]
+        CV --> DIAG["Ảnh phẳng: box picture thô; gom v1 chỉ với --group-diagrams"]
     end
 
     subgraph L3["Tầng 3: Unified IR Postprocessor & Normalization"]
         DIAG --> IR["postprocess_ir_structure()"]
         DL --> IR
-        IR --> RO["Column-Aware Reading Order (Kendall's Tau >= 0.70)"]
+        IR --> RO["Column-Aware Reading Order (Recursive XY-Cut)"]
         IR --> HT["Logic Hierarchy Tree (parent_id, level)"]
         IR --> LK["Bidirectional Entity Linking (elements <-> tables <-> captions)"]
     end
@@ -45,10 +47,10 @@ flowchart TD
 
 ### Các Thành Phần Nòng Cốt:
 1. **Multi-modal Parsing Layer:** Kết hợp mô hình Layout Analysis và TableFormer của IBM Docling để trích xuất bounding box, bảng có cấu trúc và văn bản.
-2. **Visual & Diagram Recovery Engine (`group_whole_diagrams`):** Giải quyết triệt để vấn đề sơ đồ bị cắt vụn thành hàng chục mảnh text/shape nhỏ lẻ. Tự động gom cụm hình khối, đường mũi tên và nhãn chữ thành **Union Bounding Box** duy nhất bao trọn toàn bộ sơ đồ/card.
+2. **Visual & Diagram Recovery (`group_whole_diagrams_*`, thử nghiệm):** nhánh vector gom nét vẽ và nhãn chữ của PDF số thành một **Union Bounding Box** (chưa kiểm chứng trên PDF thật). Với ảnh phẳng, pipeline mặc định giữ box `picture` thô của Docling và cắt ảnh từng box; gom cụm (v1) chỉ chạy khi truyền `--group-diagrams` vì đo trên 613 trang cho thấy nó làm hỏng nhiều hình đang đúng hơn số hình nó sửa. Node/edge và Mermaid chưa được trích xuất tự động.
 3. **Unified IR Postprocessor (`postprocess_ir_structure`):** Chuẩn hóa toàn bộ dữ liệu theo đặc tả **Unified JSON IR Schema** (Mục 5.3):
-   - Phân luồng thứ tự đọc nhận biết đa cột (Column-Aware Reading Order).
-   - Dựng cây phân cấp logic (`title` -> `section_header` -> `text` / `table` / `diagram` -> `caption`).
+   - Phân luồng thứ tự đọc nhận biết đa cột (Recursive XY-Cut).
+   - Dựng cây phân cấp logic (`title` -> `section_header` -> `text` / `table` / `diagram` -> `caption`; hai cấp tiêu đề).
    - Liên kết thực thể hai chiều giữa mảng `elements` và mảng `tables`.
 4. **Dual Output Generation:** Xuất đồng thời cả file **JSON IR** (để AI Agent dễ truy vấn và gắn thêm metadata) lẫn file **Markdown** (nhúng bảng chi tiết kèm sơ đồ Mermaid).
 
@@ -63,40 +65,56 @@ DocuMind/
 ├── .gitignore                                 <- Cấu hình loại trừ datasets, outputs, venv
 ├── docs/                                      <- Bộ tài liệu kỹ thuật chuyên sâu
 │   ├── 01_architecture_and_ir_schema.md       <- Đặc tả Unified JSON IR Schema & Postprocessor
-│   ├── 02_diagram_grouping_algorithm.md       <- Thuật toán group_whole_diagrams (Vector + Image)
-│   └── 03_benchmark_and_stress_test.md        <- Báo cáo thực nghiệm 1.651 trang OmniDocBench
+│   ├── 02_diagram_grouping_algorithm.md       <- Thuật toán gom sơ đồ (Vector + Image) và kết quả đo
+│   ├── 03_benchmark_and_stress_test.md        <- Thực nghiệm OmniDocBench (Tầng 1 oracle, Tầng 2 end-to-end)
+│   └── 04_session_handoff_and_next_steps.md   <- Bàn giao: số liệu đã kiểm chứng, lỗi đã biết, việc cần làm
 ├── scripts/                                   <- Toàn bộ mã nguồn thực thi
-│   ├── ir_postprocessor.py                    <- Module hậu xử lý IR, sắp xếp thứ tự đọc & cây phân cấp
-│   ├── test_docling_omnidocbench.py           <- Pipeline benchmark Docling trên các mẫu đại diện
-│   ├── test_diagram_grouping.py               <- Pipeline kiểm thử gom cụm sơ đồ khối
-│   └── run_dataset_stress_test.py             <- Pipeline Stress Test quy mô lớn 2 tầng (1.651 trang)
+│   ├── ir_postprocessor.py                    <- Hậu xử lý IR: thứ tự đọc XY-Cut, cây phân cấp, liên kết bảng/caption, Markdown
+│   ├── test_diagram_grouping.py               <- Gom sơ đồ (vector + ảnh phẳng v1), cắt crop, demo (đặt tên test_ nhưng là module dùng chung)
+│   ├── diagram_grouping_v2.py                 <- Gom thận trọng v2 (chỉ dùng cho đánh giá)
+│   ├── run_dataset_stress_test.py             <- Stress test 2 tầng (Tầng 1 trên box GT, Tầng 2 end-to-end 20 trang)
+│   ├── test_docling_omnidocbench.py           <- Benchmark Docling trên 4 mẫu đại diện
+│   ├── eval_utils.py                          <- Hàm đánh giá dùng chung (Kendall tau, Hungarian, IoU, phân loại hình)
+│   ├── run_e2e_reading_order_eval.py          <- Đánh giá thứ tự đọc end-to-end (4 phương pháp A/B/C/D)
+│   ├── check_furniture_layer.py               <- Kiểm tra lớp FURNITURE (header/footer) của Docling
+│   ├── run_diagram_crop_eval.py (+ _v2, _v3, _v4) <- Đánh giá cắt hình trên 613 trang (v3 leave-source-out, v4 veto)
+│   ├── analyze_pair_features.py               <- Phân tích đặc trưng cặp mảnh hình
+│   ├── test_eval_utils.py                     <- 35 test cho eval_utils và v2 (assert thuần)
+│   └── test_ir_postprocessor.py               <- 6 test cho hậu xử lý IR (assert thuần)
 ├── datasets/                                  <- Dữ liệu OmniDocBench v1.6 (Ignored in Git)
 │   └── OmniDocBench/
 │       ├── OmniDocBench.json
 │       └── images/
-└── outputs/                                   <- Thư mục chứa kết quả kiểm thử (Ignored in Git)
-    ├── README.md                              <- Mục lục tra cứu toàn bộ file sinh ra
+└── outputs/                                   <- Thư mục chứa kết quả (Ignored in Git)
+    ├── README.md                              <- Mục lục tra cứu file sinh ra (cục bộ, có thể lỗi thời)
     ├── 01_docling_benchmark/                  <- Mẫu benchmark Docling cơ sở
-    ├── 02_diagram_grouping/                   <- Mẫu kiểm thử gom cụm sơ đồ
-    └── 03_dataset_stress_test/                <- Kết quả stress test 1.651 trang & 6 issue overlays
+    ├── 02_diagram_grouping/                   <- Kết quả demo gom sơ đồ
+    ├── 03_dataset_stress_test/                <- Kết quả stress test & issue overlays
+    ├── 04_e2e_eval/                           <- Đánh giá thứ tự đọc end-to-end (+ cache Docling theo cấu hình)
+    └── 05_diagram_crop_eval/                  <- Đánh giá cắt hình (report_v2/v3/v4, results_*.json)
 ```
 
 ---
 
 ## 3. Hướng Dẫn Cài Đặt (Installation)
 
-Dự án sử dụng trình quản lý gói siêu tốc `uv`:
+Dự án sử dụng trình quản lý gói `uv`. Môi trường đã được kiểm thử: Python 3.12.10 trên Windows 11, Docling 2.150.0, PyMuPDF 2.1, OpenCV (`opencv-python-headless`) 5.0.0.93, SciPy 1.18, NumPy 2.5, Pillow 13, RapidOCR 3.10, onnxruntime 1.31 (CPU).
 
 ```powershell
-# 1. Tạo môi trường ảo Python 3.11+
+# 1. Tạo môi trường ảo Python 3.11+ (đã kiểm thử với 3.12)
 uv venv .venv
 
 # 2. Kích hoạt môi trường ảo (Windows PowerShell)
 .venv\Scripts\activate
 
 # 3. Cài đặt các thư viện phụ thuộc
-uv pip install docling pillow pymupdf opencv-python-headless
+uv pip install docling pillow pymupdf opencv-python-headless scipy
+
+# 4. (Tùy chọn) torch bản CUDA để chạy Docling/RapidOCR trên GPU. Ví dụ đã dùng (GTX 1650, CUDA 12.6):
+uv pip install --python .venv/Scripts/python.exe "torch==2.14.1+cu126" "torchvision==0.29.1+cu126" --index-url https://download.pytorch.org/whl/cu126
 ```
+
+Lưu ý: repo chưa có `pyproject.toml`/`requirements.txt`/lock file, nên các phiên bản trên chỉ là cấu hình đã chạy được, không được ghim. `pytest` không được cài sẵn; các file `test_eval_utils.py` và `test_ir_postprocessor.py` chạy trực tiếp bằng `python`. Trên Windows, đọc ảnh bằng OpenCV phải qua `read_image_bgr` (`cv2.imread` thất bại im lặng với đường dẫn không-ASCII).
 
 ---
 
@@ -107,6 +125,7 @@ Kiểm thử bộ chuẩn hóa thứ tự đọc đa cột, cây phân cấp và
 ```powershell
 .venv\Scripts\python scripts/ir_postprocessor.py
 ```
+> **Cảnh báo:** chạy trực tiếp file này sẽ **ghi đè** các file JSON/Markdown trong `outputs/` (đường dẫn gốc `C:/Workspace/DocuMind` được ghi cứng trong `main()`).
 
 ### 4.2. Chạy Benchmark Docling trên OmniDocBench
 Thực hiện parse 4 mẫu văn bản đại diện (học thuật 2 cột, slide PPT, bảng merged 41x12, báo cáo tài chính):
@@ -115,27 +134,45 @@ Thực hiện parse 4 mẫu văn bản đại diện (học thuật 2 cột, sli
 ```
 *Kết quả xuất tại:* `outputs/01_docling_benchmark/`
 
-### 4.3. Chạy Thuật Toán Gom Cụm Sơ Đồ Khối (`group_whole_diagrams`)
-Kiểm thử gom cụm sơ đồ trên slide cards, sơ đồ mạng, infographic và PDF vector lưu đồ hệ thống:
+### 4.3. Chạy Demo Gom Sơ Đồ Khối (`group_whole_diagrams`)
+Demo trên slide cards, sơ đồ mạng, infographic và PDF vector lưu đồ tổng hợp. Mặc định giữ box `picture` thô của Docling; thêm `--group-diagrams` để chạy gom v1:
 ```powershell
 .venv\Scripts\python scripts/test_diagram_grouping.py
+.venv\Scripts\python scripts/test_diagram_grouping.py --group-diagrams
 ```
-*Kết quả xuất tại:* `outputs/02_diagram_grouping/`
+*Kết quả xuất tại:* `outputs/02_diagram_grouping/` (**ghi đè** các file cũ trong thư mục này).
 
-### 4.4. Chạy Stress Test Quy Mô Lớn (1.651 Trang OmniDocBench)
-Chạy kiểm thử 2 tầng trên CPU:
-- **Tầng 1:** 1.651 trang toàn dataset đo Kendall's Tau trên 5 kiểu bố cục và 10 nguồn tài liệu.
-- **Tầng 2:** 20 trang khó nhất chạy trọn vẹn End-to-End Docling + Diagram Grouping + IR Postprocessor và tự động phát hiện 6 lỗi dị thường kèm ảnh so sánh.
+### 4.4. Chạy Stress Test 2 Tầng (OmniDocBench)
+- **Tầng 1:** đo Kendall's Tau trên **1.602 trang hợp lệ** (trên 1.651 trang; 49 trang có dưới 2 phần tử GT bị loại), đầu vào là **bbox ground truth**, nên kết quả (0,9369) là **trần oracle** của thuật toán sắp xếp, không phải điểm end-to-end.
+- **Tầng 2:** 20 trang khó nhất chạy trọn vẹn Docling -> box picture thô (hoặc gom v1 với `--group-diagrams`) -> cắt ảnh từng diagram vào `crops/` -> IR Postprocessor; tự động phát hiện 6 lỗi dị thường kèm ảnh so sánh.
 ```powershell
 .venv\Scripts\python scripts/run_dataset_stress_test.py
+.venv\Scripts\python scripts/run_dataset_stress_test.py --group-diagrams
 ```
-*Kết quả xuất tại:* `outputs/03_dataset_stress_test/`
+*Kết quả xuất tại:* `outputs/03_dataset_stress_test/` (**ghi đè** các file cũ trong thư mục này).
+
+### 4.5. Kiểm Thử Đơn Vị
+```powershell
+.venv\Scripts\python scripts/test_eval_utils.py        # 35 test
+.venv\Scripts\python scripts/test_ir_postprocessor.py   # 6 test
+```
+
+### 4.6. Đánh Giá Định Lượng
+```powershell
+# Thứ tự đọc end-to-end, 300 trang phân tầng, torch trên GPU (~20-23 phút, có cache)
+.venv\Scripts\python scripts/run_e2e_reading_order_eval.py --stratified 300 --seed 42 --ocr-backend torch --device cuda
+# Cắt hình trên 613 trang (dùng cache OCR tắt)
+.venv\Scripts\python scripts/run_diagram_crop_eval_v3.py
+.venv\Scripts\python scripts/run_diagram_crop_eval_v4.py
+```
+*Kết quả xuất tại:* `outputs/04_e2e_eval/` và `outputs/05_diagram_crop_eval/`. Chi tiết và số liệu đã kiểm chứng: `docs/04`.
 
 ---
 
 ## 5. Tài Liệu Kỹ Thuật Tham Khảo (Documentation)
 
-- [Topic3_Document_Understanding_8_Weeks.md](file:///C:/Workspace/DocuMind/Topic3_Document_Understanding_8_Weeks.md): Bản đặc tả đề cương 8 tuần R&D.
-- [docs/01_architecture_and_ir_schema.md](file:///C:/Workspace/DocuMind/docs/01_architecture_and_ir_schema.md): Đặc tả cấu trúc Unified JSON IR Schema & thuật toán hậu xử lý.
-- [docs/02_diagram_grouping_algorithm.md](file:///C:/Workspace/DocuMind/docs/02_diagram_grouping_algorithm.md): Chi tiết toán học và thuật toán gom cụm sơ đồ khối.
-- [docs/03_benchmark_and_stress_test.md](file:///C:/Workspace/DocuMind/docs/03_benchmark_and_stress_test.md): Báo cáo thực nghiệm toàn diện 1.651 trang và hướng khắc phục các edge cases.
+- [Topic3_Document_Understanding_8_Weeks.md](Topic3_Document_Understanding_8_Weeks.md): Bản đặc tả đề cương 8 tuần R&D.
+- [docs/01_architecture_and_ir_schema.md](docs/01_architecture_and_ir_schema.md): Cấu trúc Unified JSON IR thực tế & thuật toán hậu xử lý.
+- [docs/02_diagram_grouping_algorithm.md](docs/02_diagram_grouping_algorithm.md): Thuật toán gom sơ đồ khối, hạn chế và kết quả đo định lượng.
+- [docs/03_benchmark_and_stress_test.md](docs/03_benchmark_and_stress_test.md): Thực nghiệm OmniDocBench (Tầng 1 oracle, Tầng 2 end-to-end) và các edge case.
+- [docs/04_session_handoff_and_next_steps.md](docs/04_session_handoff_and_next_steps.md): Bàn giao session: số liệu đã kiểm chứng, lỗi đã biết, việc cần làm tiếp.
