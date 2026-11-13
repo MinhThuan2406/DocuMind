@@ -164,14 +164,14 @@ Nine fixtures are in `parsers/fixtures/pptx/`, all written by `build_fixtures.py
 | `alternate_content.pptx` | one AlternateContent with a Choice (`Requires` "a14") and a Fallback, plus one ordinary shape |
 | `duplicate_ids.pptx` | two shapes with id 5, a connector referencing id 5 (ambiguous), and an anchor shape |
 
-`manifest.json` is written by `build_fixtures.py` from the values the builder passes to the XML. It is not parsed back from the saved files. The decks are made with python-pptx plus lxml patches. They have not been opened in PowerPoint or LibreOffice.
+`manifest.json` is written by `build_fixtures.py` from the values the builder passes to the XML. It is not parsed back from the saved files. The decks are made with python-pptx plus lxml patches. They were checked against Microsoft PowerPoint 16.0 as described in section 8; they have not been opened in LibreOffice.
 
 Optional local check: the Apache POI slideshow test data at https://github.com/apache/poi/tree/trunk/test-data/slideshow can be run through the extractor on a local copy. Those files are not stored in this repository. License: Apache POI project, license not re-verified here.
 
 ## 7. Known limits and assumptions
 
-- The flip-then-rotate order and the connector start and end convention come from the `geometry` package. Neither is confirmed against PowerPoint (geometry/README.md, section 12).
-- The AlternateContent branch rule is covered only by synthetic tests. The Apache POI files with AlternateContent keep it outside the shape tree, so they do not exercise the rule.
+- The flip-then-rotate order and the connector start and end convention come from the `geometry` package (geometry/README.md, section 12). Section 8 lists what PowerPoint 16.0 confirmed; no other PowerPoint version or product was consulted.
+- The AlternateContent branch rule is covered only by synthetic tests. The Apache POI files with AlternateContent keep it outside the shape tree, so they do not exercise the rule. PowerPoint 16.0 opened the synthetic fixture and kept the Choice branch, and a deck saved by PowerPoint held no AlternateContent in its shape tree.
 - `Requires` is not evaluated. The first Choice that holds a recognised shape is taken, whatever its `Requires` value.
 - A Choice that holds only a nested AlternateContent is not descended into; the Fallback is used instead.
 - A `p:contentPart` in the shape tree is skipped; it is not an element.
@@ -186,3 +186,24 @@ Optional local check: the Apache POI slideshow test data at https://github.com/a
 - Rows without cells keep their count in `num_rows` and produce no cell entries.
 - A shape without `p:txBody` has `text` None in the model and "" in the IR.
 - Verified with python-pptx 1.0.2 and lxml 6.1.3 only.
+
+## 8. Verification against PowerPoint
+
+A read-only check was run on 2026-11-13 with Microsoft PowerPoint 16.0 through COM, on copies of the fixtures and on one deck authored in PowerPoint. No repository file was modified.
+
+Confirmed:
+
+- Flip-then-rotate order: with right-triangle shapes rendered by PowerPoint, the extractor's corners reproduce the rendered shape (IoU 0.99) for `Rot 45 Flip H` and `Rot 390 Flip V`; the opposite order gives 0.14 and 0.21. The other four shapes of `flip_rot.pptx` match at IoU 0.98 to 0.99 but do not tell the two orders apart.
+- Connector end: the end arrowhead drawn by PowerPoint lies at the extractor's `end` point for four connectors (flipV, flipH, rot 90, and one connected at both ends). The arrowhead centroid sits about 7 pt back from the tip, so this is a distance check, not an exact position.
+- Connections: targets and sites agree for every connected side in the fixtures, including dangling and ambiguous references, and in the PowerPoint-authored deck (9 sides). The COM site number equals `site_index` plus 1.
+- Geometry: centre, width, height and rotation agree to 0.0001 pt for the shapes of `nested_groups.pptx` and `shapes_and_connectors.pptx` and for the PowerPoint-authored deck (nested groups, a non-uniform group scale, rotated and flipped shapes), apart from the notation difference below.
+- Slide order, hidden flag, table size and origin-cell widths, title placeholder inheritance and the AlternateContent branch choice agree.
+
+Differences and caveats:
+
+- `rotation_deg` differs from the PowerPoint rotation by 180 degrees for vertically flipped shapes, because a vertical flip is expressed as `mirrored` plus a half turn (section 3). Positions are identical.
+- PowerPoint renumbers a duplicate shape id in memory (id 5 became 3). The extractor keeps the raw id from the XML. Whether PowerPoint writes the new id back was not tested.
+- COM does not expose connector begin and end points, so those positions were derived from the shape frame and flips.
+- The geometry of a group that contains other groups cannot be read separately through COM; its children were compared instead.
+- Silent repair on open cannot be excluded through COM; no dialog was shown.
+- Only PowerPoint 16.0 was used. Table cell positions and PowerPoint-saved AlternateContent were not compared.
