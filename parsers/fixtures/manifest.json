@@ -1,0 +1,1453 @@
+{
+  "format_version": 1,
+  "generator": "parsers/fixtures/build_fixtures.py",
+  "conventions": [
+    "slide: 1-based presentation index (order in p:sldIdLst). part: zip part name under ppt/slides/.",
+    "marker: a text string that occurs on that slide. On slide_order and hidden_slide it is the only text box. On single-slide fixtures it is one chosen shape text.",
+    "tag: sp, cxnSp, grpSp or graphicFrame, which is the local name of the XML element.",
+    "xfrm: raw attributes of a:xfrm (p:xfrm for graphicFrame) as strings exactly as written. null means the attribute or child is absent. xfrm itself null means no xfrm element.",
+    "parent: cNvPr id of the enclosing p:grpSp, or null at top level.",
+    "stCxn and endCxn: raw a:stCxn and a:endCxn values (id, idx) as strings, or null.",
+    "alternate_content: null, or {branch, requires} when the shape sits inside mc:AlternateContent.",
+    "tables: cell rows and cols are 0-based. gridSpan, rowSpan, hMerge and vMerge are raw strings or null."
+  ],
+  "fixtures": {
+    "slide_order.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide3.xml",
+          "marker": "SLIDE-C",
+          "show": null
+        },
+        {
+          "presentation_index": 2,
+          "part": "slide1.xml",
+          "marker": "SLIDE-A",
+          "show": null
+        },
+        {
+          "presentation_index": 3,
+          "part": "slide2.xml",
+          "marker": "SLIDE-B",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide3.xml",
+          "id": 2,
+          "name": "Marker C",
+          "tag": "sp",
+          "text": "SLIDE-C",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 2,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Marker A",
+          "tag": "sp",
+          "text": "SLIDE-A",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 3,
+          "part": "slide2.xml",
+          "id": 2,
+          "name": "Marker B",
+          "tag": "sp",
+          "text": "SLIDE-B",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "hidden_slide.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "VISIBLE-SLIDE",
+          "show": null
+        },
+        {
+          "presentation_index": 2,
+          "part": "slide2.xml",
+          "marker": "HIDDEN-SLIDE",
+          "show": "0"
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Marker",
+          "tag": "sp",
+          "text": "VISIBLE-SLIDE",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 2,
+          "part": "slide2.xml",
+          "id": 2,
+          "name": "Marker",
+          "tag": "sp",
+          "text": "HIDDEN-SLIDE",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "shapes_and_connectors.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "BOX-A",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Box A",
+          "tag": "sp",
+          "text": "BOX-A",
+          "xfrm": {
+            "off": {
+              "x": "600000",
+              "y": "900000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 3,
+          "name": "Box B",
+          "tag": "sp",
+          "text": "BOX-B",
+          "xfrm": {
+            "off": {
+              "x": "4000000",
+              "y": "900000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 4,
+          "name": "Box C",
+          "tag": "sp",
+          "text": "BOX-C",
+          "xfrm": {
+            "off": {
+              "x": "600000",
+              "y": "3900000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 5,
+          "name": "Box D",
+          "tag": "sp",
+          "text": "BOX-D",
+          "xfrm": {
+            "off": {
+              "x": "4000000",
+              "y": "3900000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 6,
+          "name": "Connector 1 Both Ends",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "2600000",
+              "y": "1400000"
+            },
+            "ext": {
+              "cx": "1400000",
+              "cy": "0"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": {
+            "id": "2",
+            "idx": "3"
+          },
+          "endCxn": {
+            "id": "3",
+            "idx": "1"
+          },
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 7,
+          "name": "Connector 2 Start Only",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "1600000",
+              "y": "4900000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "400000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": {
+            "id": "4",
+            "idx": "2"
+          },
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 8,
+          "name": "Connector 3 Loose",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "6200000",
+              "y": "2200000"
+            },
+            "ext": {
+              "cx": "1800000",
+              "cy": "800000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 9,
+          "name": "Connector 4 Dangling",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "2600000",
+              "y": "2400000"
+            },
+            "ext": {
+              "cx": "1000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": {
+            "id": "999",
+            "idx": "0"
+          },
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 10,
+          "name": "Connector 5 FlipV",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "8200000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "1200000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": "1"
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 11,
+          "name": "Connector 6 FlipH",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "9800000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "1200000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": "1",
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 12,
+          "name": "Connector 7 Rot90",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "8200000",
+              "y": "4300000"
+            },
+            "ext": {
+              "cx": "1500000",
+              "cy": "400000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": "5400000",
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "nested_groups.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "INNER-1",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Outer Group",
+          "tag": "grpSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "6000000",
+              "cy": "3000000"
+            },
+            "chOff": {
+              "x": "500000",
+              "y": "1000000"
+            },
+            "chExt": {
+              "cx": "3000000",
+              "cy": "3000000"
+            },
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 3,
+          "name": "Inner Group",
+          "tag": "grpSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "1500000",
+              "y": "1500000"
+            },
+            "ext": {
+              "cx": "1000000",
+              "cy": "1000000"
+            },
+            "chOff": {
+              "x": "1500000",
+              "y": "1500000"
+            },
+            "chExt": {
+              "cx": "1000000",
+              "cy": "1000000"
+            },
+            "rot": "2700000",
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": 2,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 4,
+          "name": "Inner Box 1",
+          "tag": "sp",
+          "text": "INNER-1",
+          "xfrm": {
+            "off": {
+              "x": "1600000",
+              "y": "1600000"
+            },
+            "ext": {
+              "cx": "400000",
+              "cy": "300000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": 3,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 5,
+          "name": "Inner Box 2",
+          "tag": "sp",
+          "text": "INNER-2",
+          "xfrm": {
+            "off": {
+              "x": "2000000",
+              "y": "2100000"
+            },
+            "ext": {
+              "cx": "300000",
+              "cy": "300000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": 3,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 6,
+          "name": "Outer Child Box",
+          "tag": "sp",
+          "text": "OUTER-CHILD",
+          "xfrm": {
+            "off": {
+              "x": "2800000",
+              "y": "1450000"
+            },
+            "ext": {
+              "cx": "600000",
+              "cy": "600000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": 2,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 7,
+          "name": "Outer Connector",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "2000000",
+              "y": "1750000"
+            },
+            "ext": {
+              "cx": "800000",
+              "cy": "0"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": 2,
+          "stCxn": {
+            "id": "4",
+            "idx": "3"
+          },
+          "endCxn": {
+            "id": "6",
+            "idx": "1"
+          },
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 8,
+          "name": "Top Box",
+          "tag": "sp",
+          "text": "TOP-BOX",
+          "xfrm": {
+            "off": {
+              "x": "8000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "2000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 9,
+          "name": "Top Connector",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "4500000",
+              "y": "1500000"
+            },
+            "ext": {
+              "cx": "3500000",
+              "cy": "600000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": "1",
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": {
+            "id": "8",
+            "idx": "1"
+          },
+          "endCxn": {
+            "id": "5",
+            "idx": "3"
+          },
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "flip_rot.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "FLIP-V",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Flip V Only",
+          "tag": "sp",
+          "text": "FLIP-V",
+          "xfrm": {
+            "off": {
+              "x": "800000",
+              "y": "800000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": "1"
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 3,
+          "name": "Flip H Only",
+          "tag": "sp",
+          "text": "FLIP-H",
+          "xfrm": {
+            "off": {
+              "x": "3800000",
+              "y": "800000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": "1",
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 4,
+          "name": "Flip Both",
+          "tag": "sp",
+          "text": "FLIP-HV",
+          "xfrm": {
+            "off": {
+              "x": "6800000",
+              "y": "800000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": "1",
+            "flipV": "1"
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 5,
+          "name": "Rot 90",
+          "tag": "sp",
+          "text": "ROT-90",
+          "xfrm": {
+            "off": {
+              "x": "800000",
+              "y": "3600000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": "5400000",
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 6,
+          "name": "Rot 45 Flip H",
+          "tag": "sp",
+          "text": "ROT-45-FLIP-H",
+          "xfrm": {
+            "off": {
+              "x": "3800000",
+              "y": "3600000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": "2700000",
+            "flipH": "1",
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 7,
+          "name": "Rot 390 Flip V",
+          "tag": "sp",
+          "text": "ROT-390-FLIP-V",
+          "xfrm": {
+            "off": {
+              "x": "6800000",
+              "y": "3600000"
+            },
+            "ext": {
+              "cx": "2400000",
+              "cy": "1200000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": "23400000",
+            "flipH": null,
+            "flipV": "1"
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "tables_merged.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "R0C0",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Merged Table",
+          "tag": "graphicFrame",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "10000000",
+              "cy": "4000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Merged Table",
+          "cells": [
+            {
+              "row": 0,
+              "col": 0,
+              "text": "R0C0",
+              "gridSpan": "2",
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 0,
+              "col": 1,
+              "text": "R0C1",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": "1",
+              "vMerge": null
+            },
+            {
+              "row": 0,
+              "col": 2,
+              "text": "R0C2",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 0,
+              "col": 3,
+              "text": "R0C3",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 1,
+              "col": 0,
+              "text": "R1C0",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 1,
+              "col": 1,
+              "text": "R1C1",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 1,
+              "col": 2,
+              "text": "R1C2",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 1,
+              "col": 3,
+              "text": "R1C3",
+              "gridSpan": null,
+              "rowSpan": "2",
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 2,
+              "col": 0,
+              "text": "R2C0",
+              "gridSpan": "2",
+              "rowSpan": "2",
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 2,
+              "col": 1,
+              "text": "R2C1",
+              "gridSpan": null,
+              "rowSpan": "2",
+              "hMerge": "1",
+              "vMerge": null
+            },
+            {
+              "row": 2,
+              "col": 2,
+              "text": "R2C2",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 2,
+              "col": 3,
+              "text": "R2C3",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": "1"
+            },
+            {
+              "row": 3,
+              "col": 0,
+              "text": "R3C0",
+              "gridSpan": "2",
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": "1"
+            },
+            {
+              "row": 3,
+              "col": 1,
+              "text": "R3C1",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": "1",
+              "vMerge": "1"
+            },
+            {
+              "row": 3,
+              "col": 2,
+              "text": "R3C2",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            },
+            {
+              "row": 3,
+              "col": 3,
+              "text": "R3C3",
+              "gridSpan": null,
+              "rowSpan": null,
+              "hMerge": null,
+              "vMerge": null
+            }
+          ]
+        }
+      ]
+    },
+    "placeholders_inherit.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "Inherited Title",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Title 1",
+          "tag": "sp",
+          "text": "Inherited Title",
+          "xfrm": null,
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null,
+          "placeholder": {
+            "type": "title",
+            "idx": null
+          },
+          "inherited_geometry": {
+            "left": 457200,
+            "top": 274638,
+            "width": 8229600,
+            "height": 1143000
+          }
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 3,
+          "name": "Content Placeholder 2",
+          "tag": "sp",
+          "text": "Explicit body text",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "2000000"
+            },
+            "ext": {
+              "cx": "9000000",
+              "cy": "3500000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null,
+          "placeholder": {
+            "type": null,
+            "idx": "1"
+          }
+        }
+      ],
+      "tables": []
+    },
+    "alternate_content.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "ORDINARY-BOX",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Choice Shape",
+          "tag": "sp",
+          "text": "CHOICE-SHAPE",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "3000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": {
+            "branch": "Choice",
+            "requires": "a14"
+          }
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 3,
+          "name": "Fallback Shape",
+          "tag": "sp",
+          "text": "FALLBACK-SHAPE",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "3000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": {
+            "branch": "Fallback",
+            "requires": null
+          }
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 4,
+          "name": "Ordinary Box",
+          "tag": "sp",
+          "text": "ORDINARY-BOX",
+          "xfrm": {
+            "off": {
+              "x": "6000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "3000000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        }
+      ],
+      "tables": []
+    },
+    "duplicate_ids.pptx": {
+      "slide_width": 12192000,
+      "slide_height": 6858000,
+      "slides": [
+        {
+          "presentation_index": 1,
+          "part": "slide1.xml",
+          "marker": "ANCHOR",
+          "show": null
+        }
+      ],
+      "shapes": [
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 2,
+          "name": "Anchor Box",
+          "tag": "sp",
+          "text": "ANCHOR",
+          "xfrm": {
+            "off": {
+              "x": "1000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "2500000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 5,
+          "name": "Dup Box One",
+          "tag": "sp",
+          "text": "DUP-ONE",
+          "xfrm": {
+            "off": {
+              "x": "5000000",
+              "y": "1000000"
+            },
+            "ext": {
+              "cx": "2500000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null,
+          "ambiguous_id": true
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 5,
+          "name": "Dup Box Two",
+          "tag": "sp",
+          "text": "DUP-TWO",
+          "xfrm": {
+            "off": {
+              "x": "5000000",
+              "y": "3000000"
+            },
+            "ext": {
+              "cx": "2500000",
+              "cy": "1000000"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": null,
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": null,
+          "endCxn": null,
+          "alternate_content": null,
+          "ambiguous_id": true
+        },
+        {
+          "slide": 1,
+          "part": "slide1.xml",
+          "id": 6,
+          "name": "Dup Connector",
+          "tag": "cxnSp",
+          "text": null,
+          "xfrm": {
+            "off": {
+              "x": "3500000",
+              "y": "1500000"
+            },
+            "ext": {
+              "cx": "1500000",
+              "cy": "0"
+            },
+            "chOff": null,
+            "chExt": null,
+            "rot": null,
+            "flipH": "1",
+            "flipV": null
+          },
+          "parent": null,
+          "stCxn": {
+            "id": "5",
+            "idx": "1"
+          },
+          "endCxn": {
+            "id": "2",
+            "idx": "3"
+          },
+          "alternate_content": null,
+          "ambiguous_id": true
+        }
+      ],
+      "tables": []
+    }
+  }
+}
