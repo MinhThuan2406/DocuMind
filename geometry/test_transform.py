@@ -1,589 +1,490 @@
-"""
-Tests for geometry/transform.py (OOXML EMU -> point normalization and group transforms).
-
-Run:  .venv\\Scripts\\python geometry\\test_transform.py
-(plain asserts, no pytest needed; functions are also pytest-compatible)
-
-All expected values are hand-computed in points (y down). They prove internal
-consistency with the documented conventions, NOT agreement with real PowerPoint output.
-"""
-
 import dataclasses
 import math
-import sys
+import unittest
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from geometry.transform import (  # noqa: E402
-    FULL_TURN_UNITS,
+from geometry import (
+    EMU_PER_POINT,
     GroupNode,
     ResolvedConnector,
     ResolvedShape,
     ShapeNode,
     Xfrm,
-    compose_groups,
     emu_to_pt,
-    frame_matrix,
-    pt_to_emu,
     resolve_connector,
     resolve_shape,
     resolve_tree,
 )
 
-E = lambda pt: int(round(pt * 12700))  # noqa: E731  (points -> EMU fixture helper)
-
-A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
-P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
-
-
-# ----------------------------------------------------------------------
-# Units
-# ----------------------------------------------------------------------
-def test_emu_point_conversion():
-    assert emu_to_pt(12700) == 1.0
-    assert emu_to_pt(914400) == 72.0
-    assert emu_to_pt(9525) == 0.75
-    assert emu_to_pt("12700") == 1.0
-    assert math.copysign(1.0, emu_to_pt(-0.0)) > 0  # no -0.0 output
-    assert pt_to_emu(72) == 914400
-    assert pt_to_emu(0.75) == 9525
+DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+UNITS_PER_DEGREE = 60_000
+FULL_TURN_UNITS = 360 * UNITS_PER_DEGREE
 
 
-# ----------------------------------------------------------------------
-# Single shape and rotation
-# ----------------------------------------------------------------------
-def test_plain_shape_bbox():
-    r = resolve_shape(Xfrm(off_x=E(10), off_y=E(20), ext_cx=E(100), ext_cy=E(50)))
-    assert r.bbox == (10.0, 20.0, 110.0, 70.0), r
-    assert r.rotation_deg == 0.0
-    assert r.flip_h is False and r.flip_v is False
-    assert r.width == 100.0 and r.height == 50.0
-    assert r.center == (60.0, 45.0)
-    assert r.corners == ((10.0, 20.0), (110.0, 20.0), (110.0, 70.0), (10.0, 70.0))
+def emu(points):
+    return round(points * EMU_PER_POINT)
 
 
-def test_rotation_90_180_270():
-    # off(100,100) ext(100,50): centre (150,125), half-size (50,25)
-    r90 = resolve_shape(Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(50), rot=5400000))
-    assert r90.bbox == (125.0, 75.0, 175.0, 175.0), r90
-    assert r90.corners == ((175.0, 75.0), (175.0, 175.0), (125.0, 175.0), (125.0, 75.0)), r90
-    assert r90.center == (150.0, 125.0)
-    assert r90.rotation_deg == 90.0
-    assert r90.width == 100.0 and r90.height == 50.0
-    assert r90.flip_h is False
-
-    r180 = resolve_shape(Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(50), rot=10800000))
-    assert r180.bbox == (100.0, 100.0, 200.0, 150.0), r180  # same box as unrotated
-    assert r180.corners == ((200.0, 150.0), (100.0, 150.0), (100.0, 100.0), (200.0, 100.0)), r180
-    assert r180.rotation_deg == 180.0
-    assert r180.width == 100.0 and r180.height == 50.0
-
-    r270 = resolve_shape(Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(50), rot=16200000))
-    assert r270.bbox == (125.0, 75.0, 175.0, 175.0), r270
-    assert r270.corners == ((125.0, 175.0), (125.0, 75.0), (175.0, 75.0), (175.0, 175.0)), r270
-    assert r270.rotation_deg == 270.0
-
-
-# ----------------------------------------------------------------------
-# Groups: offset, scale, nesting, rotation, flips
-# ----------------------------------------------------------------------
-def test_group_offset_and_scale():
-    group = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(200), ext_cy=E(100),
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=E(50), off_y=E(50), ext_cx=E(50), ext_cy=E(50))
-    assert resolve_shape(group).bbox == (100.0, 100.0, 300.0, 200.0)
-    assert resolve_shape(child, [group]).bbox == (200.0, 150.0, 300.0, 200.0)
-
-
-def test_nested_groups_and_resolve_tree():
-    outer = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(200), ext_cy=E(200),
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(100))
-    inner = Xfrm(off_x=E(10), off_y=E(10), ext_cx=E(40), ext_cy=E(40),
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(20), ch_ext_cy=E(20))
-    shape = Xfrm(off_x=E(5), off_y=E(5), ext_cx=E(10), ext_cy=E(10))
-
-    assert resolve_shape(shape, [outer, inner]).bbox == (140.0, 140.0, 180.0, 180.0)
-
-    tree = [GroupNode(outer, name="outer", children=(
-        GroupNode(inner, name="inner", children=(ShapeNode(shape, name="s"),)),
-    ))]
-    out = resolve_tree(tree)
-    assert [type(node).__name__ for node, _ in out] == ["GroupNode", "GroupNode", "ShapeNode"]
-    assert [node.name for node, _ in out[:2]] == ["outer", "inner"]
-    # group boxes are emitted (pre-order) in the parent space of each group
-    assert [res.bbox for _, res in out] == [
-        (100.0, 100.0, 300.0, 300.0),
-        (120.0, 120.0, 200.0, 200.0),
-        (140.0, 140.0, 180.0, 180.0),
-    ]
-    assert out[2][1] == resolve_shape(shape, [outer, inner])
-
-
-def test_group_rotation():
-    group = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(100), rot=5400000,
-                 ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(50), ext_cy=E(50))
-    r = resolve_shape(child, [group])
-    assert r.bbox == (150.0, 100.0, 200.0, 150.0), r
-    assert r.rotation_deg == 90.0
-
-
-def test_group_flip_h():
-    group = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(100), flip_h=True,
-                 ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(30), ext_cy=E(30))
-    r = resolve_shape(child, [group])
-    assert r.bbox == (70.0, 0.0, 100.0, 30.0), r
-    assert r.flip_h is True
-    assert r.rotation_deg == 0.0
-
-
-def test_flip_then_rotate_order():
-    # Flip inside the box first, then rotate about the centre (ASSUMPTION, see geometry/README.md).
-    # The opposite order (rotate, then flip) would give bbox (0,0,10,20) instead.
-    group = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(100), rot=5400000, flip_h=True,
-                 ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(20), ext_cy=E(10))
-    r = resolve_shape(child, [group])
-    assert r.bbox == (90.0, 80.0, 100.0, 100.0), r
-    assert r.flip_h is True
-    assert r.rotation_deg == 90.0
-
-
-# ----------------------------------------------------------------------
-# Connectors
-# ----------------------------------------------------------------------
-def test_connector_endpoints():
-    def conn(off_x=0, off_y=0, **kw):
-        return resolve_connector(Xfrm(off_x=off_x, off_y=off_y, **kw))
-
-    plain = conn(ext_cx=E(100), ext_cy=E(50))
-    assert (plain.start, plain.end) == ((0.0, 0.0), (100.0, 50.0))
-    assert isinstance(plain, ResolvedConnector)
-    assert isinstance(plain.box, ResolvedShape)
-
-    flip_h = conn(ext_cx=E(100), ext_cy=E(50), flip_h=True)
-    assert (flip_h.start, flip_h.end) == ((100.0, 0.0), (0.0, 50.0))
-
-    flip_v = conn(ext_cx=E(100), ext_cy=E(50), flip_v=True)
-    assert (flip_v.start, flip_v.end) == ((0.0, 50.0), (100.0, 0.0))
-
-    both = conn(ext_cx=E(100), ext_cy=E(50), flip_h=True, flip_v=True)
-    assert (both.start, both.end) == ((100.0, 50.0), (0.0, 0.0))
-
-    horizontal = conn(off_x=E(10), off_y=E(20), ext_cx=E(100), ext_cy=0)
-    assert (horizontal.start, horizontal.end) == ((10.0, 20.0), (110.0, 20.0))
-
-    vertical = conn(off_x=E(10), off_y=E(20), ext_cx=0, ext_cy=E(80))
-    assert (vertical.start, vertical.end) == ((10.0, 20.0), (10.0, 100.0))
-
-
-def test_connector_in_rotated_group():
-    group = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(100), rot=5400000,
-                 ch_ext_cx=E(100), ch_ext_cy=E(100))
-    conn_xfrm = Xfrm(off_x=0, off_y=0, ext_cx=E(20), ext_cy=E(10))
-    c = resolve_connector(conn_xfrm, [group])
-    # Hand-computed: group rot 90 about (50,50) maps (0,0)->(100,0) and (20,10)->(90,20).
-    assert c.start == (100.0, 0.0), c
-    assert c.end == (90.0, 20.0), c
-    # Consistent with the box corners: start = TL, end = BR.
-    assert c.start == c.box.corners[0]
-    assert c.end == c.box.corners[2]
-    # independent path: the box must equal resolve_shape computed separately
-    assert c.box == resolve_shape(conn_xfrm, [group])
-    assert all(math.isfinite(v) for v in (*c.start, *c.end))
-
-
-# ----------------------------------------------------------------------
-# Equivalences: equal inputs must give equal outputs
-# ----------------------------------------------------------------------
-def test_equivalences():
-    # rot is taken mod 21600000
-    assert Xfrm(rot=0) == Xfrm(rot=21600000) == Xfrm(rot=-21600000)
-    assert Xfrm(rot=-5400000) == Xfrm(rot=16200000) == Xfrm(rot=37800000)
-    # Ticket said 27000000 == 16200000, but 27000000 % 21600000 = 5400000 (90 deg), so pin that.
-    assert Xfrm(rot=27000000).rot == 5400000
-    box = dict(off_x=E(100), off_y=E(50), ext_cx=E(80), ext_cy=E(40))
-    assert resolve_shape(Xfrm(rot=0, **box)) == resolve_shape(Xfrm(rot=21600000, **box))
-    assert resolve_shape(Xfrm(rot=-5400000, **box)) == resolve_shape(Xfrm(rot=16200000, **box))
-
-    # flipH+flipV at rot 0 is the same as rot 180 with no flips
-    both = resolve_shape(Xfrm(flip_h=True, flip_v=True, **box))
-    half_turn = resolve_shape(Xfrm(rot=10800000, **box))
-    assert both == half_turn
-    assert both.flip_h is False and both.rotation_deg == 180.0
-
-    # flipV alone is flip_h + rotation 180 in canonical form
-    fv = resolve_shape(Xfrm(flip_v=True, **box))
-    assert fv.flip_h is True and fv.flip_v is False and fv.rotation_deg == 180.0
-
-    # EMU given as numeric strings equals EMU given as ints
-    as_str = Xfrm(off_x=str(E(100)), off_y=str(E(50)), ext_cx="1016000", ext_cy="508000")
-    as_int = Xfrm(off_x=E(100), off_y=E(50), ext_cx=E(80), ext_cy=E(40))
-    assert as_str == as_int
-    assert resolve_shape(as_str) == resolve_shape(as_int)
-
-    # flip flags: bool, OOXML text, None
-    assert Xfrm(flip_h="1") == Xfrm(flip_h=True) == Xfrm(flip_h="true") == Xfrm(flip_h=True)
-    assert Xfrm(flip_v="0") == Xfrm(flip_v=None) == Xfrm(flip_v="") == Xfrm(flip_v=False)
-
-    # identity group (chOff = off, chExt = ext, no rot, no flips) equals no group
-    shape = Xfrm(off_x=E(110), off_y=E(110), ext_cx=E(20), ext_cy=E(20))
-    identity_group = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(50), ext_cy=E(50),
-                          ch_off_x=E(100), ch_off_y=E(100), ch_ext_cx=E(50), ch_ext_cy=E(50))
-    assert resolve_shape(shape, [identity_group]) == resolve_shape(shape)
-
-
-def test_input_normalization_rules():
-    try:
-        Xfrm(off_x=1.5)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("non-integral float EMU must raise ValueError")
-    try:
-        Xfrm(flip_h="yes")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("unknown flip text must raise ValueError")
-    assert Xfrm(off_x=12700.0).off_x == 12700
-
-
-# ----------------------------------------------------------------------
-# Degenerate cases
-# ----------------------------------------------------------------------
-def test_degenerate_groups():
-    child = Xfrm(off_x=E(10), off_y=E(10), ext_cx=E(20), ext_cy=E(20))
-
-    # ext 0 and chExt 0 on the group: chExt 0 means scale 1, so this is a pure translation
-    zero_group = Xfrm(off_x=E(100), off_y=E(100))
-    assert resolve_shape(child, [zero_group]).bbox == (110.0, 110.0, 130.0, 130.0)
-
-    # slide-root grpSpPr (all zeros) is the identity
-    root = Xfrm()
-    assert resolve_shape(child, [root]) == resolve_shape(child)
-    assert resolve_shape(child, [root]).bbox == (10.0, 10.0, 30.0, 30.0)
-
-    # ext 0 with chExt != 0: scale 0, children collapse to a point; no exception
-    collapsed = Xfrm(off_x=E(100), off_y=E(100), ext_cx=0, ext_cy=0,
-                     ch_ext_cx=E(100), ch_ext_cy=E(100))
-    c = resolve_shape(child, [collapsed])
-    assert c.bbox == (100.0, 100.0, 100.0, 100.0), c
-    assert c.width == 0.0 and c.height == 0.0
-    assert len(resolve_tree([GroupNode(collapsed, children=(ShapeNode(child),))])) == 2
-
-
-# ----------------------------------------------------------------------
-# XML parsing
-# ----------------------------------------------------------------------
-def test_from_element_xml():
-    el = ET.fromstring(
-        f'<a:xfrm xmlns:a="{A_NS}" rot="5400000" flipH="1">'
-        '<a:off x="1270000" y="2540000"/><a:ext cx="12700000" cy="6350000"/></a:xfrm>'
+def xfrm(off=(0, 0), ext=(0, 0), rot=0, flip_h=False, flip_v=False, child_off=(0, 0), child_ext=(0, 0)):
+    return Xfrm(
+        off_x=emu(off[0]),
+        off_y=emu(off[1]),
+        ext_cx=emu(ext[0]),
+        ext_cy=emu(ext[1]),
+        rot=round(rot * UNITS_PER_DEGREE),
+        flip_h=flip_h,
+        flip_v=flip_v,
+        ch_off_x=emu(child_off[0]),
+        ch_off_y=emu(child_off[1]),
+        ch_ext_cx=emu(child_ext[0]),
+        ch_ext_cy=emu(child_ext[1]),
     )
-    assert Xfrm.from_element(el) == Xfrm(off_x=1270000, off_y=2540000, ext_cx=12700000,
-                                         ext_cy=6350000, rot=5400000, flip_h=True)
 
-    # same element under a different namespace prefix
-    el_x = ET.fromstring(
-        f'<x:xfrm xmlns:x="{A_NS}" rot="5400000" flipH="1">'
-        '<x:off x="1270000" y="2540000"/><x:ext cx="12700000" cy="6350000"/></x:xfrm>'
+
+def rotated(x, y, degrees):
+    angle = math.radians(degrees)
+    return x * math.cos(angle) - y * math.sin(angle), x * math.sin(angle) + y * math.cos(angle)
+
+
+def through_frame(box, x, y):
+    width, height = box.ext_cx / EMU_PER_POINT, box.ext_cy / EMU_PER_POINT
+    dx = (x - width / 2) * (-1 if box.flip_h else 1)
+    dy = (y - height / 2) * (-1 if box.flip_v else 1)
+    rx, ry = rotated(dx, dy, box.rot / UNITS_PER_DEGREE)
+    return box.off_x / EMU_PER_POINT + width / 2 + rx, box.off_y / EMU_PER_POINT + height / 2 + ry
+
+
+def through_group(group, x, y):
+    scale_x = group.ext_cx / group.ch_ext_cx if group.ch_ext_cx else 1.0
+    scale_y = group.ext_cy / group.ch_ext_cy if group.ch_ext_cy else 1.0
+    return through_frame(
+        group,
+        (x - group.ch_off_x / EMU_PER_POINT) * scale_x,
+        (y - group.ch_off_y / EMU_PER_POINT) * scale_y,
     )
-    assert Xfrm.from_element(el_x) == Xfrm.from_element(el)
-
-    # p:xfrm with no children and no attributes gives the zero default
-    assert Xfrm.from_element(ET.fromstring(f'<p:xfrm xmlns:p="{P_NS}"/>')) == Xfrm()
-
-    # grpSpPr-style group: xfrm with chOff/chExt inside, plus a sibling fill element to skip
-    grp = ET.fromstring(
-        f'<p:grpSpPr xmlns:p="{P_NS}" xmlns:a="{A_NS}"><a:xfrm>'
-        '<a:off x="1270000" y="1270000"/><a:ext cx="2540000" cy="1270000"/>'
-        '<a:chOff x="0" y="0"/><a:chExt cx="1270000" cy="1270000"/></a:xfrm>'
-        '<a:noFill/></p:grpSpPr>'
-    )
-    assert Xfrm.from_element(grp) == Xfrm(off_x=1270000, off_y=1270000, ext_cx=2540000,
-                                          ext_cy=1270000, ch_off_x=0, ch_off_y=0,
-                                          ch_ext_cx=1270000, ch_ext_cy=1270000)
 
 
-# ----------------------------------------------------------------------
-# Convention pinning (NOT ground truth)
-# ----------------------------------------------------------------------
-def test_convention_group_rot_and_child_rot():
-    """ASSUMPTION-PINNING test, not ground truth: pins this module's composition convention.
-
-    A group rotated 60 degrees (uniform scale 1) with a child rotated 30 degrees gives a
-    child rotation of 90 degrees. This checks that rotations compose additively here, which
-    is the stated convention and not a PowerPoint observation.
-    """
-    group = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(100), rot=3600000,
-                 ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(50), ext_cy=E(50), rot=1800000)
-    assert abs(resolve_shape(child, [group]).rotation_deg - 90.0) < 1e-6
+def matrix_corners(shape, ancestors=()):
+    width, height = shape.ext_cx / EMU_PER_POINT, shape.ext_cy / EMU_PER_POINT
+    corners = []
+    for x, y in ((0, 0), (width, 0), (width, height), (0, height)):
+        point = through_frame(shape, x, y)
+        for group in reversed(ancestors):
+            point = through_group(group, *point)
+        corners.append(point)
+    return corners
 
 
-# ----------------------------------------------------------------------
-# Non-uniform group scale: box-by-box rule (geometry/README.md, section 4.3).
-# Hand-computed fixtures. CONVENTION pinning, NOT verified against PowerPoint.
-# ----------------------------------------------------------------------
-def _close(a: float, b: float, tol: float = 1e-5) -> bool:
-    return abs(a - b) < tol
+def float_values(value):
+    if isinstance(value, float):
+        yield value
+    elif dataclasses.is_dataclass(value):
+        for field in dataclasses.fields(value):
+            yield from float_values(getattr(value, field.name))
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from float_values(item)
 
 
-def _points_close(pts_a, pts_b, tol: float = 1e-6) -> bool:
-    return all(_close(p[0], q[0], tol) and _close(p[1], q[1], tol) for p, q in zip(pts_a, pts_b))
+class GeometryTestCase(unittest.TestCase):
+    def assertPointsAlmostEqual(self, actual, expected, places=5):
+        self.assertEqual(len(actual), len(expected))
+        for (actual_x, actual_y), (expected_x, expected_y) in zip(actual, expected):
+            self.assertAlmostEqual(actual_x, expected_x, places=places)
+            self.assertAlmostEqual(actual_y, expected_y, places=places)
+
+    def assertNoNegativeZero(self, value):
+        for number in float_values(value):
+            self.assertFalse(number == 0.0 and math.copysign(1.0, number) < 0, value)
 
 
-def _pure_corners(xfrm, ancestors=()):
-    """Pure-matrix reference from the public API: compose_groups(ancestors) @ frame_matrix(xfrm).
-
-    Applied to the raw-ext local corners (0,0), (w,0), (w,h), (0,h).
-    """
-    m = compose_groups(ancestors) @ frame_matrix(xfrm)
-    w, h = xfrm.ext_cx / 12700, xfrm.ext_cy / 12700
-    return [m.apply(x, y) for x, y in ((0.0, 0.0), (w, 0.0), (w, h), (0.0, h))]
+class UnitsTest(unittest.TestCase):
+    def test_emu_to_pt_uses_12700_emu_per_point(self):
+        self.assertEqual(EMU_PER_POINT, 12_700)
+        self.assertEqual(emu_to_pt(12_700), 1.0)
+        self.assertEqual(emu_to_pt(914_400), 72.0)
+        self.assertEqual(emu_to_pt(9_525), 0.75)
 
 
-def _group_2x1():
-    """Group with sx = 2, sy = 1 (ext 200x100 over chExt 100x100), no offset, no rotation."""
-    return Xfrm(off_x=0, off_y=0, ext_cx=E(200), ext_cy=E(100),
-                ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(100))
+class XfrmTest(unittest.TestCase):
+    def test_rotation_is_taken_modulo_a_full_turn(self):
+        self.assertEqual(Xfrm(rot=0), Xfrm(rot=FULL_TURN_UNITS))
+        self.assertEqual(Xfrm(rot=0), Xfrm(rot=-FULL_TURN_UNITS))
+        self.assertEqual(Xfrm(rot=-5_400_000), Xfrm(rot=16_200_000))
+        self.assertEqual(Xfrm(rot=16_200_000), Xfrm(rot=37_800_000))
+        self.assertEqual(Xfrm(rot=27_000_000).rot, 5_400_000)
+
+    def test_numeric_strings_equal_integers(self):
+        from_text = Xfrm(off_x="1270000", off_y="635000", ext_cx="1016000", ext_cy="508000")
+        from_numbers = Xfrm(off_x=1_270_000, off_y=635_000, ext_cx=1_016_000, ext_cy=508_000)
+        self.assertEqual(from_text, from_numbers)
+        self.assertEqual(resolve_shape(from_text), resolve_shape(from_numbers))
+        self.assertEqual(Xfrm(off_x=12_700.0).off_x, 12_700)
+
+    def test_flip_flags_accept_bool_text_and_none(self):
+        for flag in (True, "1", "true"):
+            self.assertIs(Xfrm(flip_h=flag).flip_h, True)
+        for flag in (False, "0", "false", "", None):
+            self.assertIs(Xfrm(flip_v=flag).flip_v, False)
+
+    def test_invalid_values_are_rejected(self):
+        with self.assertRaises(ValueError):
+            Xfrm(off_x=1.5)
+        with self.assertRaises(ValueError):
+            Xfrm(off_x="abc")
+        with self.assertRaises(ValueError):
+            Xfrm(flip_h="yes")
+        with self.assertRaises(TypeError):
+            Xfrm(off_x=True)
+
+    def test_from_element_reads_an_xfrm_element(self):
+        element = ET.fromstring(
+            f'<a:xfrm xmlns:a="{DRAWING_NS}" rot="5400000" flipH="1">'
+            '<a:off x="1270000" y="2540000"/><a:ext cx="12700000" cy="6350000"/></a:xfrm>'
+        )
+        expected = Xfrm(
+            off_x=1_270_000, off_y=2_540_000, ext_cx=12_700_000, ext_cy=6_350_000,
+            rot=5_400_000, flip_h=True,
+        )
+        self.assertEqual(Xfrm.from_element(element), expected)
+
+    def test_from_element_ignores_the_namespace_prefix(self):
+        element = ET.fromstring(
+            f'<x:xfrm xmlns:x="{DRAWING_NS}" rot="5400000" flipH="1">'
+            '<x:off x="1270000" y="2540000"/><x:ext cx="12700000" cy="6350000"/></x:xfrm>'
+        )
+        self.assertEqual(Xfrm.from_element(element).off_y, 2_540_000)
+        self.assertTrue(Xfrm.from_element(element).flip_h)
+
+    def test_from_element_reads_a_group_property_element(self):
+        element = ET.fromstring(
+            f'<p:grpSpPr xmlns:p="{PRESENTATION_NS}" xmlns:a="{DRAWING_NS}"><a:xfrm>'
+            '<a:off x="1270000" y="1270000"/><a:ext cx="2540000" cy="1270000"/>'
+            '<a:chOff x="0" y="0"/><a:chExt cx="1270000" cy="1270000"/></a:xfrm>'
+            '<a:noFill/></p:grpSpPr>'
+        )
+        expected = Xfrm(
+            off_x=1_270_000, off_y=1_270_000, ext_cx=2_540_000, ext_cy=1_270_000,
+            ch_ext_cx=1_270_000, ch_ext_cy=1_270_000,
+        )
+        self.assertEqual(Xfrm.from_element(element), expected)
+
+    def test_from_element_defaults_when_nothing_is_set(self):
+        self.assertEqual(Xfrm.from_element(ET.fromstring(f'<p:xfrm xmlns:p="{PRESENTATION_NS}"/>')), Xfrm())
 
 
-def test_nonuniform_group_rotated_child_not_sheared():
-    """T1 (convention, hand-computed). Group sx = 2, sy = 1; child ext(100,50), rot 30 deg.
+class SingleShapeTest(GeometryTestCase):
+    def test_unrotated_shape(self):
+        shape = resolve_shape(xfrm(off=(10, 20), ext=(100, 50)))
+        self.assertEqual(shape.bbox, (10.0, 20.0, 110.0, 70.0))
+        self.assertEqual(shape.corners, ((10.0, 20.0), (110.0, 20.0), (110.0, 70.0), (10.0, 70.0)))
+        self.assertEqual(shape.center, (60.0, 45.0))
+        self.assertEqual((shape.width, shape.height), (100.0, 50.0))
+        self.assertEqual(shape.rotation_deg, 0.0)
+        self.assertFalse(shape.mirrored)
 
-    Child centre (50,25) -> box-local (100,25). Effective size (200,50), no band swap.
-    Half-extents: 200/2*cos30 + 50/2*sin30 = 99.102540 and 200/2*sin30 + 50/2*cos30 = 71.650635.
-    The pure-matrix product shears the child, so its corners must differ.
-    """
-    group = _group_2x1()
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=1800000)
-    r = resolve_shape(child, [group])
-    assert r.center == (100.0, 25.0), r
-    assert r.width == 200.0 and r.height == 50.0, r
-    assert r.rotation_deg == 30.0 and r.flip_h is False, r
-    expected_bbox = (0.89746, -46.650635, 199.10254, 96.650635)
-    assert all(_close(a, b) for a, b in zip(r.bbox, expected_bbox)), r.bbox
-    assert not _points_close(r.corners, _pure_corners(child, [group]), tol=1e-3), r.corners
+    def test_right_angle_rotations(self):
+        cases = {
+            90: ((125.0, 75.0, 175.0, 175.0), ((175.0, 75.0), (175.0, 175.0), (125.0, 175.0), (125.0, 75.0))),
+            180: ((100.0, 100.0, 200.0, 150.0), ((200.0, 150.0), (100.0, 150.0), (100.0, 100.0), (200.0, 100.0))),
+            270: ((125.0, 75.0, 175.0, 175.0), ((125.0, 175.0), (125.0, 75.0), (175.0, 75.0), (175.0, 175.0))),
+        }
+        for degrees, (bbox, corners) in cases.items():
+            with self.subTest(degrees=degrees):
+                shape = resolve_shape(xfrm(off=(100, 100), ext=(100, 50), rot=degrees))
+                self.assertEqual(shape.bbox, bbox)
+                self.assertEqual(shape.corners, corners)
+                self.assertEqual(shape.center, (150.0, 125.0))
+                self.assertEqual((shape.width, shape.height), (100.0, 50.0))
+                self.assertEqual(shape.rotation_deg, float(degrees))
 
+    def test_equivalent_rotations_resolve_identically(self):
+        box = {"off": (100, 50), "ext": (80, 40)}
+        self.assertEqual(resolve_shape(xfrm(rot=0, **box)), resolve_shape(xfrm(rot=360, **box)))
+        self.assertEqual(resolve_shape(xfrm(rot=-90, **box)), resolve_shape(xfrm(rot=270, **box)))
 
-def test_nonuniform_group_right_angle_child_band_swap():
-    """T2 (convention, hand-computed). Same group; child ext(100,50), rot 90 deg (band).
+    def test_both_flips_equal_a_half_turn(self):
+        box = {"off": (100, 50), "ext": (80, 40)}
+        flipped = resolve_shape(xfrm(flip_h=True, flip_v=True, **box))
+        self.assertEqual(flipped, resolve_shape(xfrm(rot=180, **box)))
+        self.assertFalse(flipped.mirrored)
+        self.assertEqual(flipped.rotation_deg, 180.0)
 
-    Centre (50,25) -> (100,25). Band swap: w' = 100 * sy = 100, h' = 50 * sx = 100.
-    Property (c): equals the pure-matrix result for right-angle children.
-    """
-    group = _group_2x1()
-    child = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=5400000)
-    r = resolve_shape(child, [group])
-    assert r.center == (100.0, 25.0), r
-    assert r.width == 100.0 and r.height == 100.0, r
-    assert r.rotation_deg == 90.0, r
-    assert r.bbox == (50.0, -25.0, 150.0, 75.0), r
-    assert _points_close(r.corners, _pure_corners(child, [group])), r.corners
-
-
-def test_band_boundaries_nonuniform_group():
-    """T3 (convention). Same group, child ext(100,50). The band is decided by the whole-degree
-    value of the normalized rot: [45,135) and [225,315) swap width and height. Checked via the
-    effective local size (width, height)."""
-    group = _group_2x1()
-    cases = [
-        (2_699_999, (200.0, 50.0)),    # 44 deg + 59999 units: no swap
-        (2_700_000, (100.0, 100.0)),   # 45 deg: swap
-        (8_099_999, (100.0, 100.0)),   # 134 deg + 59999 units: swap
-        (8_100_000, (200.0, 50.0)),    # 135 deg: no swap
-        (13_499_999, (200.0, 50.0)),   # 224 deg + 59999 units: no swap
-        (13_500_000, (100.0, 100.0)),  # 225 deg: swap
-        (18_899_999, (100.0, 100.0)),  # 314 deg + 59999 units: swap
-        (18_900_000, (200.0, 50.0)),   # 315 deg: no swap
-    ]
-    for rot, (exp_w, exp_h) in cases:
-        child = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=rot)
-        r = resolve_shape(child, [group])
-        assert (r.width, r.height) == (exp_w, exp_h), (rot, r)
+    def test_vertical_flip_is_a_mirror_with_a_half_turn(self):
+        shape = resolve_shape(xfrm(off=(100, 50), ext=(80, 40), flip_v=True))
+        self.assertTrue(shape.mirrored)
+        self.assertEqual(shape.rotation_deg, 180.0)
 
 
-def test_nested_nonuniform_groups_hand_computed():
-    """T4 (convention, hand-computed). Outer: sx = 2, sy = 1. Inner (child of outer): ext(100,50),
-    rot 30, chExt(100,50) -> effective centre (100,25), size (200,50), rot 30. Inner child scale
-    is (2, 1). Shape ext(50,25) at off 0: centre (25,12.5) -> inner box-local (50,12.5), size
-    (100,25). Slide centre = (100,25) + R30 * (-50,-12.5) = (62.948730, -10.825318)."""
-    outer = _group_2x1()
-    inner = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=1800000,
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(50))
-    shape = Xfrm(off_x=0, off_y=0, ext_cx=E(50), ext_cy=E(25))
-    r = resolve_shape(shape, [outer, inner])
-    assert _close(r.center[0], 62.948730) and _close(r.center[1], -10.825318), r
-    assert r.width == 100.0 and r.height == 25.0, r
-    assert r.rotation_deg == 30.0, r
+class GroupTest(GeometryTestCase):
+    def test_offset_and_child_scale(self):
+        group = xfrm(off=(100, 100), ext=(200, 100), child_ext=(100, 100))
+        child = xfrm(off=(50, 50), ext=(50, 50))
+        self.assertEqual(resolve_shape(group).bbox, (100.0, 100.0, 300.0, 200.0))
+        self.assertEqual(resolve_shape(child, [group]).bbox, (200.0, 150.0, 300.0, 200.0))
+
+    def test_group_matching_its_child_space_changes_nothing(self):
+        shape = xfrm(off=(110, 110), ext=(20, 20))
+        identity = xfrm(off=(100, 100), ext=(50, 50), child_off=(100, 100), child_ext=(50, 50))
+        self.assertEqual(resolve_shape(shape, [identity]), resolve_shape(shape))
+
+    def test_group_without_child_extent_only_translates(self):
+        group = xfrm(off=(100, 100))
+        child = xfrm(off=(10, 10), ext=(20, 20))
+        self.assertEqual(resolve_shape(child, [group]).bbox, (110.0, 110.0, 130.0, 130.0))
+
+    def test_all_zero_root_group_is_the_identity(self):
+        child = xfrm(off=(10, 10), ext=(20, 20))
+        self.assertEqual(resolve_shape(child, [Xfrm()]), resolve_shape(child))
+        self.assertEqual(resolve_shape(child, [Xfrm()]).bbox, (10.0, 10.0, 30.0, 30.0))
+
+    def test_group_with_zero_extent_collapses_children_to_a_point(self):
+        group = xfrm(off=(100, 100), child_ext=(100, 100))
+        child = xfrm(off=(10, 10), ext=(20, 20))
+        collapsed = resolve_shape(child, [group])
+        self.assertEqual(collapsed.bbox, (100.0, 100.0, 100.0, 100.0))
+        self.assertEqual((collapsed.width, collapsed.height), (0.0, 0.0))
+        self.assertEqual(len(resolve_tree([GroupNode(group, children=(ShapeNode(child),))])), 2)
+
+    def test_nested_groups(self):
+        outer = xfrm(off=(100, 100), ext=(200, 200), child_ext=(100, 100))
+        inner = xfrm(off=(10, 10), ext=(40, 40), child_ext=(20, 20))
+        shape = xfrm(off=(5, 5), ext=(10, 10))
+        self.assertEqual(resolve_shape(shape, [outer, inner]).bbox, (140.0, 140.0, 180.0, 180.0))
+
+    def test_tree_emits_each_group_before_its_children(self):
+        outer = xfrm(off=(100, 100), ext=(200, 200), child_ext=(100, 100))
+        inner = xfrm(off=(10, 10), ext=(40, 40), child_ext=(20, 20))
+        shape = xfrm(off=(5, 5), ext=(10, 10))
+        tree = [GroupNode(outer, name="outer", children=(
+            GroupNode(inner, name="inner", children=(ShapeNode(shape, name="shape"),)),
+        ))]
+        resolved = resolve_tree(tree)
+        self.assertEqual([node.name for node, _ in resolved], ["outer", "inner", "shape"])
+        self.assertEqual(
+            [result.bbox for _, result in resolved],
+            [(100.0, 100.0, 300.0, 300.0), (120.0, 120.0, 200.0, 200.0), (140.0, 140.0, 180.0, 180.0)],
+        )
+        self.assertEqual(resolved[2][1], resolve_shape(shape, [outer, inner]))
+
+    def test_group_rotation_turns_its_children(self):
+        group = xfrm(off=(100, 100), ext=(100, 100), rot=90, child_ext=(100, 100))
+        child = resolve_shape(xfrm(ext=(50, 50)), [group])
+        self.assertEqual(child.bbox, (150.0, 100.0, 200.0, 150.0))
+        self.assertEqual(child.rotation_deg, 90.0)
+
+    def test_group_mirror_flips_its_children(self):
+        group = xfrm(ext=(100, 100), flip_h=True, child_ext=(100, 100))
+        child = resolve_shape(xfrm(ext=(30, 30)), [group])
+        self.assertEqual(child.bbox, (70.0, 0.0, 100.0, 30.0))
+        self.assertTrue(child.mirrored)
+        self.assertEqual(child.rotation_deg, 0.0)
+
+    def test_flip_is_applied_before_rotation(self):
+        group = xfrm(ext=(100, 100), rot=90, flip_h=True, child_ext=(100, 100))
+        child = resolve_shape(xfrm(ext=(20, 10)), [group])
+        self.assertEqual(child.bbox, (90.0, 80.0, 100.0, 100.0))
+        self.assertTrue(child.mirrored)
+        self.assertEqual(child.rotation_deg, 90.0)
+
+    def test_rotations_add_across_a_uniform_group(self):
+        group = xfrm(off=(100, 100), ext=(100, 100), rot=60, child_ext=(100, 100))
+        child = resolve_shape(xfrm(ext=(50, 50), rot=30), [group])
+        self.assertAlmostEqual(child.rotation_deg, 90.0, places=6)
 
 
-def test_uniform_scale_rotated_child_equals_pure_matrix():
-    """T5 (property a). Uniform scale must equal the phase-1 pure-matrix product, including a
-    rotated middle group, a child with a non-zero chOff, and a flipped, rotated leaf."""
-    group = Xfrm(off_x=0, off_y=0, ext_cx=E(200), ext_cy=E(200),
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(100))
-    child = Xfrm(off_x=E(10), off_y=E(10), ext_cx=E(40), ext_cy=E(20), rot=1800000)
-    r = resolve_shape(child, [group])
-    assert _points_close(r.corners, _pure_corners(child, [group]), tol=1e-6), r.corners
+class ConnectorTest(GeometryTestCase):
+    def test_endpoints_follow_the_flips(self):
+        cases = [
+            (False, False, (0.0, 0.0), (100.0, 50.0)),
+            (True, False, (100.0, 0.0), (0.0, 50.0)),
+            (False, True, (0.0, 50.0), (100.0, 0.0)),
+            (True, True, (100.0, 50.0), (0.0, 0.0)),
+        ]
+        for flip_h, flip_v, start, end in cases:
+            with self.subTest(flip_h=flip_h, flip_v=flip_v):
+                connector = resolve_connector(xfrm(ext=(100, 50), flip_h=flip_h, flip_v=flip_v))
+                self.assertIsInstance(connector, ResolvedConnector)
+                self.assertIsInstance(connector.box, ResolvedShape)
+                self.assertEqual((connector.start, connector.end), (start, end))
 
-    outer = Xfrm(off_x=E(20), off_y=E(30), ext_cx=E(200), ext_cy=E(200),
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(100))
-    middle = Xfrm(off_x=E(5), off_y=E(8), ext_cx=E(40), ext_cy=E(40), rot=1800000,
-                  ch_off_x=E(5), ch_off_y=E(5), ch_ext_cx=E(20), ch_ext_cy=E(20))
-    leaf = Xfrm(off_x=E(3), off_y=E(4), ext_cx=E(10), ext_cy=E(6), rot=1200000, flip_v=True)
-    deep = resolve_shape(leaf, [outer, middle])
-    assert _points_close(deep.corners, _pure_corners(leaf, [outer, middle]), tol=1e-6), deep.corners
+    def test_horizontal_and_vertical_connectors(self):
+        horizontal = resolve_connector(xfrm(off=(10, 20), ext=(100, 0)))
+        vertical = resolve_connector(xfrm(off=(10, 20), ext=(0, 80)))
+        self.assertEqual((horizontal.start, horizontal.end), ((10.0, 20.0), (110.0, 20.0)))
+        self.assertEqual((vertical.start, vertical.end), ((10.0, 20.0), (10.0, 100.0)))
 
+    def test_connector_in_a_rotated_group(self):
+        group = xfrm(ext=(100, 100), rot=90, child_ext=(100, 100))
+        shape = xfrm(ext=(20, 10))
+        connector = resolve_connector(shape, [group])
+        self.assertEqual(connector.start, (100.0, 0.0))
+        self.assertEqual(connector.end, (90.0, 20.0))
+        self.assertEqual(connector.box, resolve_shape(shape, [group]))
 
-def test_rot_0_and_180_children_equal_pure_matrix():
-    """T6 (property b). Non-uniform group (sx = 2, sy = 1) with a non-zero chOff and a rotated
-    group. Children with rot 0 or 180 and any flip combination equal the pure-matrix result."""
-    group = Xfrm(off_x=E(5), off_y=E(7), ext_cx=E(200), ext_cy=E(100), rot=1800000,
-                 ch_off_x=E(30), ch_off_y=E(10), ch_ext_cx=E(100), ch_ext_cy=E(100))
-    for rot in (0, 10_800_000):
+    def test_connector_in_a_non_uniform_group(self):
+        group = xfrm(ext=(200, 100), child_ext=(100, 100))
         for flip_h in (False, True):
             for flip_v in (False, True):
-                child = Xfrm(off_x=E(40), off_y=E(20), ext_cx=E(30), ext_cy=E(12),
-                             rot=rot, flip_h=flip_h, flip_v=flip_v)
-                r = resolve_shape(child, [group])
-                assert _points_close(r.corners, _pure_corners(child, [group]), tol=1e-6), \
-                    (rot, flip_h, flip_v, r.corners)
+                with self.subTest(flip_h=flip_h, flip_v=flip_v):
+                    shape = xfrm(ext=(100, 50), rot=30, flip_h=flip_h, flip_v=flip_v)
+                    connector = resolve_connector(shape, [group])
+                    self.assertEqual(connector.start, connector.box.corners[0])
+                    self.assertEqual(connector.end, connector.box.corners[2])
+                    self.assertEqual(connector.box, resolve_shape(shape, [group]))
+        unflipped = resolve_connector(xfrm(ext=(100, 50), rot=30), [group])
+        dx, dy = rotated(-100, -25, 30)
+        self.assertPointsAlmostEqual([unflipped.start], [(100 + dx, 25 + dy)])
 
 
-def test_connector_nonuniform_group_endpoints():
-    """T7. Connector ext(100,50), rot 30, in the non-uniform group, all four flip combinations.
+class NonUniformGroupTest(GeometryTestCase):
+    def setUp(self):
+        self.outer = xfrm(ext=(200, 100), child_ext=(100, 100))
 
-    start == corners[0] and end == corners[2] always. Hand-computed without flips:
-    start = (100,25) + R30 * (-100,-25) = (25.897460, -46.650635).
-    """
-    group = _group_2x1()
-    for flip_h in (False, True):
-        for flip_v in (False, True):
-            conn = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=1800000,
-                        flip_h=flip_h, flip_v=flip_v)
-            c = resolve_connector(conn, [group])
-            assert c.start == c.box.corners[0], c
-            assert c.end == c.box.corners[2], c
-            assert c.box == resolve_shape(conn, [group]), c
-            if not flip_h and not flip_v:
-                assert _close(c.start[0], 25.897460) and _close(c.start[1], -46.650635), c
+    def test_rotated_child_is_scaled_before_rotating(self):
+        child = xfrm(ext=(100, 50), rot=30)
+        shape = resolve_shape(child, [self.outer])
+        self.assertEqual(shape.center, (100.0, 25.0))
+        self.assertEqual((shape.width, shape.height), (200.0, 50.0))
+        self.assertEqual(shape.rotation_deg, 30.0)
+        self.assertFalse(shape.mirrored)
+        half_width = 100 * math.cos(math.radians(30)) + 25 * math.sin(math.radians(30))
+        half_height = 100 * math.sin(math.radians(30)) + 25 * math.cos(math.radians(30))
+        expected = (100 - half_width, 25 - half_height, 100 + half_width, 25 + half_height)
+        for actual, wanted in zip(shape.bbox, expected):
+            self.assertAlmostEqual(actual, wanted, places=5)
 
+    def test_rotated_child_differs_from_plain_matrix_composition(self):
+        child = xfrm(ext=(100, 50), rot=30)
+        shape = resolve_shape(child, [self.outer])
+        gaps = [
+            max(abs(a - b) for a, b in zip(actual, wanted))
+            for actual, wanted in zip(shape.corners, matrix_corners(child, [self.outer]))
+        ]
+        self.assertGreater(max(gaps), 1.0)
 
-def test_tree_matches_chain_nonuniform():
-    """T8. resolve_tree over the T4 tree, plus a connector at depth 2, equals resolve_shape /
-    resolve_connector with the explicit ancestor chain. Groups are emitted pre-order, and the
-    inner group's own box is the effective frame from T4."""
-    outer = _group_2x1()
-    inner = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=1800000,
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(50))
-    shape = Xfrm(off_x=0, off_y=0, ext_cx=E(50), ext_cy=E(25))
-    conn = Xfrm(off_x=E(4), off_y=E(2), ext_cx=E(20), ext_cy=E(10), rot=1800000)
-    tree = [GroupNode(outer, name="outer", children=(
-        GroupNode(inner, name="inner", children=(
-            ShapeNode(shape, name="s"),
-            ShapeNode(conn, name="c", is_connector=True),
-        )),
-    ))]
-    out = resolve_tree(tree)
-    assert [node.name for node, _ in out] == ["outer", "inner", "s", "c"]
-    assert out[0][1] == resolve_shape(outer), out[0][1]
-    assert out[1][1] == resolve_shape(inner, [outer]), out[1][1]
-    inner_box = out[1][1]
-    assert (inner_box.center, inner_box.width, inner_box.height, inner_box.rotation_deg) == \
-        ((100.0, 25.0), 200.0, 50.0, 30.0), inner_box
-    assert out[2][1] == resolve_shape(shape, [outer, inner]), out[2][1]
-    assert out[3][1] == resolve_connector(conn, [outer, inner]), out[3][1]
-    for _, res in out:
-        for v in _floats(res):
-            assert not (v == 0.0 and math.copysign(1.0, v) < 0), res
-    assert repr(resolve_tree(tree)) == repr(out)
+    def test_right_angle_child_swaps_width_and_height(self):
+        child = xfrm(ext=(100, 50), rot=90)
+        shape = resolve_shape(child, [self.outer])
+        self.assertEqual(shape.center, (100.0, 25.0))
+        self.assertEqual((shape.width, shape.height), (100.0, 100.0))
+        self.assertEqual(shape.rotation_deg, 90.0)
+        self.assertEqual(shape.bbox, (50.0, -25.0, 150.0, 75.0))
+        self.assertPointsAlmostEqual(shape.corners, matrix_corners(child, [self.outer]))
 
+    def test_axis_swap_boundaries(self):
+        cases = [
+            (2_699_999, (200.0, 50.0)),
+            (2_700_000, (100.0, 100.0)),
+            (8_099_999, (100.0, 100.0)),
+            (8_100_000, (200.0, 50.0)),
+            (13_499_999, (200.0, 50.0)),
+            (13_500_000, (100.0, 100.0)),
+            (18_899_999, (100.0, 100.0)),
+            (18_900_000, (200.0, 50.0)),
+        ]
+        for rot, size in cases:
+            with self.subTest(rot=rot):
+                child = Xfrm(ext_cx=emu(100), ext_cy=emu(50), rot=rot)
+                shape = resolve_shape(child, [self.outer])
+                self.assertEqual((shape.width, shape.height), size)
 
-def test_band_group_inside_nonuniform_group():
-    """A GROUP in a band angle (rot 90) nested in a non-uniform group (sx = 2, sy = 1).
+    def test_nested_groups_with_a_rotated_inner_group(self):
+        inner = xfrm(ext=(100, 50), rot=30, child_ext=(100, 50))
+        shape = xfrm(ext=(50, 25))
+        resolved = resolve_shape(shape, [self.outer, inner])
+        dx, dy = rotated(50 - 100, 12.5 - 25, 30)
+        self.assertPointsAlmostEqual([resolved.center], [(100 + dx, 25 + dy)])
+        self.assertEqual((resolved.width, resolved.height), (100.0, 25.0))
+        self.assertEqual(resolved.rotation_deg, 30.0)
 
-    Inner effective size: w' = 100 * sy = 100, h' = 50 * sx = 100, so its box is
-    (50,-25,150,75) at rot 90. Its child scale is (100/100, 100/50) = (1, 2).
-    Shape ext(50,25) at off 0: centre (25,12.5) -> (25,25), effective size (50,50).
-    Slide centre = (100,25) + R90 * (25-50, 25-50) = (125, 0).
-    """
-    outer = _group_2x1()
-    inner = Xfrm(off_x=0, off_y=0, ext_cx=E(100), ext_cy=E(50), rot=5400000,
-                 ch_off_x=0, ch_off_y=0, ch_ext_cx=E(100), ch_ext_cy=E(50))
-    shape = Xfrm(off_x=0, off_y=0, ext_cx=E(50), ext_cy=E(25))
-    out = resolve_tree([GroupNode(outer, children=(
-        GroupNode(inner, children=(ShapeNode(shape),)),
-    ))])
-    inner_box = out[1][1]
-    assert inner_box.bbox == (50.0, -25.0, 150.0, 75.0), inner_box
-    assert inner_box.rotation_deg == 90.0 and inner_box.width == 100.0 and inner_box.height == 100.0
-    s = out[2][1]
-    assert s.center == (125.0, 0.0), s
-    assert s.width == 50.0 and s.height == 50.0 and s.rotation_deg == 90.0, s
-    assert s == resolve_shape(shape, [outer, inner])
+    def test_rotated_group_inside_the_swap_band(self):
+        inner = xfrm(ext=(100, 50), rot=90, child_ext=(100, 50))
+        shape = xfrm(ext=(50, 25))
+        resolved = resolve_tree([GroupNode(self.outer, children=(GroupNode(inner, children=(ShapeNode(shape),)),))])
+        inner_box, shape_box = resolved[1][1], resolved[2][1]
+        self.assertEqual(inner_box.bbox, (50.0, -25.0, 150.0, 75.0))
+        self.assertEqual((inner_box.width, inner_box.height, inner_box.rotation_deg), (100.0, 100.0, 90.0))
+        self.assertEqual(shape_box.center, (125.0, 0.0))
+        self.assertEqual((shape_box.width, shape_box.height, shape_box.rotation_deg), (50.0, 50.0, 90.0))
+        self.assertEqual(shape_box, resolve_shape(shape, [self.outer, inner]))
 
+    def test_unrotated_and_half_turn_children_match_plain_matrix_composition(self):
+        group = xfrm(off=(5, 7), ext=(200, 100), rot=30, child_off=(30, 10), child_ext=(100, 100))
+        for rot in (0, 180):
+            for flip_h in (False, True):
+                for flip_v in (False, True):
+                    with self.subTest(rot=rot, flip_h=flip_h, flip_v=flip_v):
+                        child = xfrm(off=(40, 20), ext=(30, 12), rot=rot, flip_h=flip_h, flip_v=flip_v)
+                        shape = resolve_shape(child, [group])
+                        self.assertPointsAlmostEqual(shape.corners, matrix_corners(child, [group]))
 
-# ----------------------------------------------------------------------
-# Determinism and signed zero
-# ----------------------------------------------------------------------
-def _floats(obj):
-    if isinstance(obj, float):
-        yield obj
-    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        for f in dataclasses.fields(obj):
-            yield from _floats(getattr(obj, f.name))
-    elif isinstance(obj, (tuple, list)):
-        for item in obj:
-            yield from _floats(item)
+    def test_uniform_scale_matches_plain_matrix_composition(self):
+        group = xfrm(ext=(200, 200), child_ext=(100, 100))
+        child = xfrm(off=(10, 10), ext=(40, 20), rot=30)
+        self.assertPointsAlmostEqual(
+            resolve_shape(child, [group]).corners, matrix_corners(child, [group])
+        )
+        outer = xfrm(off=(20, 30), ext=(200, 200), child_ext=(100, 100))
+        middle = xfrm(off=(5, 8), ext=(40, 40), rot=30, child_off=(5, 5), child_ext=(20, 20))
+        leaf = xfrm(off=(3, 4), ext=(10, 6), rot=20, flip_v=True)
+        self.assertPointsAlmostEqual(
+            resolve_shape(leaf, [outer, middle]).corners, matrix_corners(leaf, [outer, middle])
+        )
 
+    def test_tree_matches_the_explicit_ancestor_chain(self):
+        inner = xfrm(ext=(100, 50), rot=30, child_ext=(100, 50))
+        shape = xfrm(ext=(50, 25))
+        connector = xfrm(off=(4, 2), ext=(20, 10), rot=30)
+        tree = [GroupNode(self.outer, name="outer", children=(
+            GroupNode(inner, name="inner", children=(
+                ShapeNode(shape, name="shape"),
+                ShapeNode(connector, name="connector", is_connector=True),
+            )),
+        ))]
+        resolved = resolve_tree(tree)
+        self.assertEqual([node.name for node, _ in resolved], ["outer", "inner", "shape", "connector"])
+        self.assertEqual(resolved[0][1], resolve_shape(self.outer))
+        self.assertEqual(resolved[1][1], resolve_shape(inner, [self.outer]))
+        self.assertEqual(resolved[2][1], resolve_shape(shape, [self.outer, inner]))
+        self.assertEqual(resolved[3][1], resolve_connector(connector, [self.outer, inner]))
+        inner_box = resolved[1][1]
+        self.assertEqual(
+            (inner_box.center, inner_box.width, inner_box.height, inner_box.rotation_deg),
+            ((100.0, 25.0), 200.0, 50.0, 30.0),
+        )
 
-def test_deterministic_and_no_negative_zero():
-    outer = Xfrm(off_x=E(100), off_y=E(100), ext_cx=E(100), ext_cy=E(60), rot=5400000,
-                 flip_h=True, ch_ext_cx=E(50), ch_ext_cy=E(30))
-    tree = [GroupNode(outer, children=(
-        ShapeNode(Xfrm(off_x=E(5), off_y=E(5), ext_cx=E(10), ext_cy=E(4), rot=1800000, flip_v=True)),
-        ShapeNode(Xfrm(off_x=E(1), off_y=E(2), ext_cx=E(30), ext_cy=0), is_connector=True),
-    ))]
-    first = resolve_tree(tree)
-    second = resolve_tree(tree)
-    assert first == second
-    assert repr(first) == repr(second)
-    for _, res in first:
-        for v in _floats(res):
-            assert not (v == 0.0 and math.copysign(1.0, v) < 0), res
-
-    # sweep rotations and flip combinations: no -0.0 anywhere, rotation in [0, 360)
-    for rot in range(0, FULL_TURN_UNITS, 900_000):
-        for flip_h in (False, True):
-            for flip_v in (False, True):
-                xf = Xfrm(off_x=E(10), off_y=E(10), ext_cx=E(30), ext_cy=E(20),
-                          rot=rot, flip_h=flip_h, flip_v=flip_v)
-                for res in (resolve_shape(xf), resolve_connector(xf)):
-                    for v in _floats(res):
-                        assert not (v == 0.0 and math.copysign(1.0, v) < 0), (rot, res)
-                    if isinstance(res, ResolvedShape):
-                        assert 0.0 <= res.rotation_deg < 360.0, res
-
-
-def main():
-    tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
-    failed = 0
-    for name, fn in tests:
-        try:
-            fn()
-            print(f"PASS {name}")
-        except Exception as e:  # report and continue
-            failed += 1
-            print(f"FAIL {name}: {type(e).__name__}: {e}")
-    print(f"{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(1 if failed else 0)
+    def test_tree_starting_inside_ancestors_matches_the_explicit_chain(self):
+        inner = xfrm(ext=(100, 50), rot=30, child_ext=(100, 50))
+        shape = xfrm(ext=(50, 25))
+        resolved = resolve_tree([GroupNode(inner, children=(ShapeNode(shape),))], ancestors=[self.outer])
+        self.assertEqual(resolved[0][1], resolve_shape(inner, [self.outer]))
+        self.assertEqual(resolved[1][1], resolve_shape(shape, [self.outer, inner]))
 
 
-if __name__ == "__main__":
-    main()
+class DeterminismTest(GeometryTestCase):
+    def test_repeated_resolution_is_identical(self):
+        group = xfrm(off=(100, 100), ext=(100, 60), rot=90, flip_h=True, child_ext=(50, 30))
+        tree = [GroupNode(group, children=(
+            ShapeNode(xfrm(off=(5, 5), ext=(10, 4), rot=30, flip_v=True)),
+            ShapeNode(xfrm(off=(1, 2), ext=(30, 0)), is_connector=True),
+        ))]
+        first, second = resolve_tree(tree), resolve_tree(tree)
+        self.assertEqual(first, second)
+        self.assertEqual(repr(first), repr(second))
+        self.assertNoNegativeZero(first)
+
+    def test_no_negative_zero_and_rotation_stays_in_range(self):
+        for rot in range(0, FULL_TURN_UNITS, 900_000):
+            for flip_h in (False, True):
+                for flip_v in (False, True):
+                    with self.subTest(rot=rot, flip_h=flip_h, flip_v=flip_v):
+                        box = Xfrm(
+                            off_x=emu(10), off_y=emu(10), ext_cx=emu(30), ext_cy=emu(20),
+                            rot=rot, flip_h=flip_h, flip_v=flip_v,
+                        )
+                        shape, connector = resolve_shape(box), resolve_connector(box)
+                        self.assertNoNegativeZero(shape)
+                        self.assertNoNegativeZero(connector)
+                        self.assertTrue(0.0 <= shape.rotation_deg < 360.0)
