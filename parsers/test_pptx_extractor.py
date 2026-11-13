@@ -562,6 +562,81 @@ def test_connector_one_matches_rect_connection_sites():
     assert checked == ["Box A", "Box B"], checked
 
 
+def _table_frame(shape_id, name):
+    return (
+        f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{shape_id}" name="{name}"/>'
+        "<p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>"
+        '<p:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="500000"/></p:xfrm>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl>'
+        '<a:tblPr firstRow="1"/><a:tblGrid><a:gridCol w="1000000"/><a:gridCol w="1000000"/></a:tblGrid>'
+        '<a:tr h="500000"><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody>'
+        '<a:tcPr/></a:tc><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>B</a:t></a:r></a:p></a:txBody>'
+        "<a:tcPr/></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>"
+    )
+
+
+def _chart_frame(shape_id, name):
+    return (
+        f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{shape_id}" name="{name}"/>'
+        "<p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>"
+        '<p:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="500000"/></p:xfrm>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/></a:graphic>'
+        "</p:graphicFrame>"
+    )
+
+
+def test_table_cells_match_manifest_origin_cells():
+    table = _shape(_open("tables_merged.pptx").slides[0], "Merged Table").table
+    manifest = MANIFEST["tables_merged.pptx"]["tables"][0]
+    expected = tuple(
+        (c["row"], c["col"], int(c["rowSpan"] or 1), int(c["gridSpan"] or 1), c["text"])
+        for c in manifest["cells"]
+        if not (c["hMerge"] or c["vMerge"])
+    )
+    assert tuple((c.row, c.col, c.rowspan, c.colspan, c.text) for c in table.cells) == expected
+    assert table.num_rows == max(c["row"] for c in manifest["cells"]) + 1 == 4
+    assert table.num_cols == 4 and table.first_row_header is True
+
+
+def test_table_inside_group_is_read_and_other_frames_carry_no_table():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "grouped_table.pptx"
+        _write_deck(
+            path,
+            _group(40, "Holder", _table_frame(41, "Grouped Table")),
+            _chart_frame(42, "Chart"),
+            _sp(43, "Plain"),
+        )
+        shapes = extract_presentation(path).slides[0].shapes
+    by_name = {s.name: s for s in shapes}
+    grouped = by_name["Grouped Table"].table
+    assert grouped.num_rows == 1 and grouped.num_cols == 2 and grouped.first_row_header is True
+    assert [(c.row, c.col, c.text) for c in grouped.cells] == [(0, 0, "A"), (0, 1, "B")]
+    assert by_name["Chart"].table is None and by_name["Holder"].table is None and by_name["Plain"].table is None
+
+
+def test_only_tables_merged_frame_carries_a_table_in_fixtures():
+    for fixture in MANIFEST:
+        for slide in _open(fixture).slides:
+            for shape in slide.shapes:
+                expected = fixture == "tables_merged.pptx" and shape.tag == "graphicFrame"
+                assert (shape.table is not None) == expected, (fixture, shape.name)
+
+
+def test_parent_z_order_points_at_enclosing_group():
+    shapes = _open("nested_groups.pptx").slides[0].shapes
+    assert [(s.name, s.parent_z_order) for s in shapes] == [
+        ("Outer Group", None),
+        ("Inner Group", 0),
+        ("Inner Box 1", 1),
+        ("Inner Box 2", 1),
+        ("Outer Child Box", 0),
+        ("Outer Connector", 0),
+        ("Top Box", None),
+        ("Top Connector", None),
+    ]
+
+
 def test_multi_paragraph_text_joins_with_newline():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paragraphs.pptx"

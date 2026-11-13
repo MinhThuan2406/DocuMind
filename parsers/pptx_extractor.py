@@ -40,11 +40,29 @@ class Connection:
 
 
 @dataclass(frozen=True)
+class TableCell:
+    row: int
+    col: int
+    rowspan: int
+    colspan: int
+    text: str
+
+
+@dataclass(frozen=True)
+class Table:
+    num_rows: int
+    num_cols: int
+    first_row_header: bool
+    cells: tuple[TableCell, ...]
+
+
+@dataclass(frozen=True)
 class Shape:
     id: int
     name: str
     tag: str
     parent_id: int | None
+    parent_z_order: int | None
     z_order: int
     text: str | None
     raw_xfrm: dict[str, Any] | None
@@ -53,6 +71,7 @@ class Shape:
     geometry: ResolvedShape | ResolvedConnector | None
     start_connection: Connection | None = None
     end_connection: Connection | None = None
+    table: Table | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +93,7 @@ class Presentation:
 class _Context:
     inherited: dict[etree._Element, Xfrm]
     parent_id: int | None = None
+    parent_z_order: int | None = None
     ancestors: tuple[Xfrm, ...] = ()
     alternate_content: dict[str, str | None] | None = None
 
@@ -133,7 +153,12 @@ def _walk(container: etree._Element, context: _Context, pending: list[_Pending])
             start, end = _references(child)
             pending.append(_Pending(shape, start, end))
             if shape.tag == "grpSp":
-                group = replace(context, parent_id=shape.id, ancestors=(*context.ancestors, placement))
+                group = replace(
+                    context,
+                    parent_id=shape.id,
+                    parent_z_order=shape.z_order,
+                    ancestors=(*context.ancestors, placement),
+                )
                 _walk(child, group, pending)
 
 
@@ -183,12 +208,14 @@ def _describe(element: etree._Element, z_order: int, context: _Context) -> tuple
         name=cnv_pr.get("name", ""),
         tag=tag,
         parent_id=context.parent_id,
+        parent_z_order=context.parent_z_order,
         z_order=z_order,
         text=_text(element),
         raw_xfrm=_raw_xfrm(xfrm),
         xfrm_source=source,
         alternate_content=context.alternate_content,
         geometry=geometry,
+        table=_table(element),
     )
     return shape, placement
 
@@ -249,10 +276,47 @@ def _text(element: etree._Element) -> str | None:
     body = element.find(_q("p:txBody"))
     if body is None:
         return None
+    return _paragraph_text(body)
+
+
+def _paragraph_text(body: etree._Element) -> str:
     return "\n".join(
         "".join(node.text or "" for node in paragraph.iter(_q("a:t")))
         for paragraph in body.findall(_q("a:p"))
     )
+
+
+def _table(element: etree._Element) -> Table | None:
+    tbl = element.find(f"{_q('a:graphic')}/{_q('a:graphicData')}/{_q('a:tbl')}")
+    if tbl is None:
+        return None
+    rows = tbl.findall(_q("a:tr"))
+    properties = tbl.find(_q("a:tblPr"))
+    return Table(
+        num_rows=len(rows),
+        num_cols=len(tbl.findall(f"{_q('a:tblGrid')}/{_q('a:gridCol')}")),
+        first_row_header=properties is not None and _is_true(properties.get("firstRow")),
+        cells=tuple(_table_cells(rows)),
+    )
+
+
+def _table_cells(rows: list[etree._Element]) -> Iterator[TableCell]:
+    for row_index, row in enumerate(rows):
+        for col_index, cell in enumerate(row.findall(_q("a:tc"))):
+            if _is_true(cell.get("hMerge")) or _is_true(cell.get("vMerge")):
+                continue
+            body = cell.find(_q("a:txBody"))
+            yield TableCell(
+                row=row_index,
+                col=col_index,
+                rowspan=int(cell.get("rowSpan") or 1),
+                colspan=int(cell.get("gridSpan") or 1),
+                text="" if body is None else _paragraph_text(body),
+            )
+
+
+def _is_true(value: str | None) -> bool:
+    return value in ("1", "true")
 
 
 def _references(element: etree._Element) -> tuple[_Reference | None, _Reference | None]:
