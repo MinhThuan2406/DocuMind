@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 import pptx
 from lxml import etree
-from pptx.shapes.base import BaseShape
-from pptx.shapes.group import GroupShape
+from pptx.shapes.shapetree import SlideShapeFactory
 
 from geometry import ResolvedConnector, ResolvedShape, Xfrm, emu_to_pt, resolve_connector, resolve_shape
 
@@ -84,8 +83,8 @@ class Slide:
 
 @dataclass(frozen=True)
 class Presentation:
-    width_pt: float
-    height_pt: float
+    width_pt: float | None
+    height_pt: float | None
     slides: tuple[Slide, ...]
 
 
@@ -114,10 +113,14 @@ class _Pending:
 def extract_presentation(path: str | Path) -> Presentation:
     deck = pptx.Presentation(path)
     return Presentation(
-        width_pt=emu_to_pt(deck.slide_width),
-        height_pt=emu_to_pt(deck.slide_height),
+        width_pt=_points(deck.slide_width),
+        height_pt=_points(deck.slide_height),
         slides=tuple(_extract_slide(number, slide) for number, slide in enumerate(deck.slides, start=1)),
     )
+
+
+def _points(length: int | None) -> float | None:
+    return None if length is None else emu_to_pt(length)
 
 
 def _extract_slide(number: int, slide: pptx.slide.Slide) -> Slide:
@@ -279,9 +282,10 @@ def _text(element: etree._Element) -> str | None:
     return _paragraph_text(body)
 
 
+# a:br becomes a vertical tab, as python-pptx paragraph.text does.
 def _paragraph_text(body: etree._Element) -> str:
     return "\n".join(
-        "".join(node.text or "" for node in paragraph.iter(_q("a:t")))
+        "".join("\v" if node.tag == _q("a:br") else node.text or "" for node in paragraph.iter(_q("a:t"), _q("a:br")))
         for paragraph in body.findall(_q("a:p"))
     )
 
@@ -343,20 +347,14 @@ def _is_placeholder(element: etree._Element) -> bool:
     return element.find(f"./*/{_q('p:nvPr')}/{_q('p:ph')}") is not None
 
 
+# Walks the XML: python-pptx's slide.shapes cannot iterate a p:contentPart.
 def _inherited_frames(slide: pptx.slide.Slide) -> dict[etree._Element, Xfrm]:
     frames: dict[etree._Element, Xfrm] = {}
-    for shape in _pptx_shapes(slide.shapes):
-        element = shape._element
+    for element in slide._element.iter(*_SHAPE_ELEMENTS):
         tag = etree.QName(element).localname
         if _is_placeholder(element) and _xfrm_element(element, tag) is None:
+            shape = SlideShapeFactory(element, slide.shapes)
             left, top, width, height = shape.left, shape.top, shape.width, shape.height
             if all(value is not None for value in (left, top, width, height)):
                 frames[element] = Xfrm(off_x=left, off_y=top, ext_cx=width, ext_cy=height)
     return frames
-
-
-def _pptx_shapes(shapes: Iterable[BaseShape]) -> Iterator[BaseShape]:
-    for shape in shapes:
-        yield shape
-        if isinstance(shape, GroupShape):
-            yield from _pptx_shapes(shape.shapes)

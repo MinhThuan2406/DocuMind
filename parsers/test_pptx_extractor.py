@@ -29,6 +29,7 @@ NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 TOLERANCE = 1e-5
 RECT_SITES = {0: (0.5, 0.0), 1: (0.0, 0.5), 2: (0.5, 1.0), 3: (1.0, 0.5)}
 UNKNOWN = "<p14:contentPart/>"
@@ -660,8 +661,68 @@ def test_unreadable_file_raises():
     assert raised
 
 
+def test_missing_slide_size_gives_null_page_size():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "no_size.pptx"
+        deck = pptx.Presentation()
+        deck.slides.add_slide(deck.slide_layouts[6]).shapes.add_textbox(0, 0, 100, 100)
+        deck._element.remove(deck._element.find(f"{{{NS_P}}}sldSz"))
+        deck.save(path)
+        prs = extract_presentation(path)
+    assert prs.width_pt is None and prs.height_pt is None
+    assert len(prs.slides[0].shapes) == 1
+
+
+def test_line_breaks_become_vertical_tabs_in_text_and_cells():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "line_breaks.pptx"
+        deck = pptx.Presentation()
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        paragraph = slide.shapes.add_textbox(0, 0, 3_000_000, 1_000_000).text_frame.paragraphs[0]
+        paragraph.add_run().text = "first"
+        paragraph.add_line_break()
+        paragraph.add_run().text = "second"
+        cell = slide.shapes.add_table(1, 1, 0, 2_000_000, 2_000_000, 500_000).table.cell(0, 0)
+        cell_paragraph = cell.text_frame.paragraphs[0]
+        cell_paragraph.add_run().text = "third"
+        cell_paragraph.add_line_break()
+        cell_paragraph.add_run().text = "fourth"
+        deck.save(path)
+        shapes = extract_presentation(path).slides[0].shapes
+    assert shapes[0].text == "first\vsecond"
+    assert shapes[1].table.cells[0].text == "third\vfourth"
+
+
+def test_top_level_content_part_does_not_stop_extraction():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "content_part.pptx"
+        content_part = f'<p:contentPart xmlns:r="{NS_R}" r:id="rId9"/>'
+        _write_deck(path, _sp(2, "Before"), content_part, _sp(3, "After"))
+        shapes = extract_presentation(path).slides[0].shapes
+    assert [s.name for s in shapes] == ["Before", "After"]
+
+
+def test_placeholder_inside_alternate_content_inherits_layout_geometry():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wrapped_title.pptx"
+        deck = pptx.Presentation()
+        slide = deck.slides.add_slide(deck.slide_layouts.get_by_name("Title Only"))
+        title = slide.shapes.title
+        title.text_frame.text = "Wrapped title"
+        expected = (title.left, title.top, title.width, title.height)
+        wrapper = etree.SubElement(slide.shapes._spTree, f"{{{NS_MC}}}AlternateContent")
+        choice = etree.SubElement(wrapper, f"{{{NS_MC}}}Choice", Requires="p14")
+        choice.append(title._element)
+        etree.SubElement(wrapper, f"{{{NS_MC}}}Fallback")
+        deck.save(path)
+        shape = extract_presentation(path).slides[0].shapes[0]
+    assert shape.xfrm_source == "inherited"
+    assert shape.alternate_content == {"branch": "Choice", "requires": "p14"}
+    assert _close(shape.geometry.bbox, _emu_box(*expected))
+
+
 def main():
-    tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
+    tests =[(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0
     for name, fn in tests:
         try:
