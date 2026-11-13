@@ -30,6 +30,7 @@ NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 NS_P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 TOLERANCE = 1e-5
+RECT_SITES = {0: (0.5, 0.0), 1: (0.0, 0.5), 2: (0.5, 1.0), 3: (1.0, 0.5)}
 UNKNOWN = "<p14:contentPart/>"
 _DECLARATIONS = f'xmlns:a="{NS_A}" xmlns:mc="{NS_MC}" xmlns:p="{NS_P}" xmlns:p14="{NS_P14}"'
 
@@ -322,6 +323,63 @@ def _fallback(*children):
     return f"<mc:Fallback>{''.join(children)}</mc:Fallback>"
 
 
+def _cxn(shape_id, name, start=None, end=None, off=(0, 0), ext=(1_000_000, 0)):
+    refs = "".join(
+        f'<a:{tag} id="{ref[0]}" idx="{ref[1]}"/>'
+        for tag, ref in (("stCxn", start), ("endCxn", end))
+        if ref is not None
+    )
+    return (
+        f'<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="{shape_id}" name="{name}"/>'
+        f"<p:cNvCxnSpPr>{refs}</p:cNvCxnSpPr><p:nvPr/></p:nvCxnSpPr>"
+        f'<p:spPr><a:xfrm><a:off x="{off[0]}" y="{off[1]}"/><a:ext cx="{ext[0]}" cy="{ext[1]}"/></a:xfrm>'
+        '<a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom></p:spPr></p:cxnSp>'
+    )
+
+
+def _group(group_id, name, *children):
+    return (
+        f'<p:grpSp><p:nvGrpSpPr><p:cNvPr id="{group_id}" name="{name}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+        '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="4000000" cy="4000000"/>'
+        '<a:chOff x="0" y="0"/><a:chExt cx="4000000" cy="4000000"/></a:xfrm></p:grpSpPr>'
+        + "".join(children) + "</p:grpSp>"
+    )
+
+
+def _manifest_box(fixture, name):
+    xfrm = _manifest_record(fixture, name)["xfrm"]
+    return int(xfrm["off"]["x"]), int(xfrm["off"]["y"]), int(xfrm["ext"]["cx"]), int(xfrm["ext"]["cy"])
+
+
+def _prst_by_id(fixture):
+    with zipfile.ZipFile(PPTX_DIR / fixture) as z:
+        root = ET.fromstring(z.read("ppt/slides/slide1.xml"))
+    prst = {}
+    for sp in root.iter(f"{{{NS_P}}}sp"):
+        cnv = sp.find(f"{{{NS_P}}}nvSpPr/{{{NS_P}}}cNvPr")
+        geometry = sp.find(f"{{{NS_P}}}spPr/{{{NS_A}}}prstGeom")
+        prst[int(cnv.get("id"))] = geometry.get("prst") if geometry is not None else None
+    return prst
+
+
+def _pair(connection):
+    return None if connection is None else (connection.target_id, connection.site_index)
+
+
+def _manifest_pair(raw):
+    return None if raw is None else (int(raw["id"]), int(raw["idx"]))
+
+
+def _ancestor_names(shapes, shape):
+    by_id = {s.id: s for s in shapes}
+    names = []
+    parent = shape.parent_id
+    while parent is not None:
+        names.append(by_id[parent].name)
+        parent = by_id[parent].parent_id
+    return names
+
+
 def test_only_first_recognised_choice_is_walked():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "two_choices.pptx"
@@ -381,6 +439,127 @@ def test_alternate_content_inside_group_keeps_parent_and_geometry():
     child_frame = Xfrm(off_x=100000, off_y=200000, ext_cx=300000, ext_cy=400000)
     expected = resolve_shape(child_frame, (group_frame,))
     assert _close(_values(shapes[1].geometry), _values(expected))
+
+
+def test_connection_references_match_manifest_for_every_fixture():
+    checked = 0
+    for fixture in MANIFEST:
+        for slide in _open(fixture).slides:
+            records = _expected_records(fixture, slide.number)
+            assert len(slide.shapes) == len(records), (fixture, slide.number)
+            for shape, record in zip(slide.shapes, records):
+                label = (fixture, record["name"])
+                if record["tag"] != "cxnSp":
+                    assert shape.start_connection is None and shape.end_connection is None, label
+                assert _pair(shape.start_connection) == _manifest_pair(record["stCxn"]), label
+                assert _pair(shape.end_connection) == _manifest_pair(record["endCxn"]), label
+                checked += (record["stCxn"] is not None) + (record["endCxn"] is not None)
+    assert checked == sum(
+        (r["stCxn"] is not None) + (r["endCxn"] is not None)
+        for fixture in MANIFEST for r in MANIFEST[fixture]["shapes"] if not _is_fallback(r)
+    ), checked
+
+
+def test_shapes_and_connectors_reference_statuses():
+    slide = _open("shapes_and_connectors.pptx").slides[0]
+    shapes = slide.shapes
+    connector_one = _shape(slide, "Connector 1 Both Ends")
+    assert connector_one.start_connection.status == "resolved"
+    assert connector_one.end_connection.status == "resolved"
+    assert shapes[connector_one.start_connection.target_z_order].id == 2
+    assert shapes[connector_one.start_connection.target_z_order].name == "Box A"
+    assert shapes[connector_one.end_connection.target_z_order].id == 3
+    assert shapes[connector_one.end_connection.target_z_order].name == "Box B"
+    start_only = _shape(slide, "Connector 2 Start Only")
+    assert start_only.start_connection.status == "resolved"
+    assert shapes[start_only.start_connection.target_z_order].name == "Box C"
+    assert start_only.end_connection is None
+    loose = _shape(slide, "Connector 3 Loose")
+    assert loose.start_connection is None and loose.end_connection is None
+    dangling = _shape(slide, "Connector 4 Dangling")
+    assert dangling.start_connection.status == "dangling"
+    assert dangling.start_connection.target_id == 999 and dangling.start_connection.target_z_order is None
+
+
+def test_nested_group_connectors_resolve_inside_and_across_groups():
+    slide = _open("nested_groups.pptx").slides[0]
+    shapes = slide.shapes
+    inner = _shape(slide, "Outer Connector")
+    assert inner.start_connection.status == "resolved" and inner.end_connection.status == "resolved"
+    start = shapes[inner.start_connection.target_z_order]
+    end = shapes[inner.end_connection.target_z_order]
+    assert (start.name, end.name) == ("Inner Box 1", "Outer Child Box")
+    assert _ancestor_names(shapes, start) == ["Inner Group", "Outer Group"]
+    assert end.parent_id == inner.parent_id and _ancestor_names(shapes, end) == ["Outer Group"]
+    top = _shape(slide, "Top Connector")
+    assert top.parent_id is None
+    assert shapes[top.start_connection.target_z_order].name == "Top Box"
+    deep = shapes[top.end_connection.target_z_order]
+    assert deep.name == "Inner Box 2"
+    assert _ancestor_names(shapes, deep) == ["Inner Group", "Outer Group"]
+
+
+def test_duplicate_id_target_is_ambiguous_and_unique_target_resolves():
+    slide = _open("duplicate_ids.pptx").slides[0]
+    connector = _shape(slide, "Dup Connector")
+    assert connector.start_connection.status == "ambiguous"
+    assert connector.start_connection.target_id == 5 and connector.start_connection.target_z_order is None
+    assert connector.end_connection.status == "resolved"
+    assert slide.shapes[connector.end_connection.target_z_order].name == "Anchor Box"
+
+
+def test_forward_group_and_invalid_references_resolve_without_raising():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "references.pptx"
+        _write_deck(
+            path,
+            _cxn(10, "Forward Connector", end=(11, 1)),
+            _sp(11, "Late Target"),
+            _group(30, "Target Group", _sp(31, "Grouped Box")),
+            _cxn(12, "Group Connector", start=(30, 0)),
+            _cxn(13, "Invalid Connector", start=("abc", 1)),
+        )
+        shapes = extract_presentation(path).slides[0].shapes
+    by_name = {s.name: s for s in shapes}
+    forward = by_name["Forward Connector"].end_connection
+    assert forward.status == "resolved" and shapes[forward.target_z_order].name == "Late Target"
+    group = by_name["Group Connector"].start_connection
+    assert group.status == "resolved" and shapes[group.target_z_order].tag == "grpSp"
+    invalid = by_name["Invalid Connector"].start_connection
+    assert invalid.target_id is None and invalid.target_z_order is None
+    assert invalid.site_index == 1 and invalid.status == "invalid"
+
+
+def test_flipped_connector_endpoints_follow_box_flips():
+    slide = _open("shapes_and_connectors.pptx").slides[0]
+    x, y, cx, cy = _manifest_box("shapes_and_connectors.pptx", "Connector 5 FlipV")
+    flip_v = _shape(slide, "Connector 5 FlipV").geometry
+    assert _close(flip_v.start, (x / EMU_PER_POINT, (y + cy) / EMU_PER_POINT))
+    assert _close(flip_v.end, ((x + cx) / EMU_PER_POINT, y / EMU_PER_POINT))
+    x, y, cx, cy = _manifest_box("shapes_and_connectors.pptx", "Connector 6 FlipH")
+    flip_h = _shape(slide, "Connector 6 FlipH").geometry
+    assert _close(flip_h.start, ((x + cx) / EMU_PER_POINT, y / EMU_PER_POINT))
+    assert _close(flip_h.end, (x / EMU_PER_POINT, (y + cy) / EMU_PER_POINT))
+
+
+def test_connector_one_matches_rect_connection_sites():
+    fixture = "shapes_and_connectors.pptx"
+    connector = _shape(_open(fixture).slides[0], "Connector 1 Both Ends").geometry
+    prst = _prst_by_id(fixture)
+    record = _manifest_record(fixture, "Connector 1 Both Ends")
+    checked = []
+    for point, reference in ((connector.start, record["stCxn"]), (connector.end, record["endCxn"])):
+        target_id, site = int(reference["id"]), int(reference["idx"])
+        if prst[target_id] != "rect":
+            continue
+        target = next(r for r in MANIFEST[fixture]["shapes"] if r["id"] == target_id)
+        x, y, cx, cy = _manifest_box(fixture, target["name"])
+        fx, fy = RECT_SITES[site]
+        site_x = (x + fx * cx) / EMU_PER_POINT
+        site_y = (y + fy * cy) / EMU_PER_POINT
+        assert _close(point, (site_x, site_y)), (target["name"], site)
+        checked.append(target["name"])
+    assert checked == ["Box A", "Box B"], checked
 
 
 def test_multi_paragraph_text_joins_with_newline():

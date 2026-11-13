@@ -13,6 +13,7 @@ from pptx.shapes.group import GroupShape
 from geometry import ResolvedConnector, ResolvedShape, Xfrm, emu_to_pt, resolve_connector, resolve_shape
 
 XfrmSource = Literal["explicit", "inherited", "missing"]
+ConnectionStatus = Literal["resolved", "dangling", "ambiguous", "invalid"]
 
 _NAMESPACES = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -31,6 +32,14 @@ _SHAPE_ELEMENTS = frozenset(_q(f"p:{tag}") for tag in ("sp", "cxnSp", "grpSp", "
 
 
 @dataclass(frozen=True)
+class Connection:
+    target_id: int | None
+    site_index: int | None
+    target_z_order: int | None
+    status: ConnectionStatus
+
+
+@dataclass(frozen=True)
 class Shape:
     id: int
     name: str
@@ -42,6 +51,8 @@ class Shape:
     xfrm_source: XfrmSource
     alternate_content: dict[str, str | None] | None
     geometry: ResolvedShape | ResolvedConnector | None
+    start_connection: Connection | None = None
+    end_connection: Connection | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,19 @@ class _Context:
     alternate_content: dict[str, str | None] | None = None
 
 
+@dataclass(frozen=True)
+class _Reference:
+    target_id: int | None
+    site_index: int | None
+
+
+@dataclass(frozen=True)
+class _Pending:
+    shape: Shape
+    start: _Reference | None
+    end: _Reference | None
+
+
 def extract_presentation(path: str | Path) -> Presentation:
     deck = pptx.Presentation(path)
     return Presentation(
@@ -77,30 +101,40 @@ def extract_presentation(path: str | Path) -> Presentation:
 
 
 def _extract_slide(number: int, slide: pptx.slide.Slide) -> Slide:
-    shapes: list[Shape] = []
+    pending: list[_Pending] = []
     sp_tree = slide._element.find(f"{_q('p:cSld')}/{_q('p:spTree')}")
-    _walk(sp_tree, _Context(inherited=_inherited_frames(slide)), shapes)
+    _walk(sp_tree, _Context(inherited=_inherited_frames(slide)), pending)
+    owners = _owners(pending)
+    shapes = tuple(
+        replace(
+            entry.shape,
+            start_connection=_connect(entry.start, owners),
+            end_connection=_connect(entry.end, owners),
+        )
+        for entry in pending
+    )
     return Slide(
         number=number,
         slide_id=slide.slide_id,
         hidden=slide._element.get("show") in _HIDDEN_VALUES,
-        shapes=tuple(shapes),
+        shapes=shapes,
     )
 
 
-def _walk(container: etree._Element, context: _Context, shapes: list[Shape]) -> None:
+def _walk(container: etree._Element, context: _Context, pending: list[_Pending]) -> None:
     for child in container:
         if child.tag == _q("mc:AlternateContent"):
             selected = _select_branch(child)
             if selected is not None:
                 branch, alternate_content = selected
-                _walk(branch, replace(context, alternate_content=alternate_content), shapes)
+                _walk(branch, replace(context, alternate_content=alternate_content), pending)
         elif child.tag in _SHAPE_ELEMENTS:
-            shape, placement = _describe(child, len(shapes), context)
-            shapes.append(shape)
+            shape, placement = _describe(child, len(pending), context)
+            start, end = _references(child)
+            pending.append(_Pending(shape, start, end))
             if shape.tag == "grpSp":
                 group = replace(context, parent_id=shape.id, ancestors=(*context.ancestors, placement))
-                _walk(child, group, shapes)
+                _walk(child, group, pending)
 
 
 # One branch per AlternateContent: the first Choice, else Fallback, that directly holds a recognised shape.
@@ -117,6 +151,25 @@ def _select_branch(alternate: etree._Element) -> tuple[etree._Element, dict[str,
         if any(child.tag in _SHAPE_ELEMENTS for child in branch):
             return branch, metadata
     return None
+
+
+def _owners(pending: list[_Pending]) -> dict[int, list[int]]:
+    owners: dict[int, list[int]] = {}
+    for entry in pending:
+        owners.setdefault(entry.shape.id, []).append(entry.shape.z_order)
+    return owners
+
+
+def _connect(reference: _Reference | None, owners: dict[int, list[int]]) -> Connection | None:
+    if reference is None:
+        return None
+    if reference.target_id is None or reference.site_index is None:
+        return Connection(reference.target_id, reference.site_index, None, "invalid")
+    matches = owners.get(reference.target_id, [])
+    if len(matches) == 1:
+        return Connection(reference.target_id, reference.site_index, matches[0], "resolved")
+    status = "ambiguous" if len(matches) > 1 else "dangling"
+    return Connection(reference.target_id, reference.site_index, None, status)
 
 
 def _describe(element: etree._Element, z_order: int, context: _Context) -> tuple[Shape, Xfrm]:
@@ -200,6 +253,26 @@ def _text(element: etree._Element) -> str | None:
         "".join(node.text or "" for node in paragraph.iter(_q("a:t")))
         for paragraph in body.findall(_q("a:p"))
     )
+
+
+def _references(element: etree._Element) -> tuple[_Reference | None, _Reference | None]:
+    if etree.QName(element).localname != "cxnSp":
+        return None, None
+    cnv_cxn = element.find(f"{_q('p:nvCxnSpPr')}/{_q('p:cNvCxnSpPr')}")
+    return _reference(cnv_cxn.find(_q("a:stCxn"))), _reference(cnv_cxn.find(_q("a:endCxn")))
+
+
+def _reference(node: etree._Element | None) -> _Reference | None:
+    if node is None:
+        return None
+    return _Reference(target_id=_to_int(node.get("id")), site_index=_to_int(node.get("idx")))
+
+
+def _to_int(value: str | None) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_placeholder(element: etree._Element) -> bool:
