@@ -197,6 +197,40 @@ Ba file này **không có ground truth**, nên các số dưới đây là dấu
 - **Hình lớn hơn nửa trang** (luật neo): Layered 28 (22 là box thô, 6 do v1 làm nở), ECUStateManager 25 (đều là box thô), VFB 1, OS 0. Hai crop ECUStateManager đã xem (trang 31 và 185) là sơ đồ thật cao gần hết trang (sơ đồ trạng thái, sơ đồ tuần tự); 23 trang còn lại chưa xem. Danh sách: `outputs/12_autosar_all_variants_anchor/huge_boxes.md` (cục bộ).
 - **Nhánh vector trên spec:** `group_whole_diagrams_vector` khoanh 368/436 (OS) và 151/232 (ECUStateManager) box trùng bảng Docling; bản không hút chữ sạch bảng nhưng gần như không phát hiện hình (OS 15, VFB 0), kể cả bỏ sót sơ đồ Figure 7.15 của OS trang 86.
 
+### 5.5. Bộ đánh giá độc lập (held-out) trên cả 4 file AUTOSAR
+
+Mục 5.3 chỉ có 30 box trên một tài liệu và các ngưỡng đã chỉnh trên chính tập đó. Bộ mới (`scripts/ground_truth/autosar_figures_v2.json`, chấm bằng `scripts/eval_pdf_figures_v2.py --split test|dev`) khắc phục điều đó:
+
+- **Lấy mẫu:** 108 trang test của 4 file (OS 30, ECUStateManager 30, VFB 24, Layered 24), seed cố định 20261113, phân tầng: trang mà ít nhất một biến thể Docling dự đoán box ("candidate") và các trang còn lại. Trang test của Layered (`p % 4 == 3`) không giao với 44 trang dev (`p % 4 == 1`). Có 57 trang không có hình cần chấm (kiểm tra dương tính giả).
+- **Gán nhãn mù:** trang được xếp loại hình/không hình và vẽ box từ ảnh lưới 50 pt, trước khi xem bất kỳ dự đoán nào. Sai số vẽ tay cỡ ±5-10 pt; sau đó đã kiểm tra bằng ảnh overlay và sửa các box lệch quá rõ (vài chục pt).
+- **Một lần sửa nhãn sau khi xem dự đoán:** Layered trang 179 (sơ đồ lớn) bị xếp nhầm là "không hình" lúc gán mù, bị phát hiện vì mọi biến thể đều dự đoán một box ở đó; đã thêm box. Để không chỉ kiểm tra những chỗ có lợi, mọi trang âm tính mà *bất kỳ* biến thể nào dự đoán box cũng được xem lại (23 trang, đã xem hết): đều là bảng API/cấu hình, mục lục hoặc bảng lịch sử, không có hình nào khác bị sót. Việc kiểm tra này chỉ nhìn các trang bị dự đoán, nên một hình nhỏ mà không biến thể nào bắt được vẫn có thể còn nằm trong "không hình".
+- **Không chấm hình nhỏ:** hình < 1,5% diện tích trang (6 icon cổng của VFB) không nằm trong ground truth được chấm vì pipeline bỏ chúng có chủ ý.
+- Chặt (IoU ≥ 0,5) và dung sai (box chứa ≥ 95% hình, diện tích ≤ 2 lần hình); khoảng tin cậy 95% bằng bootstrap theo trang (cả hiệu F1 ghép cặp với `v1 + anchor + add`).
+
+**Kết quả test (61 hình, 108 trang), F1 gộp:**
+
+| Biến thể | F1 chặt | F1 dung sai (95% CI) | FP trên trang không hình |
+|---|---|---|---|
+| raw (box `picture` Docling) | 0,943 | 0,829 (0,733-0,923) | 0 |
+| v1 không luật neo | 0,879 | 0,848 (0,759-0,921) | 9 |
+| **v1 + neo** | **0,959** | **0,926 (0,854-0,984)** | 0 |
+| v1 + neo + add | 0,951 | 0,918 (0,841-0,982) | 0 |
+| v1 + neo + refine | 0,959 | 0,909 (0,829-0,973) | 0 |
+| vector gốc (`group_whole_diagrams_vector`) | 0,381 | 0,367 (0,268-0,472) | 40 |
+| vector không hút chữ | 0,528 | 0,472 (0,345-0,598) | 3 |
+
+Theo tài liệu (dung sai): trên OS, ECUStateManager, VFB, mọi biến thể Docling có luật neo đạt F1 1,000 (hai file spec: 13/13 hình; VFB: 11/11, chỉ gồm hình ≥ 1,5% trang); trên Layered (24 hình, slide) v1 + neo 19/4/5 (TP/FP/FN, F1 0,809) so với box thô 16/9/8 (0,653).
+
+**Đọc kết quả:**
+1. Luật neo là cải thiện có ý nghĩa: bỏ nó làm F1 giảm 0,07-0,08 với khoảng tin cậy không chứa 0, và toàn bộ lỗi tăng thêm là hộp quanh bảng trên OS và ECUStateManager (9 trang). Đây là kết luận bền nhất của đợt đo.
+2. v1 so với box thô: hơn rõ rệt trên slide (Layered), không khác trên spec; tổng gộp hơn 0,089 (dung sai, CI -0,177 đến -0,015 của hiệu).
+3. `add` và `refine` không giúp: `add` không thêm TP nào trên test (và +1 FP), `refine` làm giảm nhẹ dưới dung sai. Trên dev, `add` +1 TP và `refine+add` đẹp nhất theo chặt (0,935), nhưng chênh lệch nằm trong nhiễu; hai tập cho thứ tự khác nhau ở nhóm này, nên không có cơ sở chọn giữa chúng. Cấu hình đơn giản nhất không thua là **Docling + v1 + neo**.
+4. Nhánh vector đơn thuần vẫn kém xa (0,37-0,47 dung sai), khớp với đo trên dev.
+5. Hai file spec và VFB gần như "dễ" (hình là box `picture` thô, trang còn lại là bảng/chữ), nên điểm 1,000 ở đó không chứng tỏ thuật toán mạnh, chỉ chứng tỏ không có dương tính giả. Phần khó là slide: 5 trang Layered còn lỗi (19: hộp trên cùng bị cắt; 63: layer map nhỏ vẫn bị Docling lẫn khi đứng với hình lớn; 75: hình full-width không có box nào; 83: bị gộp với tiêu đề; 95: tách làm đôi).
+6. Giới hạn: 61 hình test, 24 trong số đó ở một file; mỗi trang ra một "đơn vị" khi bootstrap nên khoảng tin cậy rộng (±0,06-0,09). Ground truth do cùng một người gán, chưa có người thứ hai đối chiếu. Tất cả chạy OCR tắt, 150 DPI.
+
+Chạy lại: `.venv\Scripts\python scripts/eval_pdf_figures_v2.py --split test` (~1 phút, báo cáo ở `outputs/13_eval_set/report_test.md`). Chỉ dùng `--split dev` để xem hồi quy; không chọn cấu hình theo nó.
+
 ---
 
 ## 6. Pipeline PDF → crop hình (`scripts/run_pdf_figure_crops.py`)

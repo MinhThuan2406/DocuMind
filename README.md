@@ -75,7 +75,9 @@ DocuMind/
 │   ├── run_pdf_figure_crops.py                <- PDF -> crop từng hình (Docling OCR tắt + gom v1 có luật neo + cụm vector bổ sung), không qua IR
 │   ├── run_figure_variants_all.py             <- Chạy 9 biến thể cắt hình trên nhiều PDF để so sánh bằng mắt
 │   ├── eval_pdf_figure_variants.py            <- Chấm điểm các biến thể với ground truth AUTOSAR (chặt IoU và dung sai)
-│   ├── ground_truth/autosar_layered_figures.json <- 30 box hình gán tay trên 44 trang LayeredSoftwareArchitecture
+│   ├── ground_truth/autosar_layered_figures.json <- 30 box hình gán tay trên 44 trang LayeredSoftwareArchitecture (tập dev)
+│   ├── eval_pdf_figures_v2.py                 <- Đánh giá held-out trên 4 file AUTOSAR (108 trang test, bootstrap theo trang)
+│   ├── ground_truth/autosar_figures_v2.json   <- Ground truth v2: 108 trang test (61 hình chấm + 6 icon nhỏ) và 44 trang dev
 │   ├── run_dataset_stress_test.py             <- Stress test 2 tầng (Tầng 1 trên box GT, Tầng 2 end-to-end 20 trang)
 │   ├── test_docling_omnidocbench.py           <- Benchmark Docling trên 4 mẫu đại diện
 │   ├── eval_utils.py                          <- Hàm đánh giá dùng chung (Kendall tau, Hungarian, IoU, phân loại hình)
@@ -188,8 +190,9 @@ So sánh nhiều biến thể trên nhiều PDF (ảnh ghép 4 biến thể cho 
 ```powershell
 .venv\Scripts\python scripts/run_figure_variants_all.py datasets/AUTOSAR/*.pdf
 .venv\Scripts\python scripts/eval_pdf_figure_variants.py datasets/AUTOSAR/AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf
+.venv\Scripts\python scripts/eval_pdf_figures_v2.py --split test   # bộ held-out 4 file, ~1 phút
 ```
-*Kết quả xuất tại:* `outputs/10_autosar_all_variants/`. Ground truth chỉ có cho `LayeredSoftwareArchitecture` (30 box gán tay); số liệu và giới hạn ở `docs/02` mục 5.3-5.4.
+*Kết quả xuất tại:* `outputs/10_autosar_all_variants/`, báo cáo held-out ở `outputs/13_eval_set/report_test.md`. Số liệu và giới hạn ở `docs/02` mục 5.3-5.5 (trên bộ held-out: Docling + v1 + luật neo đạt F1 dung sai 0,926; `add`/`refine` không giúp).
 
 ---
 

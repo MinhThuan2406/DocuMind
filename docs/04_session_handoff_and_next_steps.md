@@ -314,3 +314,15 @@ P1 (dừng) → P2 (đã bắt đầu, mục 11) → P4 → P5 → P3 → P6. Sa
 5. Việc "phân biệt ảnh thường và diagram" không còn cần cho mục tiêu hiện tại; nếu cần sau này, PDF cho tín hiệu nguồn gốc (ảnh nhúng so với nét vẽ vector) rẻ hơn đoán từ pixel.
 6. Một lần chạy Docling OCR bật (torch) trên các trang AUTOSAR bị dừng giữa chừng, nên mọi số liệu ở mục 11 là OCR tắt.
 7. `outputs/` (cục bộ, gitignore) chứa kết quả: `07_autosar_branch_compare`, `08_pdf_figure_crops`, `09_refine_vector_compare`, `10_autosar_all_variants` (v1 chưa neo), `11_v1_rule_compare`, `12_autosar_all_variants_anchor` (v1 có neo).
+
+---
+
+## 12. Cập nhật: bộ đánh giá held-out cho crop hình (2026-11-13)
+
+Người dùng yêu cầu dựng bộ đánh giá đáng tin sau khi mục 11 chỉ có 30 box gán tay trên một tài liệu.
+
+- **Đã thêm:** `scripts/ground_truth/autosar_figures_v2.json` (108 trang test trên 4 PDF AUTOSAR, lấy mẫu có seed và phân tầng, gán nhãn mù, kèm 57 trang không có hình cần chấm; cộng 44 trang dev cũ của Layered), `scripts/eval_pdf_figures_v2.py` (chặt/dung sai, theo tài liệu và gộp, bootstrap theo trang, hiệu ghép cặp, dương tính giả trên trang trống). Chi tiết phương pháp và bảng số ở `docs/02` mục 5.5.
+- **Kết quả test:** Docling + v1 + luật neo tốt nhất hoặc ngang tốt nhất (F1 dung sai 0,926, CI 0,854-0,984); bỏ luật neo giảm 0,07-0,08 (có ý nghĩa); `add`/`refine` không giúp trên test (trên dev thì khác chiều, trong nhiễu); nhánh vector đơn thuần 0,37-0,47. Ba file spec/VFB đạt 1,000 vì phần lớn là box `picture` thô và trang bảng; lỗi còn lại nằm ở slide Layered (5 trang: 19, 63, 75, 83, 95).
+- **Thật thà về nhãn:** một nhãn (Layered trang 179) sai lúc gán mù và được sửa sau khi thấy dương tính giả; đã xem lại toàn bộ 23 trang âm tính bị biến thể nào đó dự đoán (đều là bảng/mục lục). Nhãn do một người gán (sai số ±5-10 pt), chưa có người thứ hai; hình nhỏ mà không biến thể nào bắt được có thể còn nằm trong "không hình".
+- **Gợi ý bước kế tiếp:** (1) cấu hình mặc định nên là Docling + v1 + neo (đơn giản nhất không thua); `--add-vector-missing` giữ tùy chọn; (2) cải thiện slide: trang 19 (hộp có phần trống bị cắt), 83 (gộp với tiêu đề), 95 (tách đôi), 75 (hình full-width không box); (3) khi tune, chỉ dùng tập dev và để test cho đo cuối; mỗi lần chạy test để chọn cấu hình là làm ô nhiễm nó.
+- Ảnh kiểm tra (cục bộ, gitignore): `outputs/13_eval_set/` (`selection.json`, `sheets/`, `grid/`, `gt_check/`, `report_test.md`, `report_dev.md`).
