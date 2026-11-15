@@ -192,14 +192,16 @@ class _Scope:
     origin_y: float = 0.0
 
 
-def _swaps_axes(rot: int) -> bool:
+def _swaps_axes(xfrm: Xfrm) -> bool:
+    # A single mirror shows the visible angle as 360 - rot.
+    rot = (-xfrm.rot) % _FULL_TURN if xfrm.flip_h != xfrm.flip_v else xfrm.rot
     degrees = rot // _UNITS_PER_DEGREE
     return 45 <= degrees < 135 or 225 <= degrees < 315
 
 
 def _frame_in(scope: _Scope, xfrm: Xfrm) -> _Frame:
     frame = _Frame.of(xfrm)
-    swapped = _swaps_axes(xfrm.rot)
+    swapped = _swaps_axes(xfrm)
     width = frame.width * (scope.scale_y if swapped else scope.scale_x)
     height = frame.height * (scope.scale_x if swapped else scope.scale_y)
     center_x = (frame.off_x + frame.width / 2 - scope.origin_x) * scope.scale_x

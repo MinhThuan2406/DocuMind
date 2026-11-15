@@ -390,6 +390,49 @@ class NonUniformGroupTest(GeometryTestCase):
                 shape = resolve_shape(child, [self.outer])
                 self.assertEqual((shape.width, shape.height), size)
 
+    def test_axis_swap_edges_follow_the_visible_angle_for_each_flip(self):
+        swapped, unswapped = (100.0, 100.0), (200.0, 50.0)
+        cases = [
+            (45, False, False, swapped), (135, False, False, unswapped),
+            (225, False, False, swapped), (315, False, False, unswapped),
+            (45, True, False, unswapped), (135, True, False, swapped),
+            (225, True, False, unswapped), (315, True, False, swapped),
+            (45, False, True, unswapped), (135, False, True, swapped),
+            (225, False, True, unswapped), (315, False, True, swapped),
+            (45, True, True, swapped), (135, True, True, unswapped),
+            (225, True, True, swapped), (315, True, True, unswapped),
+        ]
+        for rot, flip_h, flip_v, size in cases:
+            with self.subTest(rot=rot, flip_h=flip_h, flip_v=flip_v):
+                child = xfrm(ext=(100, 50), rot=rot, flip_h=flip_h, flip_v=flip_v)
+                shape = resolve_shape(child, [self.outer])
+                self.assertEqual((shape.width, shape.height), size)
+
+    def test_single_flip_interior_angles(self):
+        swapped, unswapped = (100.0, 100.0), (200.0, 50.0)
+        cases = [
+            (90, True, False, swapped), (270, False, True, swapped),
+            (180, True, False, unswapped), (30, False, True, unswapped),
+        ]
+        for rot, flip_h, flip_v, size in cases:
+            with self.subTest(rot=rot, flip_h=flip_h, flip_v=flip_v):
+                child = xfrm(ext=(100, 50), rot=rot, flip_h=flip_h, flip_v=flip_v)
+                shape = resolve_shape(child, [self.outer])
+                self.assertEqual((shape.width, shape.height), size)
+
+    def test_single_flip_fractional_angles_follow_the_visible_angle(self):
+        swapped, unswapped = (100.0, 100.0), (200.0, 50.0)
+        cases = [
+            (44.9, unswapped), (45.1, swapped), (45.5, swapped), (134.9, swapped),
+            (135.1, unswapped), (224.9, unswapped), (225.1, swapped), (314.5, swapped),
+            (314.9, swapped), (315.1, unswapped),
+        ]
+        for rot, size in cases:
+            with self.subTest(rot=rot):
+                child = xfrm(ext=(100, 50), rot=rot, flip_h=True)
+                shape = resolve_shape(child, [self.outer])
+                self.assertEqual((shape.width, shape.height), size)
+
     def test_nested_groups_with_a_rotated_inner_group(self):
         inner = xfrm(ext=(100, 50), rot=30, child_ext=(100, 50))
         shape = xfrm(ext=(50, 25))
