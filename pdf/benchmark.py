@@ -93,6 +93,14 @@ def _make_raster_pdf_from_images(image_paths: list[Path], dst: Path) -> None:
 
 
 def _run_isolated_bench(mode: str, device: str, pages: int) -> dict[str, object]:
+    if mode == "figures_cached":
+        subprocess.run(
+            [sys.executable, "-B", __file__, "--worker", "figures_warm", "--device", device, "--pages", str(pages)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     cmd = [sys.executable, "-B", __file__, "--worker", mode, "--device", device, "--pages", str(pages)]
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=True)
     return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -110,7 +118,7 @@ def _worker(mode: str, device: str, n_pages: int) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         sample_pdf = tmp_path / "sample.pdf"
-        if mode in ("native", "figures_live", "figures_cached"):
+        if mode in ("native", "figures_live", "figures_cached", "figures_warm"):
             if not layered.exists():
                 print(json.dumps({"mode": mode, "skipped": "Layered PDF not found"}))
                 return
@@ -135,12 +143,17 @@ def _worker(mode: str, device: str, n_pages: int) -> None:
             from pdf.figures import detect_figures
 
             cache_dir = (
-                ROOT / "outputs" / "08_pdf_figure_crops" / layered.stem / "_docling_cache_dpi150"
-                if mode == "figures_cached"
-                else tmp_path / "uncached_docling"
+                ROOT / "outputs" / "08_pdf_figure_crops" / layered.stem / "_layout_cache"
+                if mode in ("figures_cached", "figures_warm")
+                else tmp_path / "uncached_layout"
             )
-            src_pages = page_nums if mode == "figures_cached" else list(range(1, len(page_nums) + 1))
-            src_pdf = layered if mode == "figures_cached" else sample_pdf
+            src_pages = page_nums if mode in ("figures_cached", "figures_warm") else list(range(1, len(page_nums) + 1))
+            src_pdf = layered if mode in ("figures_cached", "figures_warm") else sample_pdf
+
+            if mode == "figures_warm":
+                detect_figures(src_pdf, src_pages, device=device, cache_dir=cache_dir)
+                print(json.dumps({"mode": mode, "warmed": len(src_pages)}))
+                return
 
             t_first0 = time.perf_counter()
             detect_figures(src_pdf, [src_pages[0]], device=device, cache_dir=cache_dir)

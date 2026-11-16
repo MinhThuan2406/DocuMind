@@ -34,7 +34,7 @@ def test_figure_and_table_children_ordering_and_no_body_leak():
         words = extract_words(page)
         profile = PageProfile(1, "native", len(words), 0.1, 0.0, False)
         fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
-        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "docling_table", 0.95)
+        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
         items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), [fig, tbl])
     finally:
         doc.close()
@@ -63,8 +63,8 @@ def test_figure_and_table_children_ordering_and_no_body_leak():
 
 def test_overlapping_table_drop_and_innermost_box_assignment():
     fig = FigureBox((100.0, 100.0, 400.0, 300.0), "figure", "v1_group", 0.95)
-    subsumed_tbl = FigureBox((120.0, 120.0, 300.0, 260.0), "table", "docling_table", 0.95)
-    partial_tbl = FigureBox((350.0, 100.0, 550.0, 300.0), "table", "docling_table", 0.95)
+    subsumed_tbl = FigureBox((120.0, 120.0, 300.0, 260.0), "table", "layout_table", 0.95)
+    partial_tbl = FigureBox((350.0, 100.0, 550.0, 300.0), "table", "layout_table", 0.95)
 
     kept = filter_overlapping_figures([fig, subsumed_tbl, partial_tbl])
     assert kept == [fig, partial_tbl]
@@ -92,7 +92,7 @@ def test_extract_ir_end_to_end_with_mocked_figures():
         doc.close()
 
         fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
-        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "docling_table", 0.95)
+        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
 
         import pdf.figures as figures_mod
 
@@ -150,9 +150,8 @@ def test_extract_ir_detects_figures_only_on_candidate_pages():
 
 def test_autosar_dev_pages_figure_assembly_integration():
     layered = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf"
-    cache_dir = ROOT / "outputs" / "08_pdf_figure_crops" / layered.stem / "_docling_cache_dpi150"
-    if not layered.exists() or not cache_dir.exists():
-        print("SKIP AUTOSAR PDF or Docling cache not present")
+    if not layered.exists():
+        print("SKIP AUTOSAR PDF not present")
         return
 
     from pdf.figures import detect_figures
@@ -160,7 +159,7 @@ def test_autosar_dev_pages_figure_assembly_integration():
     dev_figure_pages = [13, 17, 21, 25, 29, 33, 37, 41]
     doc = pymupdf.open(str(layered))
     try:
-        figs_by_page = detect_figures(layered, dev_figure_pages, cache_dir=cache_dir)
+        figs_by_page = detect_figures(layered, dev_figure_pages)
         assert any(any(b.kind == "figure" for b in boxes) for boxes in figs_by_page.values())
         for pno in dev_figure_pages:
             page = doc[pno - 1]

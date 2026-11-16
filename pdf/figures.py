@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -9,11 +7,21 @@ from typing import Any
 import cv2
 import numpy as np
 import pymupdf
+from PIL import Image
 
+from .layout import (
+    LayoutCache,
+    clamp_and_rescale,
+    clusters_to_items,
+    file_sha256,
+    get_layout_detector,
+    postprocess_layout,
+)
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox
 
 DEFAULT_DPI = 150
-DOCLING_BOX_CONFIDENCE = 0.95
+LAYOUT_BOX_CONFIDENCE = 0.95
+_PNG_DEFAULT_DPI = 96.012
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,38 +111,27 @@ def _detect_visual_containers(bgr: np.ndarray) -> list[list[float]]:
     return filtered
 
 
-def _build_layout_converter(device: str) -> Any:
-    from docling.datamodel.accelerator_options import AcceleratorOptions
-    from docling.datamodel.base_models import InputFormat
-    from docling.document_converter import DocumentConverter, ImageFormatOption
+def _run_layout_items(
+    detector: Any,
+    bgr: np.ndarray,
+) -> tuple[list[dict[str, Any]], tuple[float, float]]:
+    ih, iw = bgr.shape[:2]
+    pil_rgb = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    # Match the 72/96.012 PNG scale used when Docling's ImageDocumentBackend loaded PyMuPDF PNGs.
+    page_w = iw * 72.0 / _PNG_DEFAULT_DPI
+    page_h = ih * 72.0 / _PNG_DEFAULT_DPI
+    target_wh = (max(1, round(page_w)), max(1, round(page_h)))
+    pil_in = pil_rgb if pil_rgb.size == target_wh else pil_rgb.resize(target_wh, resample=Image.Resampling.LANCZOS)
 
-    opts = ImageFormatOption().pipeline_options
-    opts.do_ocr = False
-    opts.accelerator_options = AcceleratorOptions(device=device)
-    return DocumentConverter(format_options={InputFormat.IMAGE: ImageFormatOption(pipeline_options=opts)})
-
-
-def _run_docling_items(converter: Any, bgr: np.ndarray) -> tuple[list[dict[str, Any]], tuple[float, float]]:
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_png = Path(tmp_dir) / "page.png"
-        ok, buf = cv2.imencode(".png", bgr)
-        if not ok:
-            raise ValueError("failed to encode page image")
-        tmp_png.write_bytes(buf.tobytes())
-        doc = converter.convert(str(tmp_png)).document
-
-    page_size = (float(doc.pages[1].size.width), float(doc.pages[1].size.height))
-    items: list[dict[str, Any]] = []
-    for order, (it, _lvl) in enumerate(doc.iterate_items()):
-        raw_label = getattr(it, "label", type(it).__name__)
-        label = raw_label.value if hasattr(raw_label, "value") else str(raw_label)
-        prov = getattr(it, "prov", None)
-        bbox = None
-        if prov and hasattr(prov[0], "bbox"):
-            b = prov[0].bbox.to_top_left_origin(page_size[1])
-            bbox = [float(b.l), float(b.t), float(b.r), float(b.b)]
-        items.append({"order": order, "label": label, "bbox": bbox, "text": getattr(it, "text", "")})
-    return items, page_size
+    raw_items = detector.detect(pil_in)
+    page_size = (page_w, page_h)
+    scaled = clamp_and_rescale(
+        [(it.label, it.bbox, it.score) for it in raw_items],
+        (float(target_wh[0]), float(target_wh[1])),
+        page_size,
+    )
+    clusters = postprocess_layout(scaled, page_size, keep_empty_clusters=False)
+    return clusters_to_items(clusters), page_size
 
 
 def _v1_group_boxes(
@@ -240,7 +237,6 @@ def _v1_group_boxes(
     for idx_list in clusters.values():
         if len(idx_list) < 2 and not any(pixel_items[idx]["label"] in ("picture", "figure") for idx in idx_list):
             continue
-        # Anchor rule: keep a group only if at least one picture/figure is >= min_area on its own.
         if not any(
             pixel_items[idx]["orig_item"]["label"] in ("picture", "figure")
             and (pixel_items[idx]["orig_item"]["bbox"][2] - pixel_items[idx]["orig_item"]["bbox"][0])
@@ -315,6 +311,7 @@ def detect_figures(
     pdf_path: str | Path,
     pages: Sequence[int] | None = None,
     *,
+    layout: str = "heron",
     dpi: int = DEFAULT_DPI,
     device: str = "auto",
     min_area: float = FIGURE_MIN_AREA,
@@ -323,20 +320,27 @@ def detect_figures(
     include_tables: bool = True,
 ) -> dict[int, list[FigureBox]]:
     path = Path(pdf_path)
-    resolved_cache = (
+    cache_root = (
         Path(cache_dir)
         if cache_dir is not None
-        else _REPO_ROOT / "outputs" / "08_pdf_figure_crops" / path.stem / f"_docling_cache_dpi{dpi}"
+        else _REPO_ROOT / "outputs" / "08_pdf_figure_crops" / path.stem / "_layout_cache"
     )
+    detector_holder: list[Any] = []
+
+    def get_detector() -> Any:
+        if not detector_holder:
+            detector_holder.append(get_layout_detector(layout, device))
+        return detector_holder[0]
+
+    if layout == "heron":
+        from .layout.heron_transformers import HERON_REVISION
+
+        revision = HERON_REVISION
+    else:
+        revision = get_detector()[1]
+    cache = LayoutCache(cache_root, backend=layout, revision=revision, dpi=dpi, pdf_hash=file_sha256(path))
 
     doc = pymupdf.open(str(path))
-    converter_holder: list[Any] = []
-
-    def get_converter() -> Any:
-        if not converter_holder:
-            converter_holder.append(_build_layout_converter(device))
-        return converter_holder[0]
-
     results: dict[int, list[FigureBox]] = {}
     try:
         target_pages = list(range(1, len(doc) + 1)) if pages is None else sorted(set(pages))
@@ -345,21 +349,13 @@ def detect_figures(
                 raise ValueError(f"page {pno} out of range 1..{len(doc)}")
             page = doc[pno - 1]
             bgr, img_size = _render_bgr(page, dpi)
-            cache_file = resolved_cache / f"p{pno:03d}.json"
-            if cache_file.exists():
-                cached = json.loads(cache_file.read_text(encoding="utf-8"))
-                items = cached["items"]
-                page_size = (float(cached["page_size"][0]), float(cached["page_size"][1]))
+            cached = cache.load(pno)
+            if cached is not None:
+                items, page_size = cached
             else:
-                items, page_size = _run_docling_items(get_converter(), bgr)
-                try:
-                    cache_file.parent.mkdir(parents=True, exist_ok=True)
-                    cache_file.write_text(
-                        json.dumps({"items": items, "page_size": list(page_size)}, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
+                detector, _ = get_detector()
+                items, page_size = _run_layout_items(detector, bgr)
+                cache.save(pno, items, page_size)
 
             iw, ih = img_size
             raw_figs = _v1_group_boxes(bgr, items, img_size, page_size, min_area)
@@ -373,7 +369,7 @@ def detect_figures(
                     bbox=_to_pt_box(b, img_size, page.rect),
                     kind="figure",
                     source="v1_group",
-                    confidence=DOCLING_BOX_CONFIDENCE,
+                    confidence=LAYOUT_BOX_CONFIDENCE,
                 )
                 for b in kept_figs
             ]
@@ -384,8 +380,8 @@ def detect_figures(
                     FigureBox(
                         bbox=_to_pt_box(b, img_size, page.rect),
                         kind="table",
-                        source="docling_table",
-                        confidence=DOCLING_BOX_CONFIDENCE,
+                        source="layout_table",
+                        confidence=LAYOUT_BOX_CONFIDENCE,
                     )
                     for b in raw_tables
                 )

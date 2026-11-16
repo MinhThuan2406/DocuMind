@@ -7,7 +7,7 @@ BBox = tuple[float, float, float, float]
 PageKind = Literal["native", "raster", "hybrid"]
 TextSource = Literal["text_layer", "ocr"]
 FigureKind = Literal["figure", "table"]
-FigureSource = Literal["docling_picture", "v1_group", "vector_only", "docling_table"]
+FigureSource = Literal["layout_picture", "v1_group", "vector_only", "layout_table"]
 
 FIGURE_MIN_AREA = 0.015
 FIGURE_FOOTER_FRAC = 0.88

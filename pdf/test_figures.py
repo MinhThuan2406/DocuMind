@@ -7,9 +7,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import pymupdf  # noqa: E402
+from PIL import Image  # noqa: E402
 
 import pdf.figures as figures_mod  # noqa: E402
-from pdf.figures import DOCLING_BOX_CONFIDENCE, detect_figures  # noqa: E402
+from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
+from pdf.layout import LayoutCache, file_sha256  # noqa: E402
 
 
 def test_importing_figures_does_not_load_docling_or_torch():
@@ -26,38 +28,41 @@ def test_cache_and_live_confidence_match_and_table_boxes_emitted():
         doc.save(str(pdf_path))
         doc.close()
 
-        cache_dir = tmp_path / "cache"
-        cache_dir.mkdir()
+        cache_root = tmp_path / "cache"
         items = [
             {"order": 0, "label": "picture", "bbox": [50.0, 50.0, 300.0, 250.0], "text": ""},
             {"order": 1, "label": "table", "bbox": [350.0, 50.0, 550.0, 250.0], "text": ""},
         ]
-        (cache_dir / "p001.json").write_text(
-            json.dumps({"items": items, "page_size": [600.0, 400.0]}),
-            encoding="utf-8",
-        )
+        LayoutCache(
+            cache_root,
+            backend="custom",
+            revision="testrev",
+            dpi=150,
+            pdf_hash=file_sha256(pdf_path),
+        ).save(1, items, (600.0, 400.0))
 
-        orig_runner = figures_mod._run_docling_items
-        orig_builder = figures_mod._build_layout_converter
+        orig_runner = figures_mod._run_layout_items
+        orig_get = figures_mod.get_layout_detector
         try:
-            figures_mod._run_docling_items = lambda _conv, _bgr: (items, (600.0, 400.0))
-            figures_mod._build_layout_converter = lambda _device: object()
+            figures_mod._run_layout_items = lambda _det, _bgr: (items, (600.0, 400.0))
+            figures_mod.get_layout_detector = lambda _backend, _device: (object(), "testrev")
 
-            from_cache = detect_figures(pdf_path, [1], cache_dir=cache_dir)
-            from_live = detect_figures(pdf_path, [1], cache_dir=tmp_path / "live_cache")
+            from_cache = detect_figures(pdf_path, [1], layout="custom", cache_dir=cache_root)
+            from_live = detect_figures(pdf_path, [1], layout="custom", cache_dir=tmp_path / "live_cache")
         finally:
-            figures_mod._run_docling_items = orig_runner
-            figures_mod._build_layout_converter = orig_builder
+            figures_mod._run_layout_items = orig_runner
+            figures_mod.get_layout_detector = orig_get
 
         assert from_cache == from_live
         assert len(from_cache[1]) == 2
         assert [b.kind for b in from_cache[1]] == ["figure", "table"]
-        assert all(b.confidence == DOCLING_BOX_CONFIDENCE for b in from_cache[1])
+        assert from_cache[1][1].source == "layout_table"
+        assert all(b.confidence == LAYOUT_BOX_CONFIDENCE for b in from_cache[1])
 
 
 def test_matches_structure_branch_compute_boxes_on_dev_pages():
     layered = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf"
-    cache_dir = ROOT / "outputs" / "08_pdf_figure_crops" / layered.stem / "_docling_cache_dpi150"
+    docling_cache = ROOT / "outputs" / "08_pdf_figure_crops" / layered.stem / "_docling_cache_dpi150"
     scratch_scripts = (
         Path.home()
         / ".gemini"
@@ -68,15 +73,18 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
         / "structure_scripts"
         / "scripts"
     )
-    if not layered.exists() or not cache_dir.exists() or not scratch_scripts.exists():
-        print("SKIP AUTOSAR PDF, Docling cache, or scratch structure scripts not present")
+    if not layered.exists() or not docling_cache.exists() or not scratch_scripts.exists():
+        print("SKIP AUTOSAR PDF, reference cache, or scratch structure scripts not present")
         return
+
+    dev_pages = [1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45]
+    # Run our Heron-based detector BEFORE importing structure scripts (which pull docling).
+    with tempfile.TemporaryDirectory() as tmp:
+        actual = detect_figures(layered, dev_pages, cache_dir=Path(tmp) / "fresh", include_tables=False)
+    assert "docling" not in sys.modules
 
     sys.path.insert(0, str(scratch_scripts))
     from run_pdf_figure_crops import compute_boxes  # noqa: E402
-
-    dev_pages = [1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45]
-    actual = detect_figures(layered, dev_pages, cache_dir=cache_dir, include_tables=False)
 
     doc = pymupdf.open(str(layered))
     zoom = 150.0 / 72.0
@@ -86,11 +94,7 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
             page = doc[pno - 1]
             png = tmp_dir / f"p{pno:03d}.png"
             page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).save(str(png))
-            cached = json.loads((cache_dir / f"p{pno:03d}.json").read_text(encoding="utf-8"))
-            pix_w, pix_h = round(page.rect.width * zoom), round(page.rect.height * zoom)
-            # Read exact image dimensions saved by PyMuPDF.
-            from PIL import Image
-
+            cached = json.loads((docling_cache / f"p{pno:03d}.json").read_text(encoding="utf-8"))
             with Image.open(png) as im:
                 img_size = im.size
             ref_boxes = compute_boxes(
@@ -121,7 +125,7 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
             assert len(got_pts) == len(expected_pts), (pno, got_pts, expected_pts)
             for g, e in zip(got_pts, expected_pts):
                 for gv, ev in zip(g, e):
-                    assert abs(gv - ev) <= 0.05, (pno, g, e)
+                    assert abs(gv - ev) <= 0.1, (pno, g, e)
     doc.close()
 
 

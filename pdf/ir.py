@@ -35,7 +35,7 @@ def _element_dict(
     if item.bold is not None:
         meta["bold"] = item.bold
     if item.label is not None:
-        meta["docling_label"] = item.label
+        meta["layout_label"] = item.label
     return {
         "id": elem_id,
         "type": item.kind,
@@ -57,6 +57,8 @@ def extract_ir(
     *,
     figures: bool = True,
     ocr: bool = True,
+    layout: str = "heron",
+    ocr_backend: str = "rapidocr",
     device: str = "auto",
     min_font_size: float = 0.0,
 ) -> dict[str, Any]:
@@ -91,7 +93,7 @@ def extract_ir(
         if figures and candidate_pages:
             from .figures import detect_figures
 
-            figures_by_page = detect_figures(pdf_path, candidate_pages, device=device)
+            figures_by_page = detect_figures(pdf_path, candidate_pages, layout=layout, device=device)
 
         raster_by_page: dict[int, RasterPage] = {}
         if ocr:
@@ -100,7 +102,13 @@ def extract_ir(
                 from .raster import read_raster_page
 
                 for pno in raster_pages:
-                    raster_by_page[pno] = read_raster_page(pdf_path, pno, device=device)
+                    raster_by_page[pno] = read_raster_page(
+                        pdf_path,
+                        pno,
+                        layout=layout,
+                        ocr_backend=ocr_backend,
+                        device=device,
+                    )
 
         elements: list[dict[str, Any]] = []
         elem_counter = 0

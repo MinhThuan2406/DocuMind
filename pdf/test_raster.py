@@ -3,7 +3,6 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -13,6 +12,8 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 import pdf.raster as raster_mod  # noqa: E402
 from pdf import extract_ir  # noqa: E402
+from pdf.layout.types import LayoutItem  # noqa: E402
+from pdf.ocr.types import OcrLine  # noqa: E402
 
 
 def _make_raster_pdf(path: Path, text: str = "RASTER OCR SAMPLE") -> None:
@@ -34,7 +35,7 @@ def test_importing_raster_does_not_load_docling_or_torch():
     assert "torch" not in sys.modules
 
 
-def test_ocr_disabled_skips_docling_and_marks_unreadable_page():
+def test_ocr_disabled_skips_ml_and_marks_unreadable_page():
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "scan.pdf"
         _make_raster_pdf(pdf_path)
@@ -46,48 +47,50 @@ def test_ocr_disabled_skips_docling_and_marks_unreadable_page():
 
 
 def test_read_raster_page_and_ir_emit_ocr_source_and_confidence():
-    class _FakeBBox:
-        def __init__(self, l, t, r, b):
-            self.l, self.t, self.r, self.b = l, t, r, b
-
-        def to_top_left_origin(self, _h):
-            return self
-
-    class _FakeConverter:
-        def convert(self, _path):
-            items = [
-                (SimpleNamespace(label="section_header", text="Heading", prov=[SimpleNamespace(bbox=_FakeBBox(10, 10, 200, 40))]), 1),
-                (SimpleNamespace(label="text", text="Body OCR line", prov=[SimpleNamespace(bbox=_FakeBBox(10, 50, 300, 90))]), 1),
-                (SimpleNamespace(label="picture", text="", prov=[SimpleNamespace(bbox=_FakeBBox(10, 110, 250, 240))]), 1),
+    class _FakeDetector:
+        def detect(self, image):
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 600.0, h / 300.0
+            return [
+                LayoutItem("section_header", (10 * sx, 10 * sy, 220 * sx, 45 * sy), 0.92),
+                LayoutItem("text", (10 * sx, 50 * sy, 320 * sx, 95 * sy), 0.90),
+                LayoutItem("picture", (10 * sx, 110 * sy, 250 * sx, 240 * sy), 0.94),
             ]
-            doc = SimpleNamespace(
-                pages={1: SimpleNamespace(size=SimpleNamespace(width=600.0, height=300.0))},
-                iterate_items=lambda: items,
-            )
-            conf = SimpleNamespace(pages={1: SimpleNamespace(ocr_score=0.9123)})
-            return SimpleNamespace(document=doc, confidence=conf)
+
+    class _FakeRecognizer:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 600.0, h / 300.0
+            return [
+                OcrLine("Heading", (15 * sx, 15 * sy, 180 * sx, 40 * sy), 0.91),
+                OcrLine("Body OCR line", (15 * sx, 55 * sy, 290 * sx, 88 * sy), 0.93),
+            ]
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "scan.pdf"
         _make_raster_pdf(pdf_path)
-        orig_builder = raster_mod._build_ocr_converter
+        orig_det = raster_mod.get_layout_detector
+        orig_rec = raster_mod._get_recognizer
         try:
-            raster_mod._build_ocr_converter = lambda _device: _FakeConverter()
+            raster_mod.get_layout_detector = lambda _backend, _device: (_FakeDetector(), "fake")
+            raster_mod._get_recognizer = lambda _backend: _FakeRecognizer()
             ir = extract_ir(pdf_path, figures=False, ocr=True)
         finally:
-            raster_mod._build_ocr_converter = orig_builder
+            raster_mod.get_layout_detector = orig_det
+            raster_mod._get_recognizer = orig_rec
 
     assert json.loads(json.dumps(ir)) == ir
     assert ir["metadata"]["unreadable_pages"] == []
     elems = ir["elements"]
     assert len(elems) == 3
     assert [e["type"] for e in elems] == ["text", "text", "figure"]
-    assert elems[0]["metadata"]["docling_label"] == "section_header"
-    assert elems[1]["metadata"]["docling_label"] == "text"
-    for e in elems:
-        assert e["confidence"] == 0.9123
-        if e["type"] == "text":
-            assert e["source"] == "ocr"
+    assert elems[0]["metadata"]["layout_label"] == "section_header"
+    assert elems[1]["metadata"]["layout_label"] == "text"
+    assert elems[0]["confidence"] == 0.91 and elems[0]["source"] == "ocr"
+    assert elems[1]["confidence"] == 0.93 and elems[1]["source"] == "ocr"
+    assert elems[2]["source"] == "layout_picture"
+    assert "docling" not in sys.modules
 
 
 def main():
