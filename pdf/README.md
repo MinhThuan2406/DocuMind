@@ -79,6 +79,10 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 - **Text pipeline:** 185-page `Layered` PDF ran in `3.032 s` (`16.39 ms/page`) with exact word parity against `get_text("words")` and zero `torch`/`transformers` imports.
 - **Figure boxes (`detect_figures`, `include_tables=False`, `sys.modules["docling"] = None`, fresh cache):**
   - `test` (108 pages across 4 AUTOSAR PDFs): strict F1 **`0.959`** (`58/2/3`, `P=0.967, R=0.951`), lenient F1 **`0.926`** (`56/4/5`, `P=0.933, R=0.918`), negative-page FP **`0`** (matches the Docling baseline to three decimal places).
+- **Layout parity with the former Docling output (all 984 AUTOSAR pages, `HeronDetector` + `postprocess_layout` + `clusters_to_items`, compared with the cached Docling 2.150.0 items; one-off script, not committed):**
+  - v1 figure boxes equal on `984/984` pages (same count, every box IoU `>= 0.95`); label multiset equal on `981/984` pages; item order equal on `980/984` pages.
+  - Every Docling box has a match (IoU `>= 0.95`, same label). The new detector emits 3 extra boxes on 3 pages (Layered p84, ECUStateManager p216, OS p302: 2 `table`, 1 `picture`) and a different item order on 4 pages (those three plus Layered p81); none changes the v1 figure boxes. Totals Docling versus new: `table` 894 versus 896, `picture` 1391 versus 1392, `document_index` 18 versus 18, `formula` 4 versus 4.
+  - The reference is the cached Docling output, whose provenance was not independently confirmed, not human-labelled ground truth; the extra boxes were not checked against ground truth.
 - **Raster OCR recall (20 English OmniDocBench pages via `pdf/benchmark.py --omnidoc-recall`, `HeronDetector` + `RapidOcrRecognizer`):**
   - `pooled_char_recall = 0.9020`, `mean = 0.8872`, `median = 0.9507`, `min = 0.2298` (Docling OCR baseline on the same 20 pages: `0.8866 / 0.8658 / 0.9532 / 0.2190`).
 - **Isolated subprocess benchmark (5 pages per mode via `pdf/benchmark.py`):**
