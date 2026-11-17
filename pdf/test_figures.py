@@ -9,14 +9,12 @@ sys.path.insert(0, str(ROOT))
 import pymupdf  # noqa: E402
 from PIL import Image  # noqa: E402
 
-import pdf.figures as figures_mod  # noqa: E402
 from pdf import extract_ir  # noqa: E402
+from pdf.backends import LayoutCache, PageLayout, RunStats, file_sha256, register, registered  # noqa: E402
 from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
 from pdf.layout import (  # noqa: E402
     MINERU_PIPELINE_BACKEND,
     MINERU_PIPELINE_REVISION,
-    LayoutCache,
-    file_sha256,
     mineru_middle_json_to_cache_pages,
 )
 from pdf.layout.mineru_pipeline import find_mineru_python  # noqa: E402
@@ -49,17 +47,21 @@ def test_cache_and_live_confidence_match_and_table_boxes_emitted():
             pdf_hash=file_sha256(pdf_path),
         ).save(1, items, (600.0, 400.0))
 
-        orig_runner = figures_mod._run_layout_items
-        orig_get = figures_mod.get_layout_detector
-        try:
-            figures_mod._run_layout_items = lambda _det, _bgr: (items, (600.0, 400.0))
-            figures_mod.get_layout_detector = lambda _backend, _device: (object(), "testrev")
+        class _CustomBackend:
+            name = "custom"
+            revision = "testrev"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
 
-            from_cache = detect_figures(pdf_path, [1], layout="custom", cache_dir=cache_root)
-            from_live = detect_figures(pdf_path, [1], layout="custom", cache_dir=tmp_path / "live_cache")
-        finally:
-            figures_mod._run_layout_items = orig_runner
-            figures_mod.get_layout_detector = orig_get
+            def analyze(self, _pdf_path, pages):
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                return {p: PageLayout(items=items, frame=(600.0, 400.0)) for p in pages}
+
+        register("layout", "custom", lambda **_kw: _CustomBackend())
+        assert "custom" in registered("layout")
+
+        from_cache = detect_figures(pdf_path, [1], layout="custom", cache_dir=cache_root)
+        from_live = detect_figures(pdf_path, [1], layout="custom", cache_dir=tmp_path / "live_cache")
 
         assert from_cache == from_live
         assert len(from_cache[1]) == 2
@@ -194,15 +196,16 @@ def test_mineru_fixture_mapping_clamping_and_cache_hit():
             pdf_hash=file_sha256(pdf_path),
         ).save(1, syn_out[1][0], (600.0, 400.0))
 
-        orig_run = figures_mod.run_mineru_pdf
-        orig_get = figures_mod.get_layout_detector
+        import pdf.backends.mineru as mineru_backend_mod
+
+        orig_run = mineru_backend_mod.run_mineru_pdf
         try:
-            figures_mod.run_mineru_pdf = lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should hit cache"))
-            figures_mod.get_layout_detector = lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not build detector"))
+            mineru_backend_mod.run_mineru_pdf = lambda *_a, **_kw: (_ for _ in ()).throw(
+                AssertionError("should hit cache")
+            )
             out = detect_figures(pdf_path, [1], layout=MINERU_PIPELINE_BACKEND, cache_dir=cache_root)
         finally:
-            figures_mod.run_mineru_pdf = orig_run
-            figures_mod.get_layout_detector = orig_get
+            mineru_backend_mod.run_mineru_pdf = orig_run
         assert any(b.kind == "figure" for b in out[1])
         assert any(b.kind == "table" for b in out[1])
 

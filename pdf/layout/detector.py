@@ -13,19 +13,11 @@ class LayoutDetector(Protocol):
     def detect(self, image: Image.Image) -> list[LayoutItem]: ...
 
 
-_DETECTOR_CACHE: dict[tuple[str, str], tuple[LayoutDetector, str]] = {}
-
-
 def get_layout_detector(backend: str = "heron", device: str = "auto") -> tuple[LayoutDetector, str]:
-    key = (backend, device)
-    if key not in _DETECTOR_CACHE:
-        if backend == "heron":
-            from .heron_transformers import HERON_REVISION, HeronDetector
+    from ..backends.registry import get
 
-            _DETECTOR_CACHE[key] = (HeronDetector(device=device), HERON_REVISION)
-        else:
-            raise ValueError(f"unknown layout backend: {backend!r}")
-    return _DETECTOR_CACHE[key]
+    det = get("detector", backend, device=device)
+    return det, str(getattr(det, "revision", "local"))
 
 
 def clamp_and_rescale(

@@ -11,8 +11,8 @@ import pymupdf  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
+from pdf.backends import LayoutCache  # noqa: E402
 from pdf.layout import (  # noqa: E402
-    LayoutCache,
     LayoutItem,
     clamp_and_rescale,
     clusters_to_items,

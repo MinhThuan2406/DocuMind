@@ -6,8 +6,8 @@ from typing import Any
 
 from PIL import Image
 
-from .detector import clamp_and_rescale
-from .types import LayoutItem
+from ..layout.detector import clamp_and_rescale
+from ..layout.types import LayoutItem
 
 HERON_REPO_ID = "docling-project/docling-layout-heron"
 HERON_REVISION = "8f39ad3c0b4c58e9c2d2c84a38465abf757272d8"

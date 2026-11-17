@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper")
+Factory = Callable[..., Any]
+
+_FACTORIES: dict[tuple[str, str], Factory] = {}
+_INSTANCES: dict[tuple[str, str, tuple[tuple[str, Any], ...]], Any] = {}
+_BUILTINS_LOADED = False
+
+
+def _validate_kind(kind: str) -> None:
+    if kind not in VALID_KINDS:
+        raise ValueError(f"unknown backend kind: {kind!r}")
+
+
+def _ensure_builtins() -> None:
+    global _BUILTINS_LOADED
+    if _BUILTINS_LOADED:
+        return
+    _BUILTINS_LOADED = True
+    _FACTORIES[("detector", "heron")] = _heron_detector_factory
+    _FACTORIES[("layout", "heron")] = _heron_layout_factory
+    _FACTORIES[("layout", "mineru-pipeline")] = _mineru_layout_factory
+
+
+def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
+    from .heron import HeronDetector
+
+    return HeronDetector(device=device)
+
+
+def _heron_layout_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+    from .heron import HERON_REVISION
+    from .layout_image import ImageLayoutBackend
+
+    detector = get("detector", "heron", device=device)
+    return ImageLayoutBackend(detector=detector, name="heron", revision=HERON_REVISION, dpi=dpi)
+
+
+def _mineru_layout_factory(*, device: str = "auto", python_exe: str | None = None, **_extra: Any) -> Any:
+    from .mineru import MinerULayoutBackend
+
+    return MinerULayoutBackend(device=device, python_exe=python_exe)
+
+
+def register(kind: str, name: str, factory: Factory) -> None:
+    _validate_kind(kind)
+    _ensure_builtins()
+    _FACTORIES[(kind, name)] = factory
+    stale = [k for k in _INSTANCES if k[0] == kind and k[1] == name]
+    for k in stale:
+        del _INSTANCES[k]
+
+
+def _freeze_opts(opts: dict[str, Any]) -> tuple[tuple[str, Any], ...] | None:
+    items = tuple(sorted((k, v) for k, v in opts.items() if v is not None))
+    try:
+        hash(items)
+    except TypeError:
+        return None
+    return items
+
+
+def get(kind: str, name: str, **opts: Any) -> Any:
+    _validate_kind(kind)
+    _ensure_builtins()
+    factory = _FACTORIES.get((kind, name))
+    if factory is None:
+        raise ValueError(f"unknown {kind} backend: {name!r}")
+    frozen = _freeze_opts(opts)
+    if frozen is not None:
+        cache_key = (kind, name, frozen)
+        if cache_key not in _INSTANCES:
+            _INSTANCES[cache_key] = factory(**opts)
+        return _INSTANCES[cache_key]
+    return factory(**opts)
+
+
+def registered(kind: str | None = None) -> dict[str, tuple[str, ...]] | tuple[str, ...]:
+    _ensure_builtins()
+    if kind is not None:
+        _validate_kind(kind)
+        return tuple(sorted(n for k, n in _FACTORIES if k == kind))
+    return {
+        k: tuple(sorted(n for fk, n in _FACTORIES if fk == k))
+        for k in VALID_KINDS
+    }
+
+
+def reset_cache() -> None:
+    _INSTANCES.clear()

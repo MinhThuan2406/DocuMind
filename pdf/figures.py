@@ -7,28 +7,15 @@ from typing import Any
 import cv2
 import numpy as np
 import pymupdf
-from PIL import Image
 
-from .layout import (
-    MINERU_PIPELINE_BACKEND,
-    MINERU_PIPELINE_REVISION,
-    LayoutCache,
-    clamp_and_rescale,
-    clusters_to_items,
-    file_sha256,
-    get_layout_detector,
-    mineru_middle_json_to_cache_pages,
-    postprocess_layout,
-    run_mineru_pdf,
-)
+from .backends import CachedLayoutBackend, LayoutBackend, get as get_backend
+from .backends.layout_image import render_bgr
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox
 
 DEFAULT_DPI = 150
 LAYOUT_BOX_CONFIDENCE = 0.95
-_PNG_DEFAULT_DPI = 96.012
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_LAST_BACKEND_METRICS: dict[str, dict[str, Any]] = {}
 
 
 class _DisjointSetUnion:
@@ -114,29 +101,6 @@ def _detect_visual_containers(bgr: np.ndarray) -> list[list[float]]:
         if not any(_compute_iou(b, fb) > 0.85 for fb in filtered):
             filtered.append(b)
     return filtered
-
-
-def _run_layout_items(
-    detector: Any,
-    bgr: np.ndarray,
-) -> tuple[list[dict[str, Any]], tuple[float, float]]:
-    ih, iw = bgr.shape[:2]
-    pil_rgb = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    # Match the 72/96.012 PNG scale used when Docling's ImageDocumentBackend loaded PyMuPDF PNGs.
-    page_w = iw * 72.0 / _PNG_DEFAULT_DPI
-    page_h = ih * 72.0 / _PNG_DEFAULT_DPI
-    target_wh = (max(1, round(page_w)), max(1, round(page_h)))
-    pil_in = pil_rgb if pil_rgb.size == target_wh else pil_rgb.resize(target_wh, resample=Image.Resampling.LANCZOS)
-
-    raw_items = detector.detect(pil_in)
-    page_size = (page_w, page_h)
-    scaled = clamp_and_rescale(
-        [(it.label, it.bbox, it.score) for it in raw_items],
-        (float(target_wh[0]), float(target_wh[1])),
-        page_size,
-    )
-    clusters = postprocess_layout(scaled, page_size, keep_empty_clusters=False)
-    return clusters_to_items(clusters), page_size
 
 
 def _v1_group_boxes(
@@ -284,14 +248,6 @@ def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_rect: py
     )
 
 
-def _render_bgr(page: pymupdf.Page, dpi: int) -> tuple[np.ndarray, tuple[int, int]]:
-    zoom = dpi / 72.0
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    return bgr, (pix.width, pix.height)
-
-
 def _table_boxes_px(
     items: list[dict[str, Any]],
     img_size: tuple[int, int],
@@ -316,7 +272,7 @@ def detect_figures(
     pdf_path: str | Path,
     pages: Sequence[int] | None = None,
     *,
-    layout: str = "heron",
+    layout: str | LayoutBackend = "heron",
     dpi: int = DEFAULT_DPI,
     device: str = "auto",
     min_area: float = FIGURE_MIN_AREA,
@@ -330,25 +286,7 @@ def detect_figures(
         if cache_dir is not None
         else _REPO_ROOT / "outputs" / "08_pdf_figure_crops" / path.stem / "_layout_cache"
     )
-    detector_holder: list[Any] = []
-
-    def get_detector() -> Any:
-        if not detector_holder:
-            detector_holder.append(get_layout_detector(layout, device))
-        return detector_holder[0]
-
-    if layout == "heron":
-        from .layout.heron_transformers import HERON_REVISION
-
-        revision = HERON_REVISION
-        cache_dpi = dpi
-    elif layout == MINERU_PIPELINE_BACKEND:
-        revision = MINERU_PIPELINE_REVISION
-        cache_dpi = 0
-    else:
-        revision = get_detector()[1]
-        cache_dpi = dpi
-    cache = LayoutCache(cache_root, backend=layout, revision=revision, dpi=cache_dpi, pdf_hash=file_sha256(path))
+    backend = get_backend("layout", layout, device=device, dpi=dpi) if isinstance(layout, str) else layout
 
     doc = pymupdf.open(str(path))
     results: dict[int, list[FigureBox]] = {}
@@ -357,28 +295,16 @@ def detect_figures(
         for pno in target_pages:
             if not (1 <= pno <= len(doc)):
                 raise ValueError(f"page {pno} out of range 1..{len(doc)}")
+        if not target_pages:
+            return results
 
-        if layout == MINERU_PIPELINE_BACKEND and any(cache.load(pno) is None for pno in target_pages):
-            page_sizes = {i + 1: (float(doc[i].rect.width), float(doc[i].rect.height)) for i in range(len(doc))}
-            middle_json, metrics = run_mineru_pdf(path, device=device)
-            _LAST_BACKEND_METRICS[str(path.resolve())] = metrics
-            pages_out, unmapped, post_stats = mineru_middle_json_to_cache_pages(middle_json, page_sizes)
-            for pno_out, (items_out, psize_out) in pages_out.items():
-                cache.save(pno_out, items_out, psize_out)
-            print(f"[{layout}] unmapped_labels={sum(unmapped.values())} ({dict(unmapped)})")
-            for pno_stat, (dropped, changed) in sorted(post_stats.items()):
-                print(f"[{layout}] postprocess p{pno_stat}: dropped={dropped}, changed={changed}")
+        layouts = CachedLayoutBackend(backend, cache_root).analyze(path, target_pages)
 
         for pno in target_pages:
             page = doc[pno - 1]
-            bgr, img_size = _render_bgr(page, dpi)
-            cached = cache.load(pno)
-            if cached is not None:
-                items, page_size = cached
-            else:
-                detector, _ = get_detector()
-                items, page_size = _run_layout_items(detector, bgr)
-                cache.save(pno, items, page_size)
+            bgr, img_size = render_bgr(page, dpi)
+            page_layout = layouts[pno]
+            items, page_size = page_layout.items, page_layout.frame
 
             iw, ih = img_size
             raw_figs = _v1_group_boxes(bgr, items, img_size, page_size, min_area)
