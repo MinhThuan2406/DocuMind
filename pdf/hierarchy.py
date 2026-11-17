@@ -38,9 +38,12 @@ _APPENDIX_RE = re.compile(r"^appendix\s+([A-Z])(?:\.([0-9]+(?:\.[0-9]+)*))?\b[:.
 _APPENDIX_SUB_RE = re.compile(r"^([A-Z]\.[0-9]+(?:\.[0-9]+)*)\.?\s+(.+)$")
 _NUMERIC_HEADING_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(\.?)\s+(.+)$")
 _REQ_ID_RE = re.compile(r"^\[[A-Za-z0-9_.:-]{2,}\]")
+_DECORATIVE_RUN_RE = re.compile(r"[.\-_=•·]{4,}")
+_UML_MULTIPLICITY_RE = re.compile(r"\b\d+\.\.(?:\d+\b|\*)")
 _BULLET_RE = re.compile(r"^[•\-\*\u2022\u25e6\u25aa\u25b3\u25bd]")
 _MULTI_LIST_LINE_RE = re.compile(r"(?:^|\n)\s*(?:[0-9]+[.)]|[•\-\*\u2022])\s+\S")
 _MAX_HEADING_LEVEL = 6
+_MIN_STYLE_TIER_COUNT = 5
 
 
 def _clean_text(text: str) -> str:
@@ -340,7 +343,12 @@ def _is_heading_candidate(elem: dict[str, Any], body_font: float | None) -> tupl
     if num_depth is not None:
         return True, num_depth
 
-    if _REQ_ID_RE.match(cleaned) or cleaned.endswith(":"):
+    if (
+        _REQ_ID_RE.match(cleaned)
+        or cleaned.endswith(":")
+        or _DECORATIVE_RUN_RE.search(cleaned)
+        or _UML_MULTIPLICITY_RE.search(cleaned)
+    ):
         return False, None
 
     if len(cleaned) > 140 or len(cleaned.split()) > 16 or _sentence_count(cleaned) >= 2:
@@ -371,11 +379,21 @@ def _style_key(elem: dict[str, Any]) -> tuple[float, bool] | None:
     return (round(float(fs) * 2.0) / 2.0, bool(meta.get("bold")))
 
 
-def _cluster_styles(styles: list[tuple[float, bool]], max_levels: int = _MAX_HEADING_LEVEL) -> dict[tuple[float, bool], int]:
-    # Collapse excess style pairs by smallest font-size gap so unnumbered levels stay within 1..max_levels.
+def _cluster_styles(
+    styles: list[tuple[float, bool]],
+    counts: dict[tuple[float, bool], int],
+    max_levels: int = _MAX_HEADING_LEVEL,
+) -> dict[tuple[float, bool], int]:
+    # Collapse excess style pairs into <= max_levels, merging rare outlier styles before common heading tiers.
     groups: list[list[tuple[float, bool]]] = [[s] for s in styles]
     while len(groups) > max_levels:
-        best_i = min(range(len(groups) - 1), key=lambda i: groups[i][-1][0] - groups[i + 1][0][0])
+        def _merge_cost(i: int) -> tuple[bool, float, int, int]:
+            c_hi = sum(counts[s] for s in groups[i])
+            c_lo = sum(counts[s] for s in groups[i + 1])
+            gap = groups[i][-1][0] - groups[i + 1][0][0]
+            return (min(c_hi, c_lo) >= _MIN_STYLE_TIER_COUNT, gap, min(c_hi, c_lo), c_hi + c_lo)
+
+        best_i = min(range(len(groups) - 1), key=_merge_cost)
         groups[best_i].extend(groups[best_i + 1])
         del groups[best_i + 1]
     return {style: rank for rank, grp in enumerate(groups, start=1) for style in grp}
@@ -384,17 +402,14 @@ def _cluster_styles(styles: list[tuple[float, bool]], max_levels: int = _MAX_HEA
 def _assign_heading_levels(
     headings: list[tuple[dict[str, Any], int | None]],
 ) -> dict[str, int]:
-    styles = sorted(
-        {
-            key
-            for elem, explicit_depth in headings
-            if explicit_depth is None
-            and (elem.get("metadata") or {}).get("layout_label") != "title"
-            and (key := _style_key(elem)) is not None
-        },
-        reverse=True,
-    )
-    style_rank = _cluster_styles(styles)
+    style_counts: dict[tuple[float, bool], int] = {}
+    for elem, explicit_depth in headings:
+        if explicit_depth is None and (elem.get("metadata") or {}).get("layout_label") != "title":
+            key = _style_key(elem)
+            if key is not None:
+                style_counts[key] = style_counts.get(key, 0) + 1
+    styles = sorted(style_counts, reverse=True)
+    style_rank = _cluster_styles(styles, style_counts)
     has_title = any((elem.get("metadata") or {}).get("layout_label") == "title" for elem, _ in headings)
 
     levels: dict[str, int] = {}

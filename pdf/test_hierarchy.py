@@ -366,6 +366,36 @@ def test_caps_excess_unnumbered_styles_at_level_six():
     assert levels == sorted(levels)
 
 
+def test_rejects_decorative_leaders_and_uml_multiplicity_and_preserves_common_tiers():
+    elements = [
+        _elem("body", page=1, reading_order=0, text="Regular body paragraph text repeated to anchor median body font size accurately. " * 6, font_size=14.0, bold=False),
+        _elem("dots", page=1, reading_order=1, text=".............. Interface", font_size=28.0, bold=True),
+        _elem("uml", page=1, reading_order=2, text="Runnable 0..*", font_size=18.0, bold=False),
+        _elem("cover1", page=1, reading_order=3, text="Cover Banner", font_size=24.0, bold=False),
+        _elem("cover2", page=1, reading_order=4, text="Cover Subtitle", font_size=22.0, bold=False),
+        _elem("rare1", page=1, reading_order=5, text="Rare Callout A", font_size=20.5, bold=False),
+        _elem("rare2", page=1, reading_order=6, text="Rare Callout B", font_size=20.0, bold=True),
+        _elem("rare3", page=1, reading_order=7, text="Rare Mid Label", font_size=15.0, bold=True),
+    ]
+    ro = 8
+    for i in range(6):
+        elements.append(_elem(f"t{i}", page=2, reading_order=ro, text=f"Slide Title {i}", font_size=16.0, bold=True))
+        ro += 1
+        elements.append(_elem(f"s{i}", page=2, reading_order=ro, text=f"Slide Subhead {i}", font_size=14.0, bold=True))
+        ro += 1
+    for i in range(6):
+        elements.append(_elem(f"m{i}", page=2, reading_order=ro, text=f"Diagram Group {i}", font_size=18.0, bold=False))
+        ro += 1
+
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert by_id["dots"]["metadata"].get("role") is None
+    assert by_id["uml"]["metadata"].get("role") is None
+    # Common 16pt slide titles must remain strictly higher-level than common 14pt slide subheads.
+    assert by_id["t0"]["metadata"]["heading_level"] < by_id["s0"]["metadata"]["heading_level"]
+    assert 1 <= by_id["s0"]["metadata"]["heading_level"] <= 6
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0
