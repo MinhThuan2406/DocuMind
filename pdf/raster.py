@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -89,11 +90,25 @@ def read_raster_page(
     pdf_path: str | Path,
     page: int,
     *,
+    raster_backend: str = "default",
     layout: str = "heron",
     ocr_backend: str = "rapidocr",
     device: str = "auto",
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> RasterPage:
+    if raster_backend == "mineru-pipeline":
+        return read_raster_pages(
+            pdf_path,
+            [page],
+            raster_backend=raster_backend,
+            layout=layout,
+            ocr_backend=ocr_backend,
+            device=device,
+            dpi=dpi,
+        )[page]
+    if raster_backend not in ("default", "heron_rapidocr"):
+        raise ValueError(f"unknown raster_backend: {raster_backend!r}")
+
     doc_pdf = pymupdf.open(str(pdf_path))
     try:
         if not (1 <= page <= len(doc_pdf)):
@@ -186,3 +201,48 @@ def read_raster_page(
         figures=tuple(figures),
         reading_order=tuple(range(len(ordered_blocks))),
     )
+
+
+def read_raster_pages(
+    pdf_path: str | Path,
+    pages: Sequence[int],
+    *,
+    raster_backend: str = "default",
+    layout: str = "heron",
+    ocr_backend: str = "rapidocr",
+    device: str = "auto",
+    dpi: int = DEFAULT_RASTER_DPI,
+) -> dict[int, RasterPage]:
+    page_list = list(pages)
+    if not page_list:
+        return {}
+    if raster_backend == "mineru-pipeline":
+        from .layout.mineru_pipeline import mineru_middle_json_to_raster_pages, run_mineru_pdf
+
+        doc_pdf = pymupdf.open(str(pdf_path))
+        try:
+            page_sizes = {
+                idx: (float(p.rect.width), float(p.rect.height))
+                for idx, p in enumerate(doc_pdf, start=1)
+            }
+        finally:
+            doc_pdf.close()
+        for pno in page_list:
+            if pno not in page_sizes:
+                raise ValueError(f"page {pno} out of range 1..{len(page_sizes)}")
+        middle_json, _ = run_mineru_pdf(pdf_path, device=device, strip_content=False, ocr_mode="auto")
+        return mineru_middle_json_to_raster_pages(middle_json, page_sizes, target_pages=page_list)
+    if raster_backend not in ("default", "heron_rapidocr"):
+        raise ValueError(f"unknown raster_backend: {raster_backend!r}")
+    return {
+        pno: read_raster_page(
+            pdf_path,
+            pno,
+            raster_backend=raster_backend,
+            layout=layout,
+            ocr_backend=ocr_backend,
+            device=device,
+            dpi=dpi,
+        )
+        for pno in page_list
+    }

@@ -10,12 +10,16 @@ import pymupdf
 from PIL import Image
 
 from .layout import (
+    MINERU_PIPELINE_BACKEND,
+    MINERU_PIPELINE_REVISION,
     LayoutCache,
     clamp_and_rescale,
     clusters_to_items,
     file_sha256,
     get_layout_detector,
+    mineru_middle_json_to_cache_pages,
     postprocess_layout,
+    run_mineru_pdf,
 )
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox
 
@@ -24,6 +28,7 @@ LAYOUT_BOX_CONFIDENCE = 0.95
 _PNG_DEFAULT_DPI = 96.012
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_LAST_BACKEND_METRICS: dict[str, dict[str, Any]] = {}
 
 
 class _DisjointSetUnion:
@@ -336,9 +341,14 @@ def detect_figures(
         from .layout.heron_transformers import HERON_REVISION
 
         revision = HERON_REVISION
+        cache_dpi = dpi
+    elif layout == MINERU_PIPELINE_BACKEND:
+        revision = MINERU_PIPELINE_REVISION
+        cache_dpi = 0
     else:
         revision = get_detector()[1]
-    cache = LayoutCache(cache_root, backend=layout, revision=revision, dpi=dpi, pdf_hash=file_sha256(path))
+        cache_dpi = dpi
+    cache = LayoutCache(cache_root, backend=layout, revision=revision, dpi=cache_dpi, pdf_hash=file_sha256(path))
 
     doc = pymupdf.open(str(path))
     results: dict[int, list[FigureBox]] = {}
@@ -347,6 +357,19 @@ def detect_figures(
         for pno in target_pages:
             if not (1 <= pno <= len(doc)):
                 raise ValueError(f"page {pno} out of range 1..{len(doc)}")
+
+        if layout == MINERU_PIPELINE_BACKEND and any(cache.load(pno) is None for pno in target_pages):
+            page_sizes = {i + 1: (float(doc[i].rect.width), float(doc[i].rect.height)) for i in range(len(doc))}
+            middle_json, metrics = run_mineru_pdf(path, device=device)
+            _LAST_BACKEND_METRICS[str(path.resolve())] = metrics
+            pages_out, unmapped, post_stats = mineru_middle_json_to_cache_pages(middle_json, page_sizes)
+            for pno_out, (items_out, psize_out) in pages_out.items():
+                cache.save(pno_out, items_out, psize_out)
+            print(f"[{layout}] unmapped_labels={sum(unmapped.values())} ({dict(unmapped)})")
+            for pno_stat, (dropped, changed) in sorted(post_stats.items()):
+                print(f"[{layout}] postprocess p{pno_stat}: dropped={dropped}, changed={changed}")
+
+        for pno in target_pages:
             page = doc[pno - 1]
             bgr, img_size = _render_bgr(page, dpi)
             cached = cache.load(pno)

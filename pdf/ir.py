@@ -59,6 +59,7 @@ def extract_ir(
     ocr: bool = True,
     layout: str = "heron",
     ocr_backend: str = "rapidocr",
+    raster_backend: str = "default",
     device: str = "auto",
     min_font_size: float = 0.0,
 ) -> dict[str, Any]:
@@ -99,16 +100,16 @@ def extract_ir(
         if ocr:
             raster_pages = [p.page for p in profiles if p.kind == "raster"]
             if raster_pages:
-                from .raster import read_raster_page
+                from .raster import read_raster_pages
 
-                for pno in raster_pages:
-                    raster_by_page[pno] = read_raster_page(
-                        pdf_path,
-                        pno,
-                        layout=layout,
-                        ocr_backend=ocr_backend,
-                        device=device,
-                    )
+                raster_by_page = read_raster_pages(
+                    pdf_path,
+                    raster_pages,
+                    raster_backend=raster_backend,
+                    layout=layout,
+                    ocr_backend=ocr_backend,
+                    device=device,
+                )
 
         elements: list[dict[str, Any]] = []
         elem_counter = 0

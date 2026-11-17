@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 import pdf.raster as raster_mod  # noqa: E402
 from pdf import extract_ir  # noqa: E402
+from pdf.layout import mineru_middle_json_to_raster_pages  # noqa: E402
 from pdf.layout.types import LayoutItem  # noqa: E402
 from pdf.ocr.types import OcrLine  # noqa: E402
 
@@ -91,6 +92,115 @@ def test_read_raster_page_and_ir_emit_ocr_source_and_confidence():
     assert elems[1]["confidence"] == 0.93 and elems[1]["source"] == "ocr"
     assert elems[2]["source"] == "layout_picture"
     assert "docling" not in sys.modules
+
+
+def test_mineru_middle_json_to_raster_pages_keeps_headers_and_ocr_source():
+    middle_json = {
+        "pages": [
+            {
+                "page_idx": 0,
+                "blocks": [
+                    {
+                        "type": "header",
+                        "index": 0,
+                        "bbox": [0.1, 0.05, 0.5, 0.08],
+                        "content": [{"type": "text", "content": "Section Header", "styles": []}],
+                    },
+                    {
+                        "type": "page_number",
+                        "index": 1,
+                        "bbox": [0.8, 0.05, 0.9, 0.08],
+                        "content": [{"type": "text", "content": "25", "styles": []}],
+                    },
+                    {
+                        "type": "text",
+                        "index": 2,
+                        "bbox": [0.1, 0.12, 0.9, 0.25],
+                        "content": [
+                            {"type": "text", "content": "Solve", "styles": []},
+                            {"type": "equation_inline", "content": "x^2 = 1"},
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "index": 3,
+                        "bbox": [0.1, 0.30, 0.9, 0.60],
+                        "content": [
+                            {"type": "table_caption", "content": [{"type": "text", "content": "Table 1", "styles": []}]},
+                            {"type": "table_body", "content": "<table><tr><td>A</td><td>1</td></tr></table>"},
+                        ],
+                    },
+                    {
+                        "type": "image",
+                        "index": 4,
+                        "bbox": [0.1, 0.65, 0.9, 0.90],
+                        "content": [
+                            {"type": "image_body", "image_path": "fig.png"},
+                            {"type": "image_caption", "content": [{"type": "text", "content": "Figure 1", "styles": []}]},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    pages = mineru_middle_json_to_raster_pages(middle_json, {1: (600.0, 800.0)})
+    rp = pages[1]
+    assert len(rp.figures) == 2
+    assert [f.kind for f in rp.figures] == ["table", "figure"]
+    texts = [b.text for b in rp.blocks]
+    assert "Section Header" in texts
+    assert "25" in texts
+    assert any("x^2 = 1" in t for t in texts)
+    assert "Table 1" in texts
+    assert any("<td>A</td>" in t for t in texts)
+    assert "Figure 1" in texts
+    assert all(b.source == "ocr" and isinstance(b.confidence, float) for b in rp.blocks)
+
+
+def test_extract_ir_batch_calls_read_raster_pages_once_for_mineru():
+    import pdf.layout.mineru_pipeline as mp_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "scan2.pdf"
+        doc = pymupdf.open()
+        for label in ("Page One", "Page Two"):
+            img = Image.new("RGB", (600, 300), color=(255, 255, 255))
+            ImageDraw.Draw(img).text((40, 80), label, fill=(0, 0, 0))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            p = doc.new_page(width=600, height=300)
+            p.insert_image(p.rect, stream=buf.getvalue())
+        doc.save(str(pdf_path))
+        doc.close()
+
+        calls = 0
+        fake_mj = {
+            "pages": [
+                {"page_idx": 0, "blocks": [{"type": "text", "index": 0, "bbox": [0.1, 0.1, 0.5, 0.3], "content": [{"type": "text", "content": "P1"}]}]},
+                {"page_idx": 1, "blocks": [{"type": "text", "index": 0, "bbox": [0.1, 0.1, 0.5, 0.3], "content": [{"type": "text", "content": "P2"}]}]},
+            ]
+        }
+
+        def _fake_run(path, **kwargs):
+            nonlocal calls
+            del path, kwargs
+            calls += 1
+            return fake_mj, {"pages_processed": 2}
+
+        orig = mp_mod.run_mineru_pdf
+        try:
+            mp_mod.run_mineru_pdf = _fake_run
+            ir = extract_ir(pdf_path, figures=False, ocr=True, raster_backend="mineru-pipeline")
+        finally:
+            mp_mod.run_mineru_pdf = orig
+
+        assert calls == 1
+        assert [e["text"] for e in ir["elements"]] == ["P1", "P2"]
+        assert all(e["source"] == "ocr" and isinstance(e["confidence"], float) for e in ir["elements"])
+
+        ir_off = extract_ir(pdf_path, figures=False, ocr=False, raster_backend="mineru-pipeline")
+        assert ir_off["elements"] == []
+        assert len(ir_off["metadata"]["unreadable_pages"]) == 2
 
 
 def main():

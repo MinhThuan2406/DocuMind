@@ -10,8 +10,16 @@ import pymupdf  # noqa: E402
 from PIL import Image  # noqa: E402
 
 import pdf.figures as figures_mod  # noqa: E402
+from pdf import extract_ir  # noqa: E402
 from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
-from pdf.layout import LayoutCache, file_sha256  # noqa: E402
+from pdf.layout import (  # noqa: E402
+    MINERU_PIPELINE_BACKEND,
+    MINERU_PIPELINE_REVISION,
+    LayoutCache,
+    file_sha256,
+    mineru_middle_json_to_cache_pages,
+)
+from pdf.layout.mineru_pipeline import find_mineru_python  # noqa: E402
 
 
 def test_importing_figures_does_not_load_docling_or_torch():
@@ -84,7 +92,11 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
     assert "docling" not in sys.modules
 
     sys.path.insert(0, str(scratch_scripts))
-    from run_pdf_figure_crops import compute_boxes  # noqa: E402
+    try:
+        from run_pdf_figure_crops import compute_boxes  # noqa: E402
+    except ImportError:
+        print("SKIP structure scripts require docling (not installed)")
+        return
 
     doc = pymupdf.open(str(layered))
     zoom = 150.0 / 72.0
@@ -127,6 +139,117 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
                 for gv, ev in zip(g, e):
                     assert abs(gv - ev) <= 0.1, (pno, g, e)
     doc.close()
+
+
+def test_mineru_fixture_mapping_clamping_and_cache_hit():
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "mineru_dumps" / "autosar_p13_stripped.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert all("content" not in b for pg in fixture["pages"] for b in pg["blocks"])
+
+    pages_out, unmapped, _post = mineru_middle_json_to_cache_pages(fixture, {13: (800.0, 500.0)})
+    assert sum(unmapped.values()) == 0
+    items13, psize13 = pages_out[13]
+    assert psize13 == (800.0, 500.0)
+    assert [it["label"] for it in items13] == ["picture"]
+
+    synthetic = {
+        "pages": [
+            {
+                "page_idx": 0,
+                "blocks": [
+                    {"type": "image", "bbox": [-0.1, 0.1, 0.5, 0.5], "score": 1.0},
+                    {"type": "chart", "bbox": [0.6, 0.1, 1.1, 0.5], "score": 1.0},
+                    {"type": "table", "bbox": [0.1, 0.55, 0.8, 0.85], "score": 1.0},
+                    {"type": "equation", "bbox": [0.1, 0.86, 0.4, 0.92], "score": 1.0},
+                    {"type": "inline_equation", "bbox": [0.1, 0.05, 0.2, 0.08], "score": 1.0},
+                    {"type": "image", "bbox": [0.0, 0.0, 0.98, 0.98], "score": 1.0},
+                    {"type": "unknown_block_type", "bbox": [0.2, 0.2, 0.3, 0.3], "score": 1.0},
+                ],
+            }
+        ]
+    }
+    syn_out, syn_unmapped, syn_post = mineru_middle_json_to_cache_pages(synthetic, {1: (600.0, 400.0)})
+    assert dict(syn_unmapped) == {"unknown_block_type": 1}
+    assert syn_post[1][0] >= 1
+    labels = [it["label"] for it in syn_out[1][0]]
+    assert "formula" in labels and "table" in labels and labels.count("picture") == 2
+    for it in syn_out[1][0]:
+        x0, y0, x1, y1 = it["bbox"]
+        assert 0.0 <= x0 < x1 <= 600.0 and 0.0 <= y0 < y1 <= 400.0
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "mineru_sample.pdf"
+        doc = pymupdf.open()
+        doc.new_page(width=600, height=400)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        cache_root = tmp_path / "cache"
+        LayoutCache(
+            cache_root,
+            backend=MINERU_PIPELINE_BACKEND,
+            revision=MINERU_PIPELINE_REVISION,
+            dpi=0,
+            pdf_hash=file_sha256(pdf_path),
+        ).save(1, syn_out[1][0], (600.0, 400.0))
+
+        orig_run = figures_mod.run_mineru_pdf
+        orig_get = figures_mod.get_layout_detector
+        try:
+            figures_mod.run_mineru_pdf = lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should hit cache"))
+            figures_mod.get_layout_detector = lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not build detector"))
+            out = detect_figures(pdf_path, [1], layout=MINERU_PIPELINE_BACKEND, cache_dir=cache_root)
+        finally:
+            figures_mod.run_mineru_pdf = orig_run
+            figures_mod.get_layout_detector = orig_get
+        assert any(b.kind == "figure" for b in out[1])
+        assert any(b.kind == "table" for b in out[1])
+
+        had_torch = "torch" in sys.modules
+        ir_plain = extract_ir(pdf_path, figures=False, ocr=False)
+        assert ir_plain["doc_type"] == "pdf"
+        if not had_torch:
+            assert "torch" not in sys.modules
+        assert "mineru" not in sys.modules
+
+
+def test_mineru_subprocess_integration_optional():
+    try:
+        find_mineru_python()
+    except FileNotFoundError:
+        print("SKIP MinerU venv not present")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "two_pages.pdf"
+        doc = pymupdf.open()
+        p1 = doc.new_page(width=600, height=400)
+        p1.insert_text((40, 40), "Page one text", fontsize=12)
+        p2 = doc.new_page(width=600, height=400)
+        img = Image.new("RGB", (300, 200), (220, 230, 240))
+        buf = tmp_path / "box.png"
+        img.save(buf)
+        p2.insert_image(pymupdf.Rect(100, 80, 400, 280), filename=str(buf))
+        doc.save(str(pdf_path))
+        doc.close()
+
+        cache_root = tmp_path / "cache"
+        had_torch = "torch" in sys.modules
+        res = detect_figures(pdf_path, [2], layout=MINERU_PIPELINE_BACKEND, cache_dir=cache_root)
+        assert 2 in res
+        assert "mineru" not in sys.modules
+        if not had_torch:
+            assert "torch" not in sys.modules
+        p1_cache = LayoutCache(
+            cache_root,
+            backend=MINERU_PIPELINE_BACKEND,
+            revision=MINERU_PIPELINE_REVISION,
+            dpi=0,
+            pdf_hash=file_sha256(pdf_path),
+        ).load(1)
+        assert p1_cache is not None
 
 
 def main():
