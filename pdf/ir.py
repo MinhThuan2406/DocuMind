@@ -6,7 +6,7 @@ from typing import Any
 import pymupdf
 
 from .assemble import AssembledItem, assemble_page
-from .backends import LayoutBackend, PageReader
+from .backends import FigureGrouper, LayoutBackend, PageReader
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
 from .text import extract_words
@@ -59,6 +59,7 @@ def extract_ir(
     figures: bool = True,
     ocr: bool = True,
     layout: str | LayoutBackend = "heron",
+    grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr",
     device: str = "auto",
@@ -95,7 +96,7 @@ def extract_ir(
         if figures and candidate_pages:
             from .figures import detect_figures
 
-            figures_by_page = detect_figures(pdf_path, candidate_pages, layout=layout, device=device)
+            figures_by_page = detect_figures(pdf_path, candidate_pages, layout=layout, grouper=grouper, device=device)
 
         raster_by_page: dict[int, RasterPage] = {}
         if ocr:

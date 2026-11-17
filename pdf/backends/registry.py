@@ -27,6 +27,8 @@ def _ensure_builtins() -> None:
     _FACTORIES[("ocr", "rapidocr")] = _rapidocr_factory
     _FACTORIES[("reader", "composed")] = _composed_reader_factory
     _FACTORIES[("reader", "mineru-pipeline")] = _mineru_reader_factory
+    _FACTORIES[("grouper", "v1_anchor")] = _v1_anchor_factory
+    _FACTORIES[("grouper", "raw_picture")] = _raw_picture_factory
 
 
 def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
@@ -74,6 +76,18 @@ def _mineru_reader_factory(*, device: str = "auto", python_exe: str | None = Non
     from .mineru import MinerUReader
 
     return MinerUReader(device=device, python_exe=python_exe)
+
+
+def _v1_anchor_factory(**_extra: Any) -> Any:
+    from ..grouping import V1AnchorGrouper
+
+    return V1AnchorGrouper()
+
+
+def _raw_picture_factory(**_extra: Any) -> Any:
+    from ..grouping import RawPictureGrouper
+
+    return RawPictureGrouper()
 
 
 def register(kind: str, name: str, factory: Factory) -> None:

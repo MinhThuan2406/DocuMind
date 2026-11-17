@@ -69,6 +69,13 @@ def test_cache_and_live_confidence_match_and_table_boxes_emitted():
         assert from_cache[1][1].source == "layout_table"
         assert all(b.confidence == LAYOUT_BOX_CONFIDENCE for b in from_cache[1])
 
+        raw_only = detect_figures(
+            pdf_path, [1], layout="custom", grouper="raw_picture", cache_dir=cache_root, include_tables=False
+        )
+        assert len(raw_only[1]) == 1
+        assert raw_only[1][0].source == "layout_picture"
+        assert "raw_picture" in registered("grouper") and "v1_anchor" in registered("grouper")
+
 
 def test_matches_structure_branch_compute_boxes_on_dev_pages():
     layered = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf"
