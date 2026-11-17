@@ -7,6 +7,7 @@ import pymupdf
 
 from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
 from .backends import FigureGrouper, LayoutBackend, PageReader
+from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
 from .text import extract_words
@@ -68,6 +69,7 @@ def extract_ir(
     ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     min_font_size: float = 0.0,
+    structure: bool = True,
 ) -> dict[str, Any]:
     pdf_path = Path(path)
     source_file = pdf_path.name
@@ -151,7 +153,7 @@ def extract_ir(
 
     tag_running_headers_footers(elements, {p["number"]: float(p["height_pt"]) for p in page_sizes})
 
-    return {
+    ir = {
         "doc_id": pdf_path.stem,
         "source_file": source_file,
         "doc_type": "pdf",
@@ -167,3 +169,6 @@ def extract_ir(
         "tables": [],
         "diagrams": [],
     }
+    if structure:
+        apply_structure(ir, inplace=True)
+    return ir

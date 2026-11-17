@@ -227,11 +227,11 @@ def test_running_header_footer_tagging_multipage():
     assert all(e["metadata"].get("role") == "page_footer" for e in footers)
 
     endnote = [e for e in elems if e["text"] == "Final endnote"][0]
-    assert "role" not in endnote["metadata"]
+    assert endnote["metadata"].get("role") not in ("page_header", "page_footer")
 
     body_repeated = [e for e in elems if "Repeated body note" in e["text"]]
     assert len(body_repeated) == 4
-    assert all("role" not in e["metadata"] for e in body_repeated)
+    assert all(e["metadata"].get("role") not in ("page_header", "page_footer") for e in body_repeated)
 
     for pno in range(1, 5):
         ros = [e["reading_order"] for e in elems if e["page"] == pno]
@@ -247,7 +247,7 @@ def test_running_header_footer_tagging_multipage():
         doc2.save(str(two_page))
         doc2.close()
         ir2 = ir_mod.extract_ir(two_page, figures=False, ocr=False)
-        assert all("role" not in e["metadata"] for e in ir2["elements"])
+        assert all(e["metadata"].get("role") not in ("page_header", "page_footer") for e in ir2["elements"])
 
     direct_elems = [
         {"type": "text", "page": 1, "level": 1, "bbox": [10, 20, 100, 40], "text": "Hdr", "metadata": {"layout_label": "page_header"}},

@@ -327,6 +327,45 @@ def test_autosar_hierarchy_integration():
     assert any("Figure 1.2: Structure of the document" in c["text"] for c in captions)
 
 
+def test_rejects_requirement_ids_and_colon_labels():
+    elements = [
+        _elem("sec", page=1, reading_order=0, text="7.12.2 Requirements", font_size=12.0, bold=True),
+        _elem("req1", page=1, reading_order=1, text="[SWS_Os_00001]", font_size=12.0, bold=True),
+        _elem("body1", page=1, reading_order=2, text="The Operating System module shall initialize internal tables at startup.", font_size=11.0, bold=False),
+        _elem("req2", page=1, reading_order=3, text="[ECUC_Os_00396] Definition of EcucModuleDef Os", font_size=12.0, bold=True),
+        _elem("lbl1", page=1, reading_order=4, text="General:", font_size=12.0, bold=True),
+        _elem("lbl2", page=1, reading_order=5, text="Parameters:", font_size=12.0, bold=True),
+        _elem("lbl3", page=1, reading_order=6, text="Returned values:", font_size=12.0, bold=True),
+        _elem("body2", page=1, reading_order=7, text="Status code returned to caller after execution.", font_size=11.0, bold=False),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["sec"]["metadata"]["role"] == "heading"
+    for bad_id in ("req1", "req2", "lbl1", "lbl2", "lbl3"):
+        assert by_id[bad_id]["metadata"].get("role") is None
+        assert "heading_level" not in by_id[bad_id]["metadata"]
+        assert by_id[bad_id]["metadata"]["section_parent_id"] == "sec"
+    assert by_id["body1"]["metadata"]["section_parent_id"] == "sec"
+    assert by_id["body2"]["metadata"]["section_parent_id"] == "sec"
+
+
+def test_caps_excess_unnumbered_styles_at_level_six():
+    sizes = [28.0, 24.0, 22.0, 20.0, 18.0, 16.0, 15.0, 14.0, 12.0]
+    elements = [
+        _elem("body", page=1, reading_order=0, text="Regular body paragraph text repeated to anchor median body font size accurately. " * 4, font_size=10.0, bold=False),
+    ]
+    for idx, fs in enumerate(sizes, start=1):
+        elements.append(
+            _elem(f"h{idx}", page=1, reading_order=idx, text=f"Section Tier {idx}", font_size=fs, bold=(idx % 2 == 1))
+        )
+    out = apply_structure(_ir(elements))
+    levels = [e["metadata"]["heading_level"] for e in out["elements"] if e["id"].startswith("h")]
+    assert all(1 <= lv <= 6 for lv in levels)
+    assert max(levels) == 6 and min(levels) == 1
+    assert levels == sorted(levels)
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0
