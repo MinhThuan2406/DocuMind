@@ -61,9 +61,9 @@ class HeronDetector:
         self._device: Any = None
         self._id2label: dict[int, str] = {}
 
-    def _ensure_loaded(self) -> None:
+    def ensure_loaded(self) -> bool:
         if self._model is not None:
-            return
+            return False
         import torch
         from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
@@ -74,11 +74,12 @@ class HeronDetector:
         self._model.to(self._device)
         self._model.eval()
         self._id2label = _load_id2label(folder, self._model)
+        return True
 
     def detect(self, image: Image.Image) -> list[LayoutItem]:
         import torch
 
-        self._ensure_loaded()
+        self.ensure_loaded()
         rgb = image.convert("RGB")
         inputs = self._processor(images=[rgb], return_tensors="pt").to(self._device, self._model.dtype)
         target_sizes = torch.tensor([[rgb.height, rgb.width]], device=self._device)

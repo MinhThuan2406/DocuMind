@@ -10,27 +10,44 @@ from ..ocr.types import OcrLine
 
 
 class RapidOcrRecognizer:
-    # Lazy wrapper around rapidocr.RapidOCR (ONNXRuntime, no PyTorch required).
-    def __init__(self, *, text_score: float = 0.5) -> None:
+    # Lazy wrapper around rapidocr.RapidOCR (ONNXRuntime CPU by default, optional Torch CUDA).
+    def __init__(self, *, text_score: float = 0.5, engine: str = "onnxruntime", device: str = "cpu") -> None:
         self.text_score = text_score
+        self.engine = engine
+        self.device = device
         self._reader: Any = None
 
-    def _ensure_loaded(self) -> None:
+    def ensure_loaded(self) -> bool:
         if self._reader is not None:
-            return
-        from rapidocr import RapidOCR
+            return False
+        from rapidocr import EngineType, RapidOCR
 
-        self._reader = RapidOCR(
-            params={
-                "Global.text_score": self.text_score,
-                "Global.log_level": "warning",
-            }
-        )
+        params: dict[str, Any] = {
+            "Global.text_score": self.text_score,
+            "Global.log_level": "warning",
+        }
+        use_gpu = self.device in ("auto", "cuda", "gpu")
+        if self.engine == "torch":
+            params["Det.engine_type"] = EngineType.TORCH
+            params["Cls.engine_type"] = EngineType.TORCH
+            params["Rec.engine_type"] = EngineType.TORCH
+            params["EngineConfig.torch.use_cuda"] = use_gpu
+        elif self.engine == "onnxruntime" and use_gpu:
+            import onnxruntime as ort
+
+            try:
+                ort.preload_dlls()
+            except Exception:
+                pass
+            params["EngineConfig.onnxruntime.use_cuda"] = True
+
+        self._reader = RapidOCR(params=params)
+        return True
 
     def _run_array(self, image: Image.Image, offset: tuple[float, float] = (0.0, 0.0)) -> list[OcrLine]:
         import numpy as np
 
-        self._ensure_loaded()
+        self.ensure_loaded()
         rgb = image.convert("RGB")
         res = self._reader(np.asarray(rgb))
         if res is None or res.boxes is None or not res.txts:

@@ -68,6 +68,13 @@ class ImageLayoutBackend:
         target_pages = sorted(set(pages))
         if not target_pages:
             return {}
+        load_sec = 0.0
+        ensure = getattr(self.detector, "ensure_loaded", None)
+        if callable(ensure):
+            t_load0 = time.perf_counter()
+            if ensure():
+                load_sec = time.perf_counter() - t_load0
+
         doc = pymupdf.open(str(pdf_path))
         t0 = time.perf_counter()
         out: dict[int, PageLayout] = {}
@@ -81,6 +88,7 @@ class ImageLayoutBackend:
         finally:
             doc.close()
         self.last_stats = RunStats(
+            load_sec=round(load_sec, 4),
             infer_sec=round(time.perf_counter() - t0, 4),
             pages=len(target_pages),
             peak_rss_mb=peak_rss_mb(),

@@ -52,7 +52,7 @@ def detect_figures(
     pdf_path: str | Path,
     pages: Sequence[int] | None = None,
     *,
-    layout: str | LayoutBackend = "heron",
+    layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     dpi: int = DEFAULT_DPI,
     device: str = "auto",

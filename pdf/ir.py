@@ -58,10 +58,10 @@ def extract_ir(
     *,
     figures: bool = True,
     ocr: bool = True,
-    layout: str | LayoutBackend = "heron",
+    layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
-    ocr_backend: str = "rapidocr",
+    ocr_backend: str = "rapidocr-torch",
     device: str = "auto",
     min_font_size: float = 0.0,
 ) -> dict[str, Any]:
@@ -108,7 +108,7 @@ def extract_ir(
                     pdf_path,
                     raster_pages,
                     reader=reader,
-                    layout=layout if isinstance(layout, str) else "heron",
+                    layout=layout if isinstance(layout, str) else "heron-onnx",
                     ocr_backend=ocr_backend,
                     device=device,
                 )

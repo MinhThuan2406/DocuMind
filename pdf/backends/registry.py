@@ -22,10 +22,16 @@ def _ensure_builtins() -> None:
         return
     _BUILTINS_LOADED = True
     _FACTORIES[("detector", "heron")] = _heron_detector_factory
+    _FACTORIES[("detector", "heron-onnx")] = _heron_onnx_detector_factory
     _FACTORIES[("layout", "heron")] = _heron_layout_factory
+    _FACTORIES[("layout", "heron-onnx")] = _heron_onnx_layout_factory
     _FACTORIES[("layout", "mineru-pipeline")] = _mineru_layout_factory
     _FACTORIES[("ocr", "rapidocr")] = _rapidocr_factory
+    _FACTORIES[("ocr", "rapidocr-onnx")] = _rapidocr_onnx_factory
+    _FACTORIES[("ocr", "rapidocr-torch")] = _rapidocr_torch_factory
     _FACTORIES[("reader", "composed")] = _composed_reader_factory
+    _FACTORIES[("reader", "heron-onnx+rapidocr-onnx")] = _heron_onnx_rapidocr_onnx_factory
+    _FACTORIES[("reader", "heron-onnx+rapidocr-torch")] = _heron_onnx_rapidocr_torch_factory
     _FACTORIES[("reader", "mineru-pipeline")] = _mineru_reader_factory
     _FACTORIES[("grouper", "v1_anchor")] = _v1_anchor_factory
     _FACTORIES[("grouper", "raw_picture")] = _raw_picture_factory
@@ -37,12 +43,26 @@ def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
     return HeronDetector(device=device)
 
 
+def _heron_onnx_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
+    from .heron_onnx import HeronOnnxDetector
+
+    return HeronOnnxDetector(device=device)
+
+
 def _heron_layout_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
     from .heron import HERON_REVISION
     from .layout_image import ImageLayoutBackend
 
     detector = get("detector", "heron", device=device)
     return ImageLayoutBackend(detector=detector, name="heron", revision=HERON_REVISION, dpi=dpi)
+
+
+def _heron_onnx_layout_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+    from .heron_onnx import HERON_ONNX_REVISION
+    from .layout_image import ImageLayoutBackend
+
+    detector = get("detector", "heron-onnx", device=device)
+    return ImageLayoutBackend(detector=detector, name="heron-onnx", revision=HERON_ONNX_REVISION, dpi=dpi)
 
 
 def _mineru_layout_factory(*, device: str = "auto", python_exe: str | None = None, **_extra: Any) -> Any:
@@ -54,13 +74,25 @@ def _mineru_layout_factory(*, device: str = "auto", python_exe: str | None = Non
 def _rapidocr_factory(*, text_score: float = 0.5, **_extra: Any) -> Any:
     from .rapidocr import RapidOcrRecognizer
 
-    return RapidOcrRecognizer(text_score=text_score)
+    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device="cpu")
+
+
+def _rapidocr_onnx_factory(*, text_score: float = 0.5, device: str = "auto", **_extra: Any) -> Any:
+    from .rapidocr import RapidOcrRecognizer
+
+    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device=device)
+
+
+def _rapidocr_torch_factory(*, text_score: float = 0.5, device: str = "auto", **_extra: Any) -> Any:
+    from .rapidocr import RapidOcrRecognizer
+
+    return RapidOcrRecognizer(text_score=text_score, engine="torch", device=device)
 
 
 def _composed_reader_factory(
     *,
-    layout: str = "heron",
-    ocr_backend: str = "rapidocr",
+    layout: str = "heron-onnx",
+    ocr_backend: str = "rapidocr-torch",
     device: str = "auto",
     dpi: int = 150,
     **_extra: Any,
@@ -69,6 +101,22 @@ def _composed_reader_factory(
 
     detector = get("detector", layout, device=device)
     ocr = get("ocr", ocr_backend, device=device)
+    return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
+
+
+def _heron_onnx_rapidocr_onnx_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+    from .reader_composed import ComposedReader
+
+    detector = get("detector", "heron-onnx", device=device)
+    ocr = get("ocr", "rapidocr-onnx", device=device)
+    return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
+
+
+def _heron_onnx_rapidocr_torch_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+    from .reader_composed import ComposedReader
+
+    detector = get("detector", "heron-onnx", device=device)
+    ocr = get("ocr", "rapidocr-torch", device=device)
     return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
 
 

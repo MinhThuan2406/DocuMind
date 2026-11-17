@@ -179,6 +179,14 @@ class ComposedReader:
         page_list = list(pages)
         if not page_list:
             return {}
+        load_sec = 0.0
+        for comp in (self.detector, self.ocr):
+            ensure = getattr(comp, "ensure_loaded", None)
+            if callable(ensure):
+                t_load0 = time.perf_counter()
+                if ensure():
+                    load_sec += time.perf_counter() - t_load0
+
         t0 = time.perf_counter()
         doc_pdf = pymupdf.open(str(pdf_path))
         out: dict[int, RasterPage] = {}
@@ -190,6 +198,7 @@ class ComposedReader:
         finally:
             doc_pdf.close()
         self.last_stats = RunStats(
+            load_sec=round(load_sec, 4),
             infer_sec=round(time.perf_counter() - t0, 4),
             pages=len(page_list),
             peak_rss_mb=peak_rss_mb(),
