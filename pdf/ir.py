@@ -5,7 +5,7 @@ from typing import Any
 
 import pymupdf
 
-from .assemble import AssembledItem, assemble_page
+from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
 from .backends import FigureGrouper, LayoutBackend, PageReader
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
@@ -53,6 +53,10 @@ def _element_dict(
     }
 
 
+def _uses_ocr_fallback(prof: PageProfile, ocr: bool) -> bool:
+    return ocr and (prof.kind == "raster" or (prof.kind == "hybrid" and prof.suspect_ocr_layer))
+
+
 def extract_ir(
     path: str | Path,
     *,
@@ -87,12 +91,17 @@ def extract_ir(
                 "figure_candidate": prof.figure_candidate,
             })
             if prof.kind == "hybrid" and prof.suspect_ocr_layer:
-                warnings.append({"page": idx, "reason": "suspect_ocr_layer"})
+                warn: dict[str, Any] = {"page": idx, "reason": "suspect_ocr_layer"}
+                if ocr:
+                    warn["fallback"] = "ocr"
+                warnings.append(warn)
             if prof.kind == "raster" and not ocr:
                 unreadable_pages.append({"page": idx, "reason": "raster_page_ocr_disabled"})
 
         figures_by_page: dict[int, list[FigureBox]] = {}
-        candidate_pages = [p.page for p in profiles if p.kind != "raster" and p.figure_candidate]
+        candidate_pages = [
+            p.page for p in profiles if not _uses_ocr_fallback(p, ocr) and p.kind != "raster" and p.figure_candidate
+        ]
         if figures and candidate_pages:
             from .figures import detect_figures
 
@@ -100,7 +109,7 @@ def extract_ir(
 
         raster_by_page: dict[int, RasterPage] = {}
         if ocr:
-            raster_pages = [p.page for p in profiles if p.kind == "raster"]
+            raster_pages = [p.page for p in profiles if _uses_ocr_fallback(p, ocr)]
             if raster_pages:
                 from .raster import read_raster_pages
 
@@ -118,7 +127,11 @@ def extract_ir(
 
         for prof in profiles:
             page = doc[prof.page - 1]
-            words = [] if prof.kind == "raster" else extract_words(page, min_font_size=min_font_size)
+            words = (
+                []
+                if _uses_ocr_fallback(prof, ocr) or prof.kind == "raster"
+                else extract_words(page, min_font_size=min_font_size)
+            )
             assembled = assemble_page(
                 prof,
                 words,
@@ -135,6 +148,8 @@ def extract_ir(
                 elements.append(_element_dict(elem_id, prof.page, ro, source_file, item, parent_id))
     finally:
         doc.close()
+
+    tag_running_headers_footers(elements, {p["number"]: float(p["height_pt"]) for p in page_sizes})
 
     return {
         "doc_id": pdf_path.stem,

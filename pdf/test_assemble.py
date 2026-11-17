@@ -9,8 +9,8 @@ sys.path.insert(0, str(ROOT))
 import pymupdf  # noqa: E402
 
 import pdf.ir as ir_mod  # noqa: E402
-from pdf.assemble import assemble_page, filter_overlapping_figures  # noqa: E402
-from pdf.models import FigureBox, PageProfile  # noqa: E402
+from pdf.assemble import assemble_page, filter_overlapping_figures, tag_running_headers_footers  # noqa: E402
+from pdf.models import FigureBox, PageProfile, RasterPage, TextBlock  # noqa: E402
 from pdf.text import extract_words  # noqa: E402
 
 
@@ -177,6 +177,85 @@ def test_autosar_dev_pages_figure_assembly_integration():
             assert len(body_items) >= 1
     finally:
         doc.close()
+
+
+def test_assemble_page_hybrid_suspect_ocr_fallback():
+    doc = pymupdf.open()
+    page = doc.new_page(width=600, height=800)
+    page.insert_text((72, 72), "garbled layer text", fontsize=10)
+    words = extract_words(page)
+    doc.close()
+
+    profile = PageProfile(1, "hybrid", len(words), 0.005, 0.9, True)
+    rp = RasterPage(
+        blocks=(TextBlock("OCR clean text", (70.0, 60.0, 220.0, 80.0), 0.0, False, "ocr", 0.92, label="text"),),
+        figures=(),
+        reading_order=(0,),
+    )
+    ocr_items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), raster_page=rp)
+    assert len(ocr_items) == 1
+    assert ocr_items[0].text == "OCR clean text" and ocr_items[0].source == "ocr"
+
+    layer_items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), raster_page=None)
+    assert len(layer_items) == 1
+    assert "garbled" in layer_items[0].text and layer_items[0].source == "text_layer"
+
+
+def test_running_header_footer_tagging_multipage():
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "multipage.pdf"
+        doc = pymupdf.open()
+        for pno in range(1, 5):
+            page = doc.new_page(width=600, height=800)
+            page.insert_text((50, 40), f"Acme Spec   Page {pno}", fontsize=10)
+            page.insert_text((50, 200), "Repeated body note", fontsize=12)
+            page.insert_text((50, 320), f"Unique body paragraph {pno}", fontsize=12)
+            footer_text = str(pno) if pno <= 3 else "Final endnote"
+            page.insert_text((280, 770), footer_text, fontsize=10)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        ir = ir_mod.extract_ir(pdf_path, figures=False, ocr=False)
+
+    elems = ir["elements"]
+    headers = [e for e in elems if "Acme Spec" in e["text"]]
+    assert len(headers) == 4
+    assert all(e["metadata"].get("role") == "page_header" for e in headers)
+
+    footers = [e for e in elems if e["text"] in ("1", "2", "3")]
+    assert len(footers) == 3
+    assert all(e["metadata"].get("role") == "page_footer" for e in footers)
+
+    endnote = [e for e in elems if e["text"] == "Final endnote"][0]
+    assert "role" not in endnote["metadata"]
+
+    body_repeated = [e for e in elems if "Repeated body note" in e["text"]]
+    assert len(body_repeated) == 4
+    assert all("role" not in e["metadata"] for e in body_repeated)
+
+    for pno in range(1, 5):
+        ros = [e["reading_order"] for e in elems if e["page"] == pno]
+        assert ros == list(range(len(ros)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        two_page = Path(tmp) / "twopage.pdf"
+        doc2 = pymupdf.open()
+        for _ in range(2):
+            p = doc2.new_page(width=600, height=800)
+            p.insert_text((50, 40), "Short Doc Header", fontsize=10)
+            p.insert_text((50, 200), "Body content", fontsize=12)
+        doc2.save(str(two_page))
+        doc2.close()
+        ir2 = ir_mod.extract_ir(two_page, figures=False, ocr=False)
+        assert all("role" not in e["metadata"] for e in ir2["elements"])
+
+    direct_elems = [
+        {"type": "text", "page": 1, "level": 1, "bbox": [10, 20, 100, 40], "text": "Hdr", "metadata": {"layout_label": "page_header"}},
+        {"type": "text", "page": 1, "level": 2, "bbox": [10, 20, 100, 40], "text": "Nested", "metadata": {}},
+    ]
+    tag_running_headers_footers(direct_elems, {1: 800.0})
+    assert direct_elems[0]["metadata"]["role"] == "page_header"
+    assert "role" not in direct_elems[1]["metadata"]
 
 
 def main():

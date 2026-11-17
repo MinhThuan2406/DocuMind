@@ -11,9 +11,11 @@ import pymupdf  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
+from pdf.assemble import assemble_page  # noqa: E402
 from pdf.backends import ComposedReader, register  # noqa: E402
 from pdf.backends.mineru import mineru_middle_json_to_raster_pages  # noqa: E402
 from pdf.layout.types import LayoutItem  # noqa: E402
+from pdf.models import FigureBox, PageProfile, RasterPage, TextBlock  # noqa: E402
 from pdf.ocr.types import OcrLine  # noqa: E402
 
 
@@ -196,6 +198,122 @@ def test_extract_ir_batch_calls_read_raster_pages_once_for_mineru():
         ir_off = extract_ir(pdf_path, figures=False, ocr=False, reader="mineru-pipeline")
         assert ir_off["elements"] == []
         assert len(ir_off["metadata"]["unreadable_pages"]) == 2
+
+
+def test_hybrid_suspect_ocr_layer_fallback_vs_ocr_disabled():
+    class _Det:
+        def detect(self, image):
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 595.0, h / 842.0
+            return [LayoutItem("text", (50 * sx, 60 * sy, 320 * sx, 110 * sy), 0.92)]
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 595.0, h / 842.0
+            return [OcrLine("Clean OCR fallback", (55 * sx, 65 * sy, 300 * sx, 100 * sy), 0.94)]
+
+    img = Image.new("RGB", (595, 842), color=(245, 245, 245))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "hybrid_suspect.pdf"
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_image(page.rect, stream=buf.getvalue())
+        page.insert_text((72, 72), "hidden tiny ocr text words", fontsize=2)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        register("detector", "fake_hyb_det", lambda **_kw: _Det())
+        register("ocr", "fake_hyb_ocr", lambda **_kw: _Ocr())
+
+        import pdf.figures as figures_mod
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda *_a, **_kw: (_ for _ in ()).throw(
+            AssertionError("detect_figures should not run on suspect_ocr_layer page when ocr=True")
+        )
+        try:
+            ir_on = extract_ir(pdf_path, figures=True, ocr=True, layout="fake_hyb_det", ocr_backend="fake_hyb_ocr")
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+        assert ir_on["metadata"]["unreadable_pages"] == []
+        assert ir_on["metadata"]["warnings"] == [{"page": 1, "reason": "suspect_ocr_layer", "fallback": "ocr"}]
+        assert [e["text"] for e in ir_on["elements"]] == ["Clean OCR fallback"]
+        assert ir_on["elements"][0]["source"] == "ocr"
+
+        ir_off = extract_ir(pdf_path, figures=False, ocr=False)
+        assert ir_off["metadata"]["unreadable_pages"] == []
+        assert ir_off["metadata"]["warnings"] == [{"page": 1, "reason": "suspect_ocr_layer"}]
+        assert any("hidden" in e["text"] for e in ir_off["elements"])
+        assert all(e["source"] == "text_layer" for e in ir_off["elements"])
+
+
+def test_raster_table_child_nesting_and_empty_table():
+    class _Det:
+        def detect(self, image):
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 600.0, h / 300.0
+            return [
+                LayoutItem("page_header", (20 * sx, 10 * sy, 220 * sx, 28 * sy), 0.91),
+                LayoutItem("table", (20 * sx, 50 * sy, 320 * sx, 200 * sy), 0.93),
+                LayoutItem("page_footer", (20 * sx, 270 * sy, 220 * sx, 290 * sy), 0.90),
+            ]
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            sx, sy = w / 600.0, h / 300.0
+            return [
+                OcrLine("Header Line", (25 * sx, 12 * sy, 180 * sx, 26 * sy), 0.92),
+                OcrLine("ColA 100", (30 * sx, 70 * sy, 200 * sx, 95 * sy), 0.89),
+                OcrLine("Footer 1", (25 * sx, 272 * sy, 150 * sx, 288 * sy), 0.90),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "raster_tbl.pdf"
+        _make_raster_pdf(pdf_path)
+        register("detector", "fake_tbl_det", lambda **_kw: _Det())
+        register("ocr", "fake_tbl_ocr", lambda **_kw: _Ocr())
+        ir = extract_ir(pdf_path, figures=False, ocr=True, layout="fake_tbl_det", ocr_backend="fake_tbl_ocr")
+
+    elems = ir["elements"]
+    assert [e["reading_order"] for e in elems] == list(range(len(elems)))
+    assert [e["type"] for e in elems] == ["text", "table", "text", "text"]
+
+    hdr, tbl, tbl_child, ftr = elems
+    assert hdr["level"] == 1 and hdr["parent_id"] is None
+    assert hdr["metadata"]["layout_label"] == "page_header"
+    assert hdr["metadata"]["role"] == "page_header"
+
+    assert tbl["level"] == 1 and tbl["parent_id"] is None and tbl["text"] == ""
+    assert tbl_child["level"] == 2 and tbl_child["parent_id"] == tbl["id"]
+    assert tbl_child["metadata"]["layout_label"] == "table"
+    assert tbl_child["text"] == "ColA 100"
+
+    assert ftr["level"] == 1 and ftr["parent_id"] is None
+    assert ftr["metadata"]["layout_label"] == "page_footer"
+    assert ftr["metadata"]["role"] == "page_footer"
+
+    empty_tbl = FigureBox((50.0, 50.0, 300.0, 180.0), "table", "layout_table", 0.95)
+    rp_empty = RasterPage(blocks=(), figures=(empty_tbl,), reading_order=())
+    items_empty = assemble_page(PageProfile(1, "raster", 0, 0.0, 1.0, False), [], (0.0, 0.0, 600.0, 300.0), raster_page=rp_empty)
+    assert len(items_empty) == 1 and items_empty[0].kind == "table" and items_empty[0].level == 1
+
+    # Overlapping table TextBlock slightly shifted outside box center still nests under the table.
+    shifted_tbl_blk = TextBlock("Row", (200.0, 60.0, 360.0, 160.0), 0.0, False, "ocr", 0.9, label="table")
+    rp_shifted = RasterPage(blocks=(shifted_tbl_blk,), figures=(empty_tbl,), reading_order=(0,))
+    items_shifted = assemble_page(
+        PageProfile(1, "raster", 0, 0.0, 1.0, False), [], (0.0, 0.0, 600.0, 300.0), raster_page=rp_shifted
+    )
+    assert len(items_shifted) == 2
+    assert items_shifted[0].kind == "table" and items_shifted[0].level == 1
+    assert items_shifted[1].level == 2 and items_shifted[1].parent_index == 0 and items_shifted[1].label == "table"
 
 
 def main():
