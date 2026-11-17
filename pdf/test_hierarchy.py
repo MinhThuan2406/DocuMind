@@ -309,6 +309,61 @@ def test_caption_linking_above_below_kind_match_and_columns():
         assert "heading_level" not in by_id[cid]["metadata"]
 
 
+def test_landscape_slide_titles_group_in_slide_headings():
+    body = "Body text of the slide that is long enough to dominate the weighted median font size."
+    elements = [
+        _elem("t1", page=1, bbox=[60.0, 14.0, 300.0, 40.0], reading_order=0, text="Introduction", font_size=16.0, bold=True),
+        _elem("s1", page=1, bbox=[60.0, 76.0, 300.0, 96.0], reading_order=1, text="Purpose", font_size=16.0, bold=True),
+        _elem("b1", page=1, bbox=[60.0, 120.0, 700.0, 140.0], reading_order=2, text=body, font_size=16.0, bold=False),
+        _elem("s2", page=1, bbox=[60.0, 300.0, 300.0, 320.0], reading_order=3, text="Inputs", font_size=16.0, bold=True),
+        _elem("t2", page=2, bbox=[60.0, 14.0, 300.0, 40.0], reading_order=0, text="Architecture", font_size=16.0, bold=True),
+        _elem("b2", page=2, bbox=[60.0, 120.0, 700.0, 140.0], reading_order=1, text=body, font_size=16.0, bold=False),
+    ]
+    ir = _ir(elements)
+    ir["metadata"]["pages"] = [
+        {"number": 1, "width_pt": 810.0, "height_pt": 540.0},
+        {"number": 2, "width_pt": 810.0, "height_pt": 540.0},
+    ]
+    by_id = {e["id"]: e for e in apply_structure(ir)["elements"]}
+
+    assert by_id["t1"]["metadata"]["heading_level"] == 1
+    assert by_id["s1"]["metadata"]["heading_level"] == 2
+    assert by_id["s1"]["metadata"]["section_parent_id"] == "t1"
+    assert by_id["s2"]["metadata"]["section_parent_id"] == "t1"
+    assert by_id["b1"]["metadata"]["section_parent_id"] == "s1"
+    assert by_id["t2"]["metadata"]["heading_level"] == 1
+    assert by_id["t2"]["metadata"]["section_parent_id"] is None
+    assert by_id["b2"]["metadata"]["section_parent_id"] == "t2"
+
+    portrait = _ir([dict(e, metadata=dict(e["metadata"])) for e in elements])
+    portrait["metadata"]["pages"] = [{"number": 1, "width_pt": 540.0, "height_pt": 810.0}, {"number": 2, "width_pt": 540.0, "height_pt": 810.0}]
+    levels = {e["id"]: e["metadata"].get("heading_level") for e in apply_structure(portrait)["elements"]}
+    assert levels["t1"] == levels["s1"] == levels["t2"] == 1
+
+
+def test_slide_title_is_not_stolen_as_caption_and_may_be_long():
+    long_title = "Interfaces Interaction of Layers Example Memory Closer Look at the stack and its modules"
+    body = "Body text of the slide that is long enough to dominate the weighted median font size."
+    elements = [
+        _elem("t1", page=1, bbox=[21.0, 6.0, 400.0, 50.0], reading_order=0, text=long_title, font_size=16.0, bold=True),
+        _elem("f1", kind="figure", page=1, bbox=[30.0, 56.0, 700.0, 400.0], reading_order=1, font_size=None, bold=None),
+        _elem("b1", page=1, bbox=[60.0, 420.0, 700.0, 440.0], reading_order=2, text=body, font_size=16.0, bold=False),
+    ]
+    ir = _ir(elements)
+    ir["metadata"]["pages"] = [{"number": 1, "width_pt": 810.0, "height_pt": 540.0}, {"number": 2}]
+    by_id = {e["id"]: e for e in apply_structure(ir)["elements"]}
+
+    assert len(long_title.split()) > 12
+    assert by_id["t1"]["metadata"]["role"] == "heading"
+    assert by_id["t1"]["metadata"]["heading_level"] == 1
+    assert "caption_id" not in by_id["f1"]["metadata"]
+    assert by_id["b1"]["metadata"]["section_parent_id"] == "t1"
+
+    portrait = _ir([dict(e, metadata=dict(e["metadata"])) for e in elements])
+    portrait["metadata"]["pages"] = [{"number": 1, "width_pt": 540.0, "height_pt": 810.0}]
+    assert apply_structure(portrait)["elements"][0]["metadata"].get("role") != "heading"
+
+
 def test_autosar_hierarchy_integration():
     vfb = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_VFB.pdf"
     if not vfb.exists():

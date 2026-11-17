@@ -44,6 +44,8 @@ _BULLET_RE = re.compile(r"^[•\-\*\u2022\u25e6\u25aa\u25b3\u25bd]")
 _MULTI_LIST_LINE_RE = re.compile(r"(?:^|\n)\s*(?:[0-9]+[.)]|[•\-\*\u2022])\s+\S")
 _MAX_HEADING_LEVEL = 6
 _MIN_STYLE_TIER_COUNT = 5
+_SLIDE_TITLE_BAND = 0.2
+_TITLE_BAND_MAX_WORDS = 24
 
 
 def _clean_text(text: str) -> str:
@@ -173,7 +175,11 @@ def _is_adjacent_caption_candidate(
     return False
 
 
-def _link_captions(elements: list[dict[str, Any]], body_font: float | None) -> None:
+def _link_captions(
+    elements: list[dict[str, Any]],
+    body_font: float | None,
+    protected_ids: set[str] = frozenset(),
+) -> None:
     pages: dict[int, list[dict[str, Any]]] = {}
     for elem in elements:
         pages.setdefault(elem.get("page", 0), []).append(elem)
@@ -202,7 +208,7 @@ def _link_captions(elements: list[dict[str, Any]], body_font: float | None) -> N
             continue
         adj_caps: list[tuple[dict[str, Any], str | None, float]] = []
         for elem in page_elems:
-            if elem["id"] in claimed_caps:
+            if elem["id"] in claimed_caps or elem["id"] in protected_ids:
                 continue
             if _is_adjacent_caption_candidate(elem, remaining_targets, body_font):
                 adj_caps.append((elem, None, 18.0))
@@ -316,7 +322,11 @@ def _title_starts_well(rest: str) -> bool:
     return first.isupper() or (not first.isascii() and first.isalpha())
 
 
-def _is_heading_candidate(elem: dict[str, Any], body_font: float | None) -> tuple[bool, int | None]:
+def _is_heading_candidate(
+    elem: dict[str, Any],
+    body_font: float | None,
+    title_band: bool = False,
+) -> tuple[bool, int | None]:
     if elem.get("type") != "text" or _is_ignored_element(elem):
         return False, None
     meta = elem.get("metadata") or {}
@@ -351,23 +361,18 @@ def _is_heading_candidate(elem: dict[str, Any], body_font: float | None) -> tupl
     ):
         return False, None
 
-    if len(cleaned) > 140 or len(cleaned.split()) > 16 or _sentence_count(cleaned) >= 2:
+    n_words = len(cleaned.split())
+    if len(cleaned) > 140 or n_words > (_TITLE_BAND_MAX_WORDS if title_band else 16) or _sentence_count(cleaned) >= 2:
         return False, None
 
     fs = meta.get("font_size")
     bold = bool(meta.get("bold"))
     has_fs = isinstance(fs, (int, float)) and fs > 0
+    bold_ok = bold and not _ends_sentence(cleaned) and n_words <= (_TITLE_BAND_MAX_WORDS if title_band else 12)
 
     if body_font is not None and has_fs:
-        if fs >= body_font * 1.15:
-            return True, None
-        if bold and fs >= body_font * 0.98 and not _ends_sentence(cleaned) and len(cleaned.split()) <= 12:
-            return True, None
-        return False, None
-
-    if bold and not _ends_sentence(cleaned) and len(cleaned.split()) <= 12:
-        return True, None
-    return False, None
+        return fs >= body_font * 1.15 or (bold_ok and fs >= body_font * 0.98), None
+    return bold_ok, None
 
 
 def _style_key(elem: dict[str, Any]) -> tuple[float, bool] | None:
@@ -399,17 +404,45 @@ def _cluster_styles(
     return {style: rank for rank, grp in enumerate(groups, start=1) for style in grp}
 
 
+def _slide_title_ids(
+    headings: list[tuple[dict[str, Any], int | None]],
+    landscape_heights: dict[int, float],
+) -> set[str]:
+    # On landscape pages the topmost unnumbered heading inside the title band is the slide title.
+    topmost: dict[Any, tuple[dict[str, Any], int | None]] = {}
+    for elem, depth in headings:
+        bbox = elem.get("bbox")
+        if not bbox or len(bbox) != 4 or elem.get("page") not in landscape_heights:
+            continue
+        current = topmost.get(elem["page"])
+        if current is None or bbox[1] < current[0]["bbox"][1]:
+            topmost[elem["page"]] = (elem, depth)
+    return {
+        elem["id"]
+        for page, (elem, depth) in topmost.items()
+        if depth is None
+        and (elem.get("metadata") or {}).get("layout_label") != "title"
+        and elem["bbox"][1] < _SLIDE_TITLE_BAND * landscape_heights[page]
+    }
+
+
 def _assign_heading_levels(
     headings: list[tuple[dict[str, Any], int | None]],
+    slide_titles: set[str] = frozenset(),
 ) -> dict[str, int]:
+    slide_pages = {elem.get("page") for elem, _ in headings if elem["id"] in slide_titles}
     style_counts: dict[tuple[float, bool], int] = {}
     for elem, explicit_depth in headings:
-        if explicit_depth is None and (elem.get("metadata") or {}).get("layout_label") != "title":
+        if (
+            explicit_depth is None
+            and elem["id"] not in slide_titles
+            and (elem.get("metadata") or {}).get("layout_label") != "title"
+        ):
             key = _style_key(elem)
             if key is not None:
                 style_counts[key] = style_counts.get(key, 0) + 1
     styles = sorted(style_counts, reverse=True)
-    style_rank = _cluster_styles(styles, style_counts)
+    style_rank = _cluster_styles(styles, style_counts, _MAX_HEADING_LEVEL - int(bool(slide_pages)))
     has_title = any((elem.get("metadata") or {}).get("layout_label") == "title" for elem, _ in headings)
 
     levels: dict[str, int] = {}
@@ -418,12 +451,12 @@ def _assign_heading_levels(
             levels[elem["id"]] = explicit_depth
             continue
         meta = elem.get("metadata") or {}
-        if meta.get("layout_label") == "title":
+        if meta.get("layout_label") == "title" or elem["id"] in slide_titles:
             levels[elem["id"]] = 1
             continue
         key = _style_key(elem)
         if key is not None:
-            levels[elem["id"]] = style_rank[key]
+            levels[elem["id"]] = style_rank[key] + int(elem.get("page") in slide_pages)
         else:
             levels[elem["id"]] = 2 if has_title else 1
     return levels
@@ -439,20 +472,35 @@ def apply_structure(ir: dict[str, Any], *, inplace: bool = False) -> dict[str, A
         return out
 
     body_font = _weighted_median_font_size(elements)
-    _link_captions(elements, body_font)
+    landscape_heights = {
+        p["number"]: float(p["height_pt"])
+        for p in doc_meta.get("pages", ())
+        if p.get("width_pt") and p.get("height_pt") and p["width_pt"] > p["height_pt"]
+    }
+    top_band_ids = {
+        e["id"]
+        for e in elements
+        if e.get("page") in landscape_heights
+        and len(e.get("bbox") or ()) == 4
+        and e["bbox"][1] < _SLIDE_TITLE_BAND * landscape_heights[e["page"]]
+    }
 
     ordered = sorted(
         enumerate(elements),
         key=lambda pair: (pair[1].get("page", 0), pair[1].get("reading_order", pair[0]), pair[0]),
     )
 
-    heading_candidates: list[tuple[dict[str, Any], int | None]] = []
-    for _, elem in ordered:
-        is_heading, explicit_depth = _is_heading_candidate(elem, body_font)
-        if is_heading:
-            heading_candidates.append((elem, explicit_depth))
+    def collect_headings() -> list[tuple[dict[str, Any], int | None]]:
+        found = []
+        for _, elem in ordered:
+            is_heading, explicit_depth = _is_heading_candidate(elem, body_font, elem["id"] in top_band_ids)
+            if is_heading:
+                found.append((elem, explicit_depth))
+        return found
 
-    heading_levels = _assign_heading_levels(heading_candidates)
+    _link_captions(elements, body_font, _slide_title_ids(collect_headings(), landscape_heights))
+    heading_candidates = collect_headings()
+    heading_levels = _assign_heading_levels(heading_candidates, _slide_title_ids(heading_candidates, landscape_heights))
     stack: list[tuple[int, str]] = []
     outline: list[dict[str, Any]] = []
 
