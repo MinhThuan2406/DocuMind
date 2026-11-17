@@ -14,7 +14,7 @@ def read_raster_pages(
     *,
     reader: str | PageReader = "composed",
     layout: str = "heron-onnx",
-    ocr_backend: str = "rapidocr-torch",
+    ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> dict[int, RasterPage]:
@@ -35,7 +35,7 @@ def read_raster_page(
     *,
     reader: str | PageReader = "composed",
     layout: str = "heron-onnx",
-    ocr_backend: str = "rapidocr-torch",
+    ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> RasterPage:

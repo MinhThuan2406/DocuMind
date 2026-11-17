@@ -92,7 +92,7 @@ def _rapidocr_torch_factory(*, text_score: float = 0.5, device: str = "auto", **
 def _composed_reader_factory(
     *,
     layout: str = "heron-onnx",
-    ocr_backend: str = "rapidocr-torch",
+    ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     dpi: int = 150,
     **_extra: Any,

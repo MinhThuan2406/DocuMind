@@ -61,7 +61,7 @@ def extract_ir(
     layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
-    ocr_backend: str = "rapidocr-torch",
+    ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     min_font_size: float = 0.0,
 ) -> dict[str, Any]:

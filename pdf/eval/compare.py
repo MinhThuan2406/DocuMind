@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--backends", default="", help="Comma-separated backend names")
     ap.add_argument("--grouper", default="v1_anchor", choices=registered("grouper"))
     ap.add_argument("--layout", default="heron-onnx", help="Detector name for composed raster reader")
-    ap.add_argument("--ocr-backend", default="rapidocr-torch", help="OCR name for composed raster reader")
+    ap.add_argument("--ocr-backend", default="rapidocr-onnx", help="OCR name for composed raster reader")
     ap.add_argument("--split", default="dev", choices=["dev", "test"])
     ap.add_argument("--final", action="store_true", help="Required when --split test")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
