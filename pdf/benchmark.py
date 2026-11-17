@@ -113,7 +113,7 @@ def _run_isolated_bench(
     mode: str,
     device: str,
     pages: int,
-    raster_backend: str = "default",
+    reader: str = "composed",
 ) -> dict[str, object]:
     if mode == "figures_cached":
         subprocess.run(
@@ -133,14 +133,14 @@ def _run_isolated_bench(
         device,
         "--pages",
         str(pages),
-        "--raster-backend",
-        raster_backend,
+        "--reader",
+        reader,
     ]
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, check=True)
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _worker(mode: str, device: str, n_pages: int, raster_backend: str = "default") -> None:
+def _worker(mode: str, device: str, n_pages: int, reader: str = "composed") -> None:
     layered = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf"
     omni_dir = ROOT / "datasets" / "OmniDocBench" / "images"
 
@@ -217,39 +217,43 @@ def _worker(mode: str, device: str, n_pages: int, raster_backend: str = "default
                 print(json.dumps({"mode": mode, "skipped": "No sample images found"}))
                 return
             _make_raster_pdf_from_images(imgs, sample_pdf)
-            if raster_backend == "mineru-pipeline":
-                from pdf.layout.mineru_pipeline import run_mineru_pdf
+            from pdf.backends import get as get_backend
+            from pdf.raster import read_raster_page, read_raster_pages
 
-                _, metrics = run_mineru_pdf(sample_pdf, device=device, strip_content=False, ocr_mode="auto")
+            page_reader = get_backend("reader", reader, device=device)
+            if getattr(page_reader, "isolated", False):
+                t0 = time.perf_counter()
+                read_raster_pages(sample_pdf, list(range(1, len(imgs) + 1)), reader=page_reader)
+                wall_sec = round(time.perf_counter() - t0, 4)
+                stats = page_reader.last_stats
+                n_proc = stats.pages if stats and stats.pages else len(imgs)
+                infer_sec = stats.infer_sec if stats else 0.0
                 print(json.dumps({
                     "mode": mode,
-                    "raster_backend": raster_backend,
+                    "reader": reader,
                     "pages": len(imgs),
                     "import_sec": round(import_sec, 4),
-                    "load_sec": metrics.get("load_sec"),
-                    "parse_sec": metrics.get("parse_sec"),
-                    "inference_sec": metrics.get("inference_sec"),
-                    "steady_per_page_sec": metrics.get("steady_per_page_sec"),
-                    "wall_sec": metrics.get("wall_sec"),
-                    "child_peak_rss_mb": metrics.get("peak_rss_mb"),
+                    "load_sec": stats.load_sec if stats else 0.0,
+                    "inference_sec": infer_sec,
+                    "steady_per_page_sec": round(infer_sec / max(1, n_proc), 4),
+                    "wall_sec": wall_sec,
+                    "child_peak_rss_mb": stats.peak_rss_mb if stats else 0.0,
                     "peak_rss_mb": _peak_rss_mb(),
                 }))
                 return
 
-            from pdf.raster import read_raster_page
-
             t_first0 = time.perf_counter()
-            read_raster_page(sample_pdf, 1, raster_backend=raster_backend, device=device)
+            read_raster_page(sample_pdf, 1, reader=page_reader)
             first_sec = time.perf_counter() - t_first0
 
             t_rest0 = time.perf_counter()
             for pno in range(2, len(imgs) + 1):
-                read_raster_page(sample_pdf, pno, raster_backend=raster_backend, device=device)
+                read_raster_page(sample_pdf, pno, reader=page_reader)
             rest_sec = time.perf_counter() - t_rest0
             per_page = rest_sec / max(1, len(imgs) - 1)
             print(json.dumps({
                 "mode": mode,
-                "raster_backend": raster_backend,
+                "reader": reader,
                 "pages": len(imgs),
                 "import_sec": round(import_sec, 4),
                 "first_page_sec": round(first_sec, 4),
@@ -267,7 +271,7 @@ def _median(vals: list[float]) -> float:
     return (s[mid - 1] + s[mid]) * 0.5
 
 
-def run_omnidoc_recall(device: str, raster_backend: str = "default") -> None:
+def run_omnidoc_recall(device: str, reader: str = "composed") -> None:
     gt_file = ROOT / "datasets" / "OmniDocBench" / "OmniDocBench.json"
     img_dir = ROOT / "datasets" / "OmniDocBench" / "images"
     if not gt_file.exists() or not img_dir.exists():
@@ -300,7 +304,7 @@ def run_omnidoc_recall(device: str, raster_backend: str = "default") -> None:
         pdf_path = Path(tmp_dir) / "omnidoc_batch.pdf"
         _make_raster_pdf_from_images([p for _, p in selected], pdf_path)
         t0 = time.perf_counter()
-        ir = extract_ir(pdf_path, figures=False, ocr=True, device=device, raster_backend=raster_backend)
+        ir = extract_ir(pdf_path, figures=False, ocr=True, device=device, reader=reader)
         wall_sec = time.perf_counter() - t0
 
     by_page: dict[int, list[dict[str, object]]] = defaultdict(list)
@@ -336,7 +340,7 @@ def run_omnidoc_recall(device: str, raster_backend: str = "default") -> None:
         pooled_r = total_matched / total_gt if total_gt else 0.0
         pooled_p = total_matched / total_pred if total_pred else 0.0
         print(
-            f"OmniDocBench {n_total} pages ({raster_backend}, wall={wall_sec:.2f}s): "
+            f"OmniDocBench {n_total} pages ({reader}, wall={wall_sec:.2f}s): "
             f"pooled_char_recall={pooled_r:.4f} (mean={sum(recalls)/len(recalls):.4f}, "
             f"median={_median(recalls):.4f}, min={min(recalls):.4f}), "
             f"pooled_char_precision={pooled_p:.4f} (mean={sum(precisions)/len(precisions):.4f}, "
@@ -345,26 +349,28 @@ def run_omnidoc_recall(device: str, raster_backend: str = "default") -> None:
 
 
 def main() -> None:
+    from pdf.backends import registered
+
     ap = argparse.ArgumentParser(description="Benchmark and evaluate the pdf package.")
     ap.add_argument("--mode", default="all", choices=["native", "figures_live", "figures_cached", "raster", "all"])
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
-    ap.add_argument("--raster-backend", default="default", choices=["default", "mineru-pipeline"])
+    ap.add_argument("--reader", default="composed", choices=registered("reader"))
     ap.add_argument("--pages", type=int, default=6)
     ap.add_argument("--omnidoc-recall", action="store_true")
     ap.add_argument("--worker", default="")
     args = ap.parse_args()
 
     if args.worker:
-        _worker(args.worker, args.device, args.pages, args.raster_backend)
+        _worker(args.worker, args.device, args.pages, args.reader)
         return
 
     if args.omnidoc_recall:
-        run_omnidoc_recall(args.device, args.raster_backend)
+        run_omnidoc_recall(args.device, args.reader)
         return
 
     modes = ["native", "figures_cached", "figures_live", "raster"] if args.mode == "all" else [args.mode]
     for mode in modes:
-        result = _run_isolated_bench(mode, args.device, args.pages, args.raster_backend)
+        result = _run_isolated_bench(mode, args.device, args.pages, args.reader)
         print(json.dumps(result))
 
 

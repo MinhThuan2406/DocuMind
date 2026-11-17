@@ -1,23 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
-from PIL import Image
-
 from ..models import BBox
 from .types import LAYOUT_LABELS, LayoutItem
-
-
-@runtime_checkable
-class LayoutDetector(Protocol):
-    def detect(self, image: Image.Image) -> list[LayoutItem]: ...
-
-
-def get_layout_detector(backend: str = "heron", device: str = "auto") -> tuple[LayoutDetector, str]:
-    from ..backends.registry import get
-
-    det = get("detector", backend, device=device)
-    return det, str(getattr(det, "revision", "local"))
 
 
 def clamp_and_rescale(

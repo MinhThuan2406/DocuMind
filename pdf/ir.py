@@ -6,6 +6,7 @@ from typing import Any
 import pymupdf
 
 from .assemble import AssembledItem, assemble_page
+from .backends import LayoutBackend, PageReader
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
 from .text import extract_words
@@ -57,9 +58,9 @@ def extract_ir(
     *,
     figures: bool = True,
     ocr: bool = True,
-    layout: str = "heron",
+    layout: str | LayoutBackend = "heron",
+    reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr",
-    raster_backend: str = "default",
     device: str = "auto",
     min_font_size: float = 0.0,
 ) -> dict[str, Any]:
@@ -105,8 +106,8 @@ def extract_ir(
                 raster_by_page = read_raster_pages(
                     pdf_path,
                     raster_pages,
-                    raster_backend=raster_backend,
-                    layout=layout,
+                    reader=reader,
+                    layout=layout if isinstance(layout, str) else "heron",
                     ocr_backend=ocr_backend,
                     device=device,
                 )

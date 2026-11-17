@@ -24,6 +24,9 @@ def _ensure_builtins() -> None:
     _FACTORIES[("detector", "heron")] = _heron_detector_factory
     _FACTORIES[("layout", "heron")] = _heron_layout_factory
     _FACTORIES[("layout", "mineru-pipeline")] = _mineru_layout_factory
+    _FACTORIES[("ocr", "rapidocr")] = _rapidocr_factory
+    _FACTORIES[("reader", "composed")] = _composed_reader_factory
+    _FACTORIES[("reader", "mineru-pipeline")] = _mineru_reader_factory
 
 
 def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
@@ -44,6 +47,33 @@ def _mineru_layout_factory(*, device: str = "auto", python_exe: str | None = Non
     from .mineru import MinerULayoutBackend
 
     return MinerULayoutBackend(device=device, python_exe=python_exe)
+
+
+def _rapidocr_factory(*, text_score: float = 0.5, **_extra: Any) -> Any:
+    from .rapidocr import RapidOcrRecognizer
+
+    return RapidOcrRecognizer(text_score=text_score)
+
+
+def _composed_reader_factory(
+    *,
+    layout: str = "heron",
+    ocr_backend: str = "rapidocr",
+    device: str = "auto",
+    dpi: int = 150,
+    **_extra: Any,
+) -> Any:
+    from .reader_composed import ComposedReader
+
+    detector = get("detector", layout, device=device)
+    ocr = get("ocr", ocr_backend, device=device)
+    return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
+
+
+def _mineru_reader_factory(*, device: str = "auto", python_exe: str | None = None, **_extra: Any) -> Any:
+    from .mineru import MinerUReader
+
+    return MinerUReader(device=device, python_exe=python_exe)
 
 
 def register(kind: str, name: str, factory: Factory) -> None:

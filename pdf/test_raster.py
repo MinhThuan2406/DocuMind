@@ -10,8 +10,8 @@ sys.path.insert(0, str(ROOT))
 import pymupdf  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
-import pdf.raster as raster_mod  # noqa: E402
 from pdf import extract_ir  # noqa: E402
+from pdf.backends import ComposedReader, register  # noqa: E402
 from pdf.layout import mineru_middle_json_to_raster_pages  # noqa: E402
 from pdf.layout.types import LayoutItem  # noqa: E402
 from pdf.ocr.types import OcrLine  # noqa: E402
@@ -71,15 +71,10 @@ def test_read_raster_page_and_ir_emit_ocr_source_and_confidence():
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "scan.pdf"
         _make_raster_pdf(pdf_path)
-        orig_det = raster_mod.get_layout_detector
-        orig_rec = raster_mod._get_recognizer
-        try:
-            raster_mod.get_layout_detector = lambda _backend, _device: (_FakeDetector(), "fake")
-            raster_mod._get_recognizer = lambda _backend: _FakeRecognizer()
-            ir = extract_ir(pdf_path, figures=False, ocr=True)
-        finally:
-            raster_mod.get_layout_detector = orig_det
-            raster_mod._get_recognizer = orig_rec
+        register("detector", "fake_det", lambda **_kw: _FakeDetector())
+        register("ocr", "fake_ocr", lambda **_kw: _FakeRecognizer())
+        ir = extract_ir(pdf_path, figures=False, ocr=True, layout="fake_det", ocr_backend="fake_ocr")
+        assert isinstance(ComposedReader(_FakeDetector(), _FakeRecognizer()).read(pdf_path, [1])[1].blocks, tuple)
 
     assert json.loads(json.dumps(ir)) == ir
     assert ir["metadata"]["unreadable_pages"] == []
@@ -158,7 +153,7 @@ def test_mineru_middle_json_to_raster_pages_keeps_headers_and_ocr_source():
 
 
 def test_extract_ir_batch_calls_read_raster_pages_once_for_mineru():
-    import pdf.layout.mineru_pipeline as mp_mod
+    import pdf.backends.mineru as mp_backend_mod
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "scan2.pdf"
@@ -187,18 +182,18 @@ def test_extract_ir_batch_calls_read_raster_pages_once_for_mineru():
             calls += 1
             return fake_mj, {"pages_processed": 2}
 
-        orig = mp_mod.run_mineru_pdf
+        orig = mp_backend_mod.run_mineru_pdf
         try:
-            mp_mod.run_mineru_pdf = _fake_run
-            ir = extract_ir(pdf_path, figures=False, ocr=True, raster_backend="mineru-pipeline")
+            mp_backend_mod.run_mineru_pdf = _fake_run
+            ir = extract_ir(pdf_path, figures=False, ocr=True, reader="mineru-pipeline")
         finally:
-            mp_mod.run_mineru_pdf = orig
+            mp_backend_mod.run_mineru_pdf = orig
 
         assert calls == 1
         assert [e["text"] for e in ir["elements"]] == ["P1", "P2"]
         assert all(e["source"] == "ocr" and isinstance(e["confidence"], float) for e in ir["elements"])
 
-        ir_off = extract_ir(pdf_path, figures=False, ocr=False, raster_backend="mineru-pipeline")
+        ir_off = extract_ir(pdf_path, figures=False, ocr=False, reader="mineru-pipeline")
         assert ir_off["elements"] == []
         assert len(ir_off["metadata"]["unreadable_pages"]) == 2
 

@@ -6,7 +6,7 @@ from typing import Any
 from PIL import Image
 
 from ..models import BBox
-from .types import OcrLine
+from ..ocr.types import OcrLine
 
 
 class RapidOcrRecognizer:
