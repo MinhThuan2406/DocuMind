@@ -13,6 +13,7 @@ from ..models import BBox, FigureBox, RasterPage, TextBlock
 from ..ocr.types import OcrLine
 from ..text import xy_cut_order
 from .base import LayoutDetector, RunStats, TextRecognizer
+from .rss import peak_rss_mb
 
 DEFAULT_RASTER_DPI = 150
 LAYOUT_BOX_CONFIDENCE = 0.95
@@ -191,6 +192,7 @@ class ComposedReader:
         self.last_stats = RunStats(
             infer_sec=round(time.perf_counter() - t0, 4),
             pages=len(page_list),
+            peak_rss_mb=peak_rss_mb(),
             in_process=True,
         )
         return out

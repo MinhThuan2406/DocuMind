@@ -13,6 +13,7 @@ from PIL import Image
 from ..layout.detector import clamp_and_rescale
 from ..layout.postprocess import clusters_to_items, postprocess_layout
 from .base import LayoutDetector, PageLayout, RunStats
+from .rss import peak_rss_mb
 
 _PNG_DEFAULT_DPI = 96.012
 
@@ -82,6 +83,7 @@ class ImageLayoutBackend:
         self.last_stats = RunStats(
             infer_sec=round(time.perf_counter() - t0, 4),
             pages=len(target_pages),
+            peak_rss_mb=peak_rss_mb(),
             in_process=True,
         )
         return out

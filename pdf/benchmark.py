@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
-import ctypes.wintypes as wintypes
 import html
 import json
 import re
@@ -18,6 +16,8 @@ sys.path.insert(0, str(ROOT))
 
 import pymupdf  # noqa: E402
 from PIL import Image  # noqa: E402
+
+from pdf.backends.rss import peak_rss_mb as _peak_rss_mb  # noqa: E402
 
 OMNIDOC_SAMPLE_PAGES = (
     "PPT_1001115_eng_page_003.png",
@@ -41,36 +41,6 @@ OMNIDOC_SAMPLE_PAGES = (
     "scihub_j.conbuildmat.2019.117698.pdf_5.jpg",
     "yanbaopptmerge_abef2a4978ae4d13e931f0392502bd40.pdf_1130.jpg",
 )
-
-
-def _peak_rss_mb() -> float:
-    if sys.platform != "win32":
-        import resource
-
-        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
-
-    class _PMC(ctypes.Structure):
-        _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("PageFaultCount", wintypes.DWORD),
-            ("PeakWorkingSetSize", ctypes.c_size_t),
-            ("WorkingSetSize", ctypes.c_size_t),
-            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-            ("PagefileUsage", ctypes.c_size_t),
-            ("PeakPagefileUsage", ctypes.c_size_t),
-        ]
-
-    k32 = ctypes.windll.kernel32
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
-    k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD]
-    k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
-    pmc = _PMC()
-    pmc.cb = ctypes.sizeof(_PMC)
-    k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb)
-    return round(pmc.PeakWorkingSetSize / (1024.0 * 1024.0), 2)
 
 
 def _make_subset_pdf(src: Path, dst: Path, pages: list[int]) -> None:

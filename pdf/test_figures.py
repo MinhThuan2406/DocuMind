@@ -11,13 +11,13 @@ from PIL import Image  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
 from pdf.backends import LayoutCache, PageLayout, RunStats, file_sha256, register, registered  # noqa: E402
-from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
-from pdf.layout import (  # noqa: E402
+from pdf.backends.mineru import (  # noqa: E402
     MINERU_PIPELINE_BACKEND,
     MINERU_PIPELINE_REVISION,
+    find_mineru_python,
     mineru_middle_json_to_cache_pages,
 )
-from pdf.layout.mineru_pipeline import find_mineru_python  # noqa: E402
+from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
 
 
 def test_importing_figures_does_not_load_docling_or_torch():

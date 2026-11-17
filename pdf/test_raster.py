@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
 from pdf.backends import ComposedReader, register  # noqa: E402
-from pdf.layout import mineru_middle_json_to_raster_pages  # noqa: E402
+from pdf.backends.mineru import mineru_middle_json_to_raster_pages  # noqa: E402
 from pdf.layout.types import LayoutItem  # noqa: E402
 from pdf.ocr.types import OcrLine  # noqa: E402
 
