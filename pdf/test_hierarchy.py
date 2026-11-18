@@ -364,6 +364,63 @@ def test_slide_title_is_not_stolen_as_caption_and_may_be_long():
     assert apply_structure(portrait)["elements"][0]["metadata"].get("role") != "heading"
 
 
+def test_toc_bookmarks_suppress_contents_and_ignore_slide_bookmarks():
+    elements = [
+        _elem("toc_hdr", page=1, reading_order=0, text="Contents", font_size=16.0, bold=True),
+        _elem("toc_line", page=1, reading_order=1, text="1. Overview", font_size=11.0, bold=False),
+        _elem("h1", page=2, reading_order=0, text="1. Overview", font_size=11.0, bold=False),
+        _elem("b1", page=2, reading_order=1, text="Detailed body paragraph explaining the overview section in full.", font_size=11.0, bold=False),
+        _elem("h2", page=2, reading_order=2, text="Subtopic Without Number", font_size=11.0, bold=False),
+    ]
+    toc = [(1, "1. Overview", 2), (2, "Subtopic Without Number", 2)]
+    out = apply_structure(_ir(elements), toc=toc)
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert by_id["toc_hdr"]["metadata"].get("role") is None
+    assert by_id["toc_line"]["metadata"].get("role") is None
+    assert by_id["h1"]["metadata"]["heading_level"] == 1
+    assert by_id["h2"]["metadata"]["heading_level"] == 2
+    assert by_id["h2"]["metadata"]["section_parent_id"] == "h1"
+
+    # Slide-deck Folie bookmarks must be ignored so landscape top-band logic still applies.
+    slide_elems = [
+        _elem("st1", page=1, bbox=[40.0, 20.0, 400.0, 50.0], reading_order=0, text="Introduction", font_size=16.0, bold=True),
+        _elem("ss1", page=1, bbox=[40.0, 140.0, 400.0, 170.0], reading_order=1, text="Motivation", font_size=16.0, bold=True),
+        _elem("sb1", page=1, bbox=[40.0, 200.0, 700.0, 230.0], reading_order=2, text="Detailed slide explanation text repeated to set body font size.", font_size=16.0, bold=False),
+    ]
+    slide_ir = _ir(slide_elems)
+    slide_ir["metadata"]["pages"] = [{"number": 1, "width_pt": 810.0, "height_pt": 540.0}]
+    slide_toc = [(1, "Folie 1", 1), (1, "Folie 2: Introduction", 2)]
+    s_by_id = {e["id"]: e for e in apply_structure(slide_ir, toc=slide_toc)["elements"]}
+    assert s_by_id["st1"]["metadata"]["heading_level"] == 1
+    assert s_by_id["ss1"]["metadata"]["heading_level"] == 2
+    assert s_by_id["ss1"]["metadata"]["section_parent_id"] == "st1"
+
+
+def test_relative_size_tolerance_and_raster_landscape_child_level():
+    elements = [
+        _elem("body", page=1, reading_order=0, text="Regular body text repeated to anchor median font size accurately. " * 4, font_size=10.0, bold=False),
+        _elem("h1a", page=1, reading_order=1, text="First Main Topic", font_size=20.0, bold=True),
+        _elem("h1b", page=1, reading_order=2, text="Second Main Topic", font_size=19.4, bold=True),
+        _elem("h2", page=1, reading_order=3, text="Sub Topic", font_size=14.0, bold=True),
+    ]
+    by_id = {e["id"]: e for e in apply_structure(_ir(elements))["elements"]}
+    assert by_id["h1a"]["metadata"]["heading_level"] == 1
+    assert by_id["h1b"]["metadata"]["heading_level"] == 1
+    assert by_id["h2"]["metadata"]["heading_level"] == 2
+
+    # Unstyled raster landscape section_header below slide_title must nest at level 2.
+    raster_slide = [
+        _elem("rt", page=1, bbox=[40.0, 20.0, 400.0, 50.0], reading_order=0, text="Slide Title", source="ocr", font_size=0.0, bold=False, layout_label="section_header"),
+        _elem("rs", page=1, bbox=[40.0, 150.0, 400.0, 180.0], reading_order=1, text="Sub Header", source="ocr", font_size=0.0, bold=False, layout_label="section_header"),
+    ]
+    r_ir = _ir(raster_slide)
+    r_ir["metadata"]["pages"] = [{"number": 1, "width_pt": 810.0, "height_pt": 540.0}]
+    r_by_id = {e["id"]: e for e in apply_structure(r_ir)["elements"]}
+    assert r_by_id["rt"]["metadata"]["heading_level"] == 1
+    assert r_by_id["rs"]["metadata"]["heading_level"] == 2
+    assert r_by_id["rs"]["metadata"]["section_parent_id"] == "rt"
+
+
 def test_autosar_hierarchy_integration():
     vfb = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_VFB.pdf"
     if not vfb.exists():

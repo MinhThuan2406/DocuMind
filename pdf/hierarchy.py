@@ -3,7 +3,11 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Sequence
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
+
+import pymupdf
 
 _IGNORED_ROLES = frozenset({"page_header", "page_footer"})
 _NON_HEADING_LABELS = frozenset(
@@ -46,10 +50,113 @@ _MAX_HEADING_LEVEL = 6
 _MIN_STYLE_TIER_COUNT = 5
 _SLIDE_TITLE_BAND = 0.2
 _TITLE_BAND_MAX_WORDS = 24
+_DEFAULT_SIZE_TOLERANCE = 0.05
+_SLIDE_BOOKMARK_RE = re.compile(r"^(?:foli[ea]|slide|page)\s+\d+(?:\b|:)", re.IGNORECASE)
+_TOC_HEADER_RE = re.compile(r"^(?:table\s+of\s+contents|contents)$", re.IGNORECASE)
 
 
 def _clean_text(text: str) -> str:
     return " ".join(text.split())
+
+
+def _norm_title(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _clean_text(text).lower()).strip()
+
+
+def _filter_meaningful_toc(toc: Sequence[tuple[int, str, int]]) -> list[tuple[int, str, int]]:
+    cleaned = [(int(lvl), _clean_text(str(title)), int(page)) for lvl, title, page in toc if int(page) >= 1]
+    if not cleaned:
+        return []
+    slide_like = sum(1 for _, title, _ in cleaned if _SLIDE_BOOKMARK_RE.match(title))
+    return [] if slide_like >= 0.8 * len(cleaned) else cleaned
+
+
+def _load_pdf_toc(pdf_path: str | Path) -> list[tuple[int, str, int]]:
+    doc = pymupdf.open(str(pdf_path))
+    try:
+        raw = doc.get_toc()
+    finally:
+        doc.close()
+    return _filter_meaningful_toc(raw)
+
+
+def _match_toc_entries(
+    ordered: list[tuple[int, dict[str, Any]]],
+    toc: Sequence[tuple[int, str, int]],
+) -> tuple[dict[str, int], set[int]]:
+    if not toc:
+        return {}, set()
+    first_target_page = min(page for _, _, page in toc)
+    toc_pages: set[int] = set()
+    in_toc = False
+    for _, elem in ordered:
+        if elem.get("type") != "text" or _is_ignored_element(elem):
+            continue
+        page = int(elem.get("page", 0))
+        if page >= first_target_page:
+            break
+        if _TOC_HEADER_RE.match(_clean_text(elem.get("text", ""))):
+            in_toc = True
+        if in_toc:
+            toc_pages.add(page)
+
+    by_page: dict[int, list[tuple[int, str, str]]] = {}
+    exact_idx: dict[tuple[int, str], list[tuple[int, str]]] = {}
+    for idx, (lvl, title, page) in enumerate(toc):
+        norm = _norm_title(title)
+        if not norm:
+            continue
+        uid = f"{idx}:{norm}"
+        by_page.setdefault(page, []).append((lvl, norm, uid))
+        exact_idx.setdefault((page, norm), []).append((lvl, uid))
+
+    matched_levels: dict[str, int] = {}
+    used_toc: set[str] = set()
+    for _, elem in ordered:
+        if elem.get("type") != "text" or _is_ignored_element(elem):
+            continue
+        page = int(elem.get("page", 0))
+        if page in toc_pages:
+            continue
+        norm_elem = _norm_title(elem.get("text", ""))
+        if not norm_elem or len(norm_elem) > 160:
+            continue
+
+        exact_hit: tuple[int, str] | None = None
+        for cand_page in (page, page - 1, page + 1):
+            for lvl, uid in exact_idx.get((cand_page, norm_elem), ()):
+                if uid not in used_toc:
+                    exact_hit = (lvl, uid)
+                    break
+            if exact_hit is not None:
+                break
+        if exact_hit is not None:
+            matched_levels[elem["id"]] = exact_hit[0]
+            used_toc.add(exact_hit[1])
+            continue
+
+        best: tuple[float, int, str] | None = None
+        n_elem = len(norm_elem)
+        for cand_page in (page, page - 1, page + 1):
+            for lvl, norm_toc, uid in by_page.get(cand_page, ()):
+                if uid in used_toc:
+                    continue
+                n_toc = len(norm_toc)
+                if min(n_elem, n_toc) < 0.70 * max(n_elem, n_toc):
+                    continue
+                if n_elem >= 6 and (norm_elem in norm_toc or norm_toc in norm_elem):
+                    score = min(n_elem, n_toc) / max(n_elem, n_toc)
+                else:
+                    score = SequenceMatcher(None, norm_elem, norm_toc).ratio()
+                if cand_page != page:
+                    score -= 0.05
+                if score >= 0.85 and (best is None or score > best[0]):
+                    best = (score, lvl, uid)
+        if best is not None:
+            matched_levels[elem["id"]] = best[1]
+            used_toc.add(best[2])
+
+    return matched_levels, toc_pages
 
 
 def _is_ignored_element(elem: dict[str, Any]) -> bool:
@@ -380,17 +487,40 @@ def _style_key(elem: dict[str, Any]) -> tuple[float, bool] | None:
     fs = meta.get("font_size")
     if not isinstance(fs, (int, float)) or fs <= 0:
         return None
-    # Quantize to 0.5pt so minor PyMuPDF span rounding differences collapse into one level.
-    return (round(float(fs) * 2.0) / 2.0, bool(meta.get("bold")))
+    return (round(float(fs), 2), bool(meta.get("bold")))
 
 
 def _cluster_styles(
     styles: list[tuple[float, bool]],
     counts: dict[tuple[float, bool], int],
     max_levels: int = _MAX_HEADING_LEVEL,
+    size_tolerance: float = _DEFAULT_SIZE_TOLERANCE,
 ) -> dict[tuple[float, bool], int]:
-    # Collapse excess style pairs into <= max_levels, merging rare outlier styles before common heading tiers.
-    groups: list[list[tuple[float, bool]]] = [[s] for s in styles]
+    # Group sizes within relative tolerance first, split by bold, then merge rare tiers down to <= max_levels.
+    if not styles:
+        return {}
+    buckets: list[list[tuple[float, bool]]] = []
+    anchor = styles[0][0]
+    cur: list[tuple[float, bool]] = []
+    for st in styles:
+        if cur and anchor > 0 and (anchor - st[0]) / anchor > size_tolerance:
+            buckets.append(cur)
+            cur = [st]
+            anchor = st[0]
+        else:
+            cur.append(st)
+    if cur:
+        buckets.append(cur)
+
+    groups: list[list[tuple[float, bool]]] = []
+    for bucket in buckets:
+        bold_grp = [st for st in bucket if st[1]]
+        reg_grp = [st for st in bucket if not st[1]]
+        if bold_grp:
+            groups.append(bold_grp)
+        if reg_grp:
+            groups.append(reg_grp)
+
     while len(groups) > max_levels:
         def _merge_cost(i: int) -> tuple[bool, float, int, int]:
             c_hi = sum(counts[s] for s in groups[i])
@@ -429,6 +559,7 @@ def _slide_title_ids(
 def _assign_heading_levels(
     headings: list[tuple[dict[str, Any], int | None]],
     slide_titles: set[str] = frozenset(),
+    size_tolerance: float = _DEFAULT_SIZE_TOLERANCE,
 ) -> dict[str, int]:
     slide_pages = {elem.get("page") for elem, _ in headings if elem["id"] in slide_titles}
     style_counts: dict[tuple[float, bool], int] = {}
@@ -442,7 +573,7 @@ def _assign_heading_levels(
             if key is not None:
                 style_counts[key] = style_counts.get(key, 0) + 1
     styles = sorted(style_counts, reverse=True)
-    style_rank = _cluster_styles(styles, style_counts, _MAX_HEADING_LEVEL - int(bool(slide_pages)))
+    style_rank = _cluster_styles(styles, style_counts, _MAX_HEADING_LEVEL - int(bool(slide_pages)), size_tolerance)
     has_title = any((elem.get("metadata") or {}).get("layout_label") == "title" for elem, _ in headings)
 
     levels: dict[str, int] = {}
@@ -458,11 +589,20 @@ def _assign_heading_levels(
         if key is not None:
             levels[elem["id"]] = style_rank[key] + int(elem.get("page") in slide_pages)
         else:
-            levels[elem["id"]] = 2 if has_title else 1
+            base_lvl = 2 if has_title else 1
+            levels[elem["id"]] = base_lvl + int(not has_title and elem.get("page") in slide_pages)
     return levels
 
 
-def apply_structure(ir: dict[str, Any], *, inplace: bool = False) -> dict[str, Any]:
+def apply_structure(
+    ir: dict[str, Any],
+    *,
+    toc: Sequence[tuple[int, str, int]] = (),
+    pdf_path: str | Path | None = None,
+    use_bookmarks: bool = True,
+    style_size_tolerance: float = _DEFAULT_SIZE_TOLERANCE,
+    inplace: bool = False,
+) -> dict[str, Any]:
     out = ir if inplace else copy.deepcopy(ir)
     elements: list[dict[str, Any]] = out.get("elements", [])
     doc_meta = out.setdefault("metadata", {})
@@ -470,6 +610,10 @@ def apply_structure(ir: dict[str, Any], *, inplace: bool = False) -> dict[str, A
     if not elements:
         doc_meta["outline"] = []
         return out
+
+    resolved_toc: list[tuple[int, str, int]] = []
+    if use_bookmarks:
+        resolved_toc = _filter_meaningful_toc(toc) if toc else (_load_pdf_toc(pdf_path) if pdf_path is not None else [])
 
     body_font = _weighted_median_font_size(elements)
     landscape_heights = {
@@ -489,18 +633,29 @@ def apply_structure(ir: dict[str, Any], *, inplace: bool = False) -> dict[str, A
         enumerate(elements),
         key=lambda pair: (pair[1].get("page", 0), pair[1].get("reading_order", pair[0]), pair[0]),
     )
+    toc_matches, toc_pages = _match_toc_entries(ordered, resolved_toc) if resolved_toc else ({}, set())
 
     def collect_headings() -> list[tuple[dict[str, Any], int | None]]:
         found = []
         for _, elem in ordered:
-            is_heading, explicit_depth = _is_heading_candidate(elem, body_font, elem["id"] in top_band_ids)
+            eid = elem["id"]
+            if eid in toc_matches:
+                found.append((elem, toc_matches[eid]))
+                continue
+            if elem.get("page") in toc_pages:
+                continue
+            is_heading, explicit_depth = _is_heading_candidate(elem, body_font, eid in top_band_ids)
             if is_heading:
                 found.append((elem, explicit_depth))
         return found
 
     _link_captions(elements, body_font, _slide_title_ids(collect_headings(), landscape_heights))
     heading_candidates = collect_headings()
-    heading_levels = _assign_heading_levels(heading_candidates, _slide_title_ids(heading_candidates, landscape_heights))
+    heading_levels = _assign_heading_levels(
+        heading_candidates,
+        _slide_title_ids(heading_candidates, landscape_heights),
+        style_size_tolerance,
+    )
     stack: list[tuple[int, str]] = []
     outline: list[dict[str, Any]] = []
 

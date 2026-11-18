@@ -76,6 +76,7 @@ def extract_ir(
     doc = pymupdf.open(str(pdf_path))
 
     try:
+        toc = doc.get_toc() if structure else ()
         profiles: list[PageProfile] = []
         page_sizes: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
@@ -170,5 +171,5 @@ def extract_ir(
         "diagrams": [],
     }
     if structure:
-        apply_structure(ir, inplace=True)
+        apply_structure(ir, toc=toc, inplace=True)
     return ir
