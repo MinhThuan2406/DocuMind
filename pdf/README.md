@@ -153,6 +153,22 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 | `figures_live` (5 pages, `HeronDetector`) | 0.0169 | 22.4569 | 0.3338 | 1524.91 |
 | `raster` (5 pages, `HeronDetector` + `RapidOCR`) | 0.0389 | 37.0684 | 6.1676 | 2215.66 |
 
+### Step-1 dev baselines (2026-11-19, commit `ac53d66`, `outputs/eval_runs.jsonl`)
+
+- **Figures `dev` (`pdf.eval.compare --task figures --split dev --backends heron-onnx --no-cache`, `44` pages / `22` negative / `30` GT boxes):** strict `28/3/2` (`F1 = 0.918`), lenient `27/4/3` (`F1 = 0.885`), `neg_fp = 2`, `load = 4.082 s`, `0.1897 s/p`, `987.0 MB` peak RSS.
+- **Reading order (`pdf.eval.reading_order`, `dev`):**
+  - `synthetic` (`3` pages, `e2e_native`): `mean_tau_matched = 1.0`, `mean_tau_penalized = 1.0`, `0.0465 s`.
+  - `omnidoc` `oracle` (`368` pages): `mean_tau_matched = 0.9473`, `mean_tau_penalized = 0.9473`, `median = 1.0`, `0.1187 s`, `402.05 MB` RSS.
+  - `omnidoc` `e2e` (`--limit 25`, `25` pages): `mean_tau_matched = 0.9744`, `mean_tau_penalized = 0.0249` (median `1.0` / `0.0826`), `37.5076 s`, `1557.99 MB` RSS.
+- **Tables (`pdf.eval.tables`, `dev`):**
+  - `omnidoc` `oracle` (`124` tables, `40` merged, `119` non-empty): `teds_struct = 0.8422` (`merged = 0.8599`), `teds_full = 0.758`, `merged_cell_span_f1 = 0.3742`, `load = 2.0123 s`, `76.46 ms/table`, `1935.35 MB` RSS.
+  - `omnidoc` `e2e` (`--limit 25`, `20` pages, `25` GT tables, `24` matched): `det_P = 1.0`, `det_R = 0.96`, `det_F1 = 0.9796`, `teds_struct = 0.7931` (`matched = 0.8261`, `merged = 0.7384`), `teds_full = 0.7083`, `merged_cell_span_f1 = 0.2609`, `87.5222 s` (`3500.89 ms/table`), `1752.89 MB` RSS.
+  - `autosar` `dev` (`4` tables): `pdfplumber` `4/4` non-empty (`3` merged, `91` cells, `15.43 ms/table`, `914.73 MB`); `tatr-onnx` `4/4` (`88` cells, `141.72 ms/table`, `1009.43 MB`); `auto` `4/4` (`91` cells, `21` header, `148.17 ms/table`, `1041.59 MB`).
+- **Hierarchy `dev` (`pdf.eval.compare_hierarchy --split dev`, `with_toc`):** `VFB` (`147p`, `toc=113`) `toc_rec=0.965, lvl_acc=1.000` (`164.7 ms`); `SWS_OS` (`407p`, `toc=380`) `0.976 / 1.000` (`2943.8 ms`); `SWS_ECUStateManager` (`245p`, `toc=256`) `0.996 / 0.996` (`505.9 ms`); `Layered` (`185p`, `toc=0`) `out=388` (`700.2 ms`).
+- **End-to-end 5-page benchmark (`pdf/benchmark.py`):**
+  - `tables_live`: `tables_extracted=1`, `elements=68`, `import_sec=0.0`, `total_sec=6.1168` (`1.2234 s/p`), `1060.38 MB` peak RSS.
+  - `balanced_e2e` (`4` native + `1` raster): `tables_extracted=1`, `elements=62`, `outline_len=3`, `import_sec=0.0`, `total_sec=7.67` (`1.534 s/p`), `1284.98 MB` peak RSS.
+
 ## 5. Known limits
 
 - Default full-pipeline execution (`heron-onnx` + `rapidocr-onnx`) uses `onnxruntime`, avoiding `torch` and `transformers`; the PyTorch `heron` and `rapidocr-torch` backends remain available by name.
