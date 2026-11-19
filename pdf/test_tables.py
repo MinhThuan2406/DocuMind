@@ -635,7 +635,20 @@ def test_table_ir_top_level_fields_and_empty_table_warning():
     assert ir_tbl["confidence"] == 0.92
     assert ir_tbl["metadata"]["source"] == "auto_refined"
     assert ir_tbl["metadata"]["confidence"] == 0.92
-    assert all("confidence" not in c for c in ir_tbl["cells"])
+    assert all(c["confidence"] == 1.0 for c in ir_tbl["cells"])
+    tbl_custom_conf = ExtractedTable(
+        bbox=(10.0, 20.0, 110.0, 80.0),
+        num_rows=1,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "A", (10.0, 20.0, 60.0, 80.0), True, confidence=0.875),
+            TableCell(0, 1, 1, 1, "B", (60.0, 20.0, 110.0, 80.0), True, confidence=0.9125),
+        ),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    ir_custom = table_to_ir_dict("tbl_0002", "elem_0002", 1, "doc.pdf", tbl_custom_conf)
+    assert [c["confidence"] for c in ir_custom["cells"]] == [0.875, 0.9125]
     assert isinstance(get("table", "tatr-onnx"), TableExtractor)
     assert DiagramExtractor is not None
 
@@ -735,6 +748,246 @@ def test_table_to_html_preserves_full_rowspan_tr_and_br_whitespace():
         )
         == 1.0
     )
+
+
+def test_table_to_html_thead_tbody_and_teds_parity():
+    from pdf.eval.tables import parse_table_html, teds_score
+
+    tbl = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "Key", (0.0, 0.0, 50.0, 30.0), is_header=True, confidence=0.95),
+            TableCell(0, 1, 1, 1, "Val", (50.0, 0.0, 100.0, 30.0), is_header=True, confidence=0.95),
+            TableCell(1, 0, 1, 1, "A", (0.0, 30.0, 50.0, 60.0), is_header=False, confidence=0.9),
+            TableCell(1, 1, 1, 1, "1", (50.0, 30.0, 100.0, 60.0), is_header=False, confidence=0.9),
+            TableCell(2, 0, 1, 1, "B", (0.0, 60.0, 50.0, 90.0), is_header=False, confidence=0.9),
+            TableCell(2, 1, 1, 1, "2", (50.0, 60.0, 100.0, 90.0), is_header=False, confidence=0.9),
+        ),
+        source="tatr_onnx",
+        confidence=0.94,
+    )
+    out_html = table_to_html(tbl)
+    assert out_html == (
+        "<table><thead><tr><th>Key</th><th>Val</th></tr></thead>"
+        "<tbody><tr><td>A</td><td>1</td></tr><tr><td>B</td><td>2</td></tr></tbody></table>"
+    )
+    root = parse_table_html(out_html)
+    assert len(root.children) == 3
+    assert [c.text for c in root.children[0].children] == ["Key", "Val"]
+    assert teds_score(out_html, "<table><tr><td>Key</td><td>Val</td></tr><tr><td>A</td><td>1</td></tr><tr><td>B</td><td>2</td></tr></table>") == 1.0
+
+
+def test_grid_occupancy_invariant_and_cell_confidence():
+    import pdfplumber
+
+    objects = [
+        ("table", (0.0, 0.0, 200.0, 120.0), 0.96),
+        ("table row", (0.0, 0.0, 200.0, 40.0), 0.92),
+        ("table row", (0.0, 40.0, 200.0, 80.0), 0.88),
+        ("table row", (0.0, 80.0, 200.0, 120.0), 0.84),
+        ("table column", (0.0, 0.0, 100.0, 120.0), 0.90),
+        ("table column", (100.0, 0.0, 200.0, 120.0), 0.86),
+        ("table column header", (0.0, 0.0, 200.0, 40.0), 0.91),
+        ("table spanning cell", (0.0, 0.0, 200.0, 80.0), 0.94),
+        # Overlapping lower-confidence spanning cell must be skipped without double-occupying slots.
+        ("table spanning cell", (100.0, 40.0, 200.0, 120.0), 0.72),
+    ]
+    tbl = objects_to_table(objects, (200, 120), (0.0, 0.0, 200.0, 120.0), ())
+    assert tbl.num_rows == 3 and tbl.num_cols == 2
+    occupied: set[tuple[int, int]] = set()
+    for cell in tbl.cells:
+        assert 0.0 < cell.confidence <= 1.0
+        assert cell.row + cell.rowspan <= tbl.num_rows
+        assert cell.col + cell.colspan <= tbl.num_cols
+        for r in range(cell.row, cell.row + cell.rowspan):
+            for c in range(cell.col, cell.col + cell.colspan):
+                assert (r, c) not in occupied
+                occupied.add((r, c))
+    assert len(occupied) == tbl.num_rows * tbl.num_cols
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "pl_conf.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=300, height=200)
+        for x in (40, 120, 200):
+            p.draw_line((x, 40), (x, 120), width=0.5)
+        for y in (40, 80, 120):
+            p.draw_line((40, y), (200, y), width=0.5)
+        p.insert_text((50, 64), "H1", fontsize=10)
+        p.insert_text((130, 64), "H2", fontsize=10)
+        p.insert_text((50, 104), "V1", fontsize=10)
+        p.insert_text((130, 104), "V2", fontsize=10)
+        b.save(pdf_path)
+        with pdfplumber.open(str(pdf_path)) as doc:
+            pl_tbl = extract_tables_on_page(doc.pages[0], [(38.0, 38.0, 202.0, 122.0)], extractor="pdfplumber")[0]
+    assert all(c.confidence == 1.0 for c in pl_tbl.cells)
+
+
+def test_token_aware_snapping_and_multicell_split():
+    # Token "LineTwo" straddles the nominal y=50 midpoint (row0 ends at 46, row1 starts at 54) -> boundary nudges above/below it.
+    objects = [
+        ("table", (0.0, 0.0, 200.0, 100.0), 0.95),
+        ("table row", (0.0, 0.0, 200.0, 46.0), 0.94),
+        ("table row", (0.0, 54.0, 200.0, 100.0), 0.92),
+        ("table column", (0.0, 0.0, 100.0, 100.0), 0.93),
+        ("table column", (100.0, 0.0, 200.0, 100.0), 0.93),
+        ("table column header", (0.0, 0.0, 200.0, 46.0), 0.93),
+    ]
+    tokens = [
+        ("HdrA", (10.0, 10.0, 50.0, 24.0)),
+        ("HdrB", (120.0, 10.0, 160.0, 24.0)),
+        ("LineTwo", (10.0, 45.0, 70.0, 62.0)),
+        ("Right1 Right2", (20.0, 72.0, 175.0, 88.0)),
+    ]
+    tbl = objects_to_table(objects, (200, 100), (0.0, 0.0, 200.0, 100.0), tokens)
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(1, 0)].text == "LineTwo Right1"
+    assert by_rc[(1, 1)].text == "Right2"
+
+
+def test_auto_token_coverage_gate_and_1x1_callout():
+    import pdfplumber
+
+    class _BadCoveragePlumber:
+        def extract_from_page(self, _page, table_boxes_pt, **_kw):
+            b = table_boxes_pt[0]
+            return [
+                ExtractedTable(
+                    bbox=b,
+                    num_rows=2,
+                    num_cols=2,
+                    cells=(
+                        TableCell(0, 0, 1, 1, "OnlyOne", (b[0], b[1], b[0] + 40.0, b[1] + 20.0), True),
+                        TableCell(0, 1, 1, 1, "", (b[0] + 40.0, b[1], b[2], b[1] + 20.0), True),
+                        TableCell(1, 0, 1, 1, "", (b[0], b[1] + 20.0, b[0] + 40.0, b[3]), False),
+                        TableCell(1, 1, 1, 1, "", (b[0] + 40.0, b[1] + 20.0, b[2], b[3]), False),
+                    ),
+                    source="pdfplumber",
+                    confidence=1.0,
+                )
+            ]
+
+    class _FakeTatr:
+        def __init__(self, split_grid: bool):
+            self.split_grid = split_grid
+
+        def detect_objects(self, crop: Image.Image):
+            cw, ch = float(crop.width), float(crop.height)
+            if not self.split_grid:
+                return [("table", (0.0, 0.0, cw, ch), 0.85)]
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.92),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.90),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.90),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.90),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.90),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.90),
+            ]
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            return objects_to_table(self.detect_objects(image), image.size, table_bbox_pt, tokens)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "gate.pdf"
+        b = TestPdfBuilder()
+        p1 = b.new_page(width=400, height=300)
+        p1.insert_text((50, 64), "OnlyOne", fontsize=10)
+        p1.insert_text((170, 64), "Miss1", fontsize=10)
+        p1.insert_text((50, 114), "Miss2", fontsize=10)
+        p1.insert_text((170, 114), "Miss3", fontsize=10)
+
+        p2 = b.new_page(width=400, height=300)
+        p2.draw_rect((40, 50, 260, 110), width=0.5)
+        p2.insert_text((55, 82), "Important note callout", fontsize=10)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            gate_tbl = extract_tables_on_page(
+                doc.pages[0],
+                [(40.0, 45.0, 250.0, 130.0)],
+                extractor=AutoTableExtractor(
+                    pdfplumber_extractor=_BadCoveragePlumber(),
+                    tatr_extractor=_FakeTatr(split_grid=True),
+                ),
+            )[0]
+            assert gate_tbl.source == "auto_tatr"
+            assert [c.text for c in gate_tbl.cells] == ["OnlyOne", "Miss1", "Miss2", "Miss3"]
+
+            callout_tbl = extract_tables_on_page(
+                doc.pages[1],
+                [(38.0, 48.0, 262.0, 112.0)],
+                extractor=AutoTableExtractor(tatr_extractor=_FakeTatr(split_grid=False)),
+            )[0]
+            assert callout_tbl.num_rows == 1 and callout_tbl.num_cols == 1
+            assert callout_tbl.cells[0].is_header is False
+            assert "Important note callout" in callout_tbl.cells[0].text
+            assert 0.0 < callout_tbl.confidence < 1.0
+
+
+def test_link_table_continuations_positive_and_negative():
+    from pdf.tables import link_table_continuations
+
+    def _mk_tbl(tid, eid, page, bbox, ncols, hdr_texts, is_hdr=True):
+        cells = [
+            {"row": 0, "col": c, "rowspan": 1, "colspan": 1, "text": hdr_texts[c], "is_header": is_hdr}
+            for c in range(ncols)
+        ]
+        return {
+            "id": tid,
+            "page": page,
+            "bbox": list(bbox),
+            "num_rows": 2,
+            "num_cols": ncols,
+            "continuation_of": None,
+            "cells": cells,
+            "metadata": {"element_id": eid},
+        }
+
+    # Positive 1: repeated header row at bottom->top margin; pure (input unchanged).
+    t1 = _mk_tbl("tbl_0001", "e1", 1, (40, 500, 500, 740), 2, ["Param", "Value"], True)
+    t2 = _mk_tbl("tbl_0002", "e2", 2, (40, 40, 500, 260), 2, ["Param", "Value"], True)
+    # Positive 2: headerless continuation on page 3.
+    t2b = _mk_tbl("tbl_0002", "e2", 2, (40, 520, 500, 740), 2, ["Param", "Value"], True)
+    t3 = _mk_tbl("tbl_0003", "e3", 3, (40, 40, 500, 220), 2, ["foo", "bar"], False)
+    elems_pos = [
+        {"id": "e1", "page": 1, "type": "table", "bbox": [40, 500, 500, 740]},
+        {"id": "f1", "page": 1, "type": "footer", "bbox": [40, 760, 500, 780]},
+        {"id": "h2", "page": 2, "type": "header", "bbox": [40, 15, 500, 30]},
+        {"id": "e2", "page": 2, "type": "table", "bbox": [40, 40, 500, 260]},
+    ]
+    linked = link_table_continuations([t1, t2], elems_pos)
+    assert t2["continuation_of"] is None
+    assert linked[0]["continuation_of"] is None
+    assert linked[1]["continuation_of"] == "tbl_0001"
+
+    elems_hdrless = [
+        {"id": "e2", "page": 2, "type": "table", "bbox": [40, 520, 500, 740]},
+        {"id": "e3", "page": 3, "type": "table", "bbox": [40, 40, 500, 220]},
+    ]
+    linked_hdrless = link_table_continuations([t2b, t3], elems_hdrless)
+    assert linked_hdrless[1]["continuation_of"] == "tbl_0002"
+
+    # Negative 1: mismatched num_cols.
+    t_cols = _mk_tbl("tbl_0002", "e2", 2, (40, 40, 500, 260), 3, ["Param", "Value", "Unit"], True)
+    assert link_table_continuations([t1, t_cols], elems_pos)[1]["continuation_of"] is None
+
+    # Negative 2: intervening heading or body text between tables.
+    elems_heading = [
+        {"id": "e1", "page": 1, "type": "table", "bbox": [40, 500, 500, 740]},
+        {"id": "hd", "page": 2, "type": "heading", "bbox": [40, 20, 300, 36]},
+        {"id": "e2", "page": 2, "type": "table", "bbox": [40, 40, 500, 260]},
+    ]
+    assert link_table_continuations([t1, t2], elems_heading)[1]["continuation_of"] is None
+
+    # Negative 3: different header row texts.
+    t_diff_hdr = _mk_tbl("tbl_0002", "e2", 2, (40, 40, 500, 260), 2, ["Other", "Cols"], True)
+    assert link_table_continuations([t1, t_diff_hdr], elems_pos)[1]["continuation_of"] is None
+
+    # Negative 4: non-consecutive pages (page 1 -> page 3).
+    t_p3 = _mk_tbl("tbl_0002", "e2", 3, (40, 40, 500, 260), 2, ["Param", "Value"], True)
+    assert link_table_continuations([t1, t_p3], elems_pos)[1]["continuation_of"] is None
 
 
 def main():

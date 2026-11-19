@@ -15,6 +15,58 @@ from .rss import peak_rss_mb
 from .tatr_onnx import _overlap_indices, objects_to_table
 
 _ROW_OR_HEADER_LABELS = frozenset({"table row", "table column header", "table projected row header"})
+_MIN_TOKEN_COVERAGE = 0.95
+
+
+def _has_valid_grid(table: ExtractedTable) -> bool:
+    if table.num_rows <= 0 or table.num_cols <= 0 or not table.cells:
+        return False
+    occupied: set[tuple[int, int]] = set()
+    non_empty = 0
+    for c in table.cells:
+        if c.row < 0 or c.col < 0 or c.rowspan < 1 or c.colspan < 1:
+            return False
+        if c.row + c.rowspan > table.num_rows or c.col + c.colspan > table.num_cols:
+            return False
+        for rr in range(c.row, c.row + c.rowspan):
+            for cc in range(c.col, c.col + c.colspan):
+                if (rr, cc) in occupied:
+                    return False
+                occupied.add((rr, cc))
+        if c.text.strip():
+            non_empty += 1
+    if non_empty == 0:
+        return False
+    return len(occupied) == table.num_rows * table.num_cols
+
+
+def _token_coverage(table: ExtractedTable, tokens: Sequence[tuple[str, BBox]]) -> float:
+    non_empty = [(txt.strip(), tb) for txt, tb in tokens if txt.strip()]
+    if not non_empty:
+        return 1.0
+    if not table.cells:
+        return 0.0
+    norm_cells = [(c.bbox, "".join(c.text.split()).lower()) for c in table.cells]
+    has_bboxes = any(cb is not None for cb, _ in norm_cells)
+    all_text = "".join(t for _, t in norm_cells)
+    covered = 0
+    for txt, tb in non_empty:
+        norm_tok = "".join(txt.split()).lower()
+        if not has_bboxes:
+            if norm_tok in all_text:
+                covered += 1
+            continue
+        tcx = (tb[0] + tb[2]) * 0.5
+        tcy = (tb[1] + tb[3]) * 0.5
+        if any(
+            cb is not None
+            and (cb[0] - 1.5 <= tcx <= cb[2] + 1.5 and cb[1] - 1.5 <= tcy <= cb[3] + 1.5)
+            and bool(ctext)
+            and norm_tok in ctext
+            for cb, ctext in norm_cells
+        ):
+            covered += 1
+    return covered / len(non_empty)
 
 
 def _row_y_spans_pt(table: ExtractedTable) -> list[tuple[float, float]]:
@@ -190,23 +242,50 @@ class AutoTableExtractor:
                 return cached_tokens
 
             for box, pl_tbl in zip(table_boxes_pt, pl_tables):
-                if pl_tbl.num_rows == 0 or pl_tbl.num_cols == 0 or (pl_tbl.num_rows == 1 and pl_tbl.num_cols == 1):
+                if pl_tbl.num_rows == 0 or pl_tbl.num_cols == 0:
                     crop, crop_box = crop_page_region(page, box, dpi)
                     box_tokens = tokens_in_box(get_native_tokens(), crop_box)
                     out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
-                elif pl_tbl.num_cols == 1 and pl_tbl.num_rows >= 2:
+                elif pl_tbl.num_rows == 1 and pl_tbl.num_cols == 1:
                     crop, crop_box = crop_page_region(page, box, dpi)
                     box_tokens = tokens_in_box(get_native_tokens(), crop_box)
-                    objects = tatr.detect_objects(crop)
-                    tatr_tbl = objects_to_table(objects, crop.size, crop_box, box_tokens)
-                    if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
+                    tatr_tbl = tatr.extract(crop, crop_box, box_tokens)
+                    if tatr_tbl.num_rows * tatr_tbl.num_cols >= 2:
                         out.append(replace(tatr_tbl, source="auto_tatr"))
+                    elif _has_valid_grid(pl_tbl) and _token_coverage(
+                        pl_tbl, tokens_in_box(get_native_tokens(), pl_tbl.bbox)
+                    ) >= _MIN_TOKEN_COVERAGE:
+                        callout_cells = tuple(replace(c, is_header=False) for c in pl_tbl.cells)
+                        out.append(
+                            replace(
+                                pl_tbl,
+                                cells=callout_cells,
+                                source="auto_refined",
+                                confidence=min(pl_tbl.confidence, 0.75),
+                            )
+                        )
                     else:
-                        out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
+                        callout_cells = tuple(replace(c, is_header=False) for c in tatr_tbl.cells)
+                        out.append(replace(tatr_tbl, cells=callout_cells, source="auto_tatr"))
                 else:
-                    crop, crop_box = crop_page_region(page, pl_tbl.bbox, dpi)
-                    objects = tatr.detect_objects(crop)
-                    out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
+                    pl_tokens = tokens_in_box(get_native_tokens(), pl_tbl.bbox)
+                    if not _has_valid_grid(pl_tbl) or _token_coverage(pl_tbl, pl_tokens) < _MIN_TOKEN_COVERAGE:
+                        crop, crop_box = crop_page_region(page, box, dpi)
+                        box_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                        out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
+                    elif pl_tbl.num_cols == 1 and pl_tbl.num_rows >= 2:
+                        crop, crop_box = crop_page_region(page, box, dpi)
+                        box_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                        objects = tatr.detect_objects(crop)
+                        tatr_tbl = objects_to_table(objects, crop.size, crop_box, box_tokens)
+                        if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
+                            out.append(replace(tatr_tbl, source="auto_tatr"))
+                        else:
+                            out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
+                    else:
+                        crop, crop_box = crop_page_region(page, pl_tbl.bbox, dpi)
+                        objects = tatr.detect_objects(crop)
+                        out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
 
         self.last_stats = RunStats(
             load_sec=round(load_sec, 4),

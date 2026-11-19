@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ._pdf_io import clip_box, extract_words_raw, page_bbox
@@ -14,6 +15,12 @@ MIN_NATIVE_TEXT_AREA_RATIO = 0.002
 SUSPECT_INVALID_CHAR_RATIO = 0.05
 SUSPECT_IMAGE_RATIO = 0.80
 SUSPECT_TINY_TEXT_RATIO = 0.01
+WATERMARK_MAX_FONT_SIZE = 4.5
+PARTIAL_RASTER_MIN_AREA_RATIO = 0.04
+PARTIAL_RASTER_MAX_TEXT_DENSITY = 0.005
+
+_CID_RE = re.compile(r"\(cid:\d+\)")
+_SYMBOL_FONT_TOKENS = ("wingding", "webding", "zapfdingbat", "symbol")
 
 
 def _box_area(box: BBox) -> float:
@@ -48,6 +55,22 @@ def _union_area(boxes: list[BBox]) -> float:
 
 def _is_invalid_char(ch: str) -> bool:
     return ch == "\ufffd" or (ord(ch) < 32 and ch not in "\t\n\r")
+
+
+def _cid_or_pua_glyph_counts(word: dict[str, Any]) -> tuple[int, int]:
+    text = word["text"]
+    sub = _CID_RE.sub("\uffff", text)
+    total_glyphs = len(sub)
+    cid_glyphs = sub.count("\uffff")
+    fontname = str(word.get("fontname") or "").lower()
+    is_symbol_font = any(tok in fontname for tok in _SYMBOL_FONT_TOKENS)
+    pua_glyphs = 0 if (is_symbol_font and total_glyphs == 1) else sum(1 for ch in sub if 0xE000 <= ord(ch) <= 0xF8FF)
+    return cid_glyphs + pua_glyphs, total_glyphs
+
+
+def _is_watermark_word(word: dict[str, Any], max_image_cover: float) -> bool:
+    size = float(word.get("size") or 0.0)
+    return 0.0 < size <= WATERMARK_MAX_FONT_SIZE and max_image_cover < SUSPECT_IMAGE_RATIO
 
 
 def _is_figure_candidate(page: Any, bounds: BBox, image_boxes: list[BBox]) -> bool:
@@ -86,35 +109,64 @@ def classify_page(
     if page_area <= 0:
         return PageProfile(number, "native", 0, 0.0, 0.0, False)
 
-    words = extract_words_raw(page) if raw_words is None else raw_words
-    word_count = len(words)
-    word_boxes = [
-        b for w in words if (b := clip_box((w["x0"], w["top"], w["x1"], w["bottom"]), bounds)) is not None
-    ]
-    text_area_ratio = min(1.0, sum(_box_area(b) for b in word_boxes) / page_area)
-
+    raw = extract_words_raw(page, with_style=True) if raw_words is None else raw_words
     image_boxes = [
         b for im in page.images if (b := clip_box((im["x0"], im["top"], im["x1"], im["bottom"]), bounds)) is not None
     ]
     max_image_cover = max((_box_area(b) / page_area for b in image_boxes), default=0.0)
     image_area_ratio = min(1.0, _union_area(image_boxes) / page_area)
 
+    words = [w for w in raw if not _is_watermark_word(w, max_image_cover)]
+    watermark_word_count = len(raw) - len(words)
+    word_count = len(words)
+    word_boxes = [
+        b for w in words if (b := clip_box((w["x0"], w["top"], w["x1"], w["bottom"]), bounds)) is not None
+    ]
+    text_area_ratio = min(1.0, sum(_box_area(b) for b in word_boxes) / page_area)
+
     total_chars = sum(len(w["text"]) for w in words)
     invalid_chars = sum(1 for w in words for ch in w["text"] if _is_invalid_char(ch))
     invalid_ratio = invalid_chars / total_chars if total_chars > 0 else 0.0
+    cid_pua_glyphs = 0
+    total_glyphs = 0
+    for w in words:
+        bad_g, tot_g = _cid_or_pua_glyph_counts(w)
+        cid_pua_glyphs += bad_g
+        total_glyphs += tot_g
+    cid_pua_ratio = cid_pua_glyphs / total_glyphs if total_glyphs > 0 else 0.0
 
-    suspect_ocr_layer = (
-        (word_count > 0 and invalid_ratio >= SUSPECT_INVALID_CHAR_RATIO)
-        or (word_count > 0 and max_image_cover >= SUSPECT_IMAGE_RATIO and text_area_ratio < SUSPECT_TINY_TEXT_RATIO)
-    )
+    reasons: list[str] = []
+    if word_count > 0 and invalid_ratio >= SUSPECT_INVALID_CHAR_RATIO:
+        reasons.append("invalid_char_ratio")
+    if word_count > 0 and max_image_cover >= SUSPECT_IMAGE_RATIO and text_area_ratio < SUSPECT_TINY_TEXT_RATIO:
+        reasons.append("suspect_ocr_image_cover")
+    if word_count > 0 and cid_pua_ratio >= SUSPECT_INVALID_CHAR_RATIO:
+        reasons.append("cid_or_pua_glyphs")
+    suspect_reasons = tuple(reasons)
+    suspect_ocr_layer = bool(suspect_reasons)
+
+    partial_raster: list[BBox] = []
+    for img_box in image_boxes:
+        img_area = _box_area(img_box)
+        if not (PARTIAL_RASTER_MIN_AREA_RATIO * page_area <= img_area < FULL_PAGE_IMAGE_RATIO * page_area):
+            continue
+        local_text_area = 0.0
+        for wb in word_boxes:
+            inter = clip_box(wb, img_box)
+            if inter is not None:
+                local_text_area += _box_area(inter)
+        if (local_text_area / img_area) < PARTIAL_RASTER_MAX_TEXT_DENSITY:
+            partial_raster.append(img_box)
+    partial_raster_regions = tuple(partial_raster)
 
     kind: PageKind
-    if word_count < MIN_NATIVE_WORDS and max_image_cover >= FULL_PAGE_IMAGE_RATIO:
+    if word_count < MIN_NATIVE_WORDS and max_image_cover >= FULL_PAGE_IMAGE_RATIO and not suspect_ocr_layer:
         kind = "raster"
     elif (
         word_count >= MIN_NATIVE_WORDS
         and text_area_ratio >= MIN_NATIVE_TEXT_AREA_RATIO
         and not suspect_ocr_layer
+        and not partial_raster_regions
         and max_image_cover < FULL_PAGE_IMAGE_RATIO
     ):
         kind = "native"
@@ -131,4 +183,7 @@ def classify_page(
         image_area_ratio=round(image_area_ratio, 6),
         suspect_ocr_layer=suspect_ocr_layer,
         figure_candidate=_is_figure_candidate(page, bounds, image_boxes),
+        suspect_reasons=suspect_reasons,
+        partial_raster_regions=partial_raster_regions,
+        watermark_word_count=watermark_word_count,
     )

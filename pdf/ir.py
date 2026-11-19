@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pdfplumber
 
 from ._pdf_io import PdfContext, extract_toc, extract_words_raw, page_bbox
-from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
+from .assemble import AssembledItem, assemble_page, merge_hybrid_region_ocr, tag_running_headers_footers
 from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
 from .hierarchy import apply_structure
-from .models import BBox, FigureBox, PageProfile, RasterPage
+from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
 from .router import classify_page
-from .text import extract_words
+from .text import extract_words, xy_cut_order
 
 
 def _round_bbox(bbox: BBox) -> list[float]:
@@ -59,6 +61,108 @@ def _collect_stats_warnings(backend: Any, prev_stats: Any, warnings: list[dict[s
     if stats is not None and stats is not prev_stats:
         for w in getattr(stats, "warnings", ()):
             warnings.append(dict(w))
+
+
+def _box_area(box: BBox) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def _inter_area(a: BBox, b: BBox) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix * iy
+
+
+def _merge_assembled_with_region_ocr(
+    assembled: list[AssembledItem],
+    ocr_blocks: Sequence[TextBlock],
+) -> list[AssembledItem]:
+    if not ocr_blocks:
+        return assembled
+
+    groups: list[tuple[AssembledItem, list[AssembledItem]]] = []
+    index_to_group: dict[int, int] = {}
+    for idx, item in enumerate(assembled):
+        if item.level == 1:
+            index_to_group[idx] = len(groups)
+            groups.append((item, []))
+        elif item.parent_index is not None and item.parent_index in index_to_group:
+            groups[index_to_group[item.parent_index]][1].append(item)
+
+    box_groups = [
+        (_box_area(top.bbox), g_idx, top.bbox)
+        for g_idx, (top, _) in enumerate(groups)
+        if top.kind in ("figure", "table")
+    ]
+    dirty_groups: set[int] = set()
+
+    for blk in ocr_blocks:
+        b_area = _box_area(blk.bbox)
+        best_g_idx: int | None = None
+        best_key: tuple[float, float, int] | None = None
+        if b_area <= 0.0:
+            cx = (blk.bbox[0] + blk.bbox[2]) * 0.5
+            cy = (blk.bbox[1] + blk.bbox[3]) * 0.5
+            for area, g_idx, box in box_groups:
+                if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
+                    key = (area, -1.0, g_idx)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_g_idx = g_idx
+        else:
+            for area, g_idx, box in box_groups:
+                ioa = _inter_area(blk.bbox, box) / b_area
+                if ioa >= 0.50:
+                    key = (area, -ioa, g_idx)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_g_idx = g_idx
+
+        if best_g_idx is not None:
+            groups[best_g_idx][1].append(
+                AssembledItem(
+                    kind="text",
+                    bbox=blk.bbox,
+                    text=blk.text,
+                    source=blk.source,
+                    confidence=blk.confidence,
+                    level=2,
+                    parent_index=None,
+                    font_size=blk.font_size,
+                    bold=blk.bold,
+                    label=blk.label,
+                )
+            )
+            dirty_groups.add(best_g_idx)
+        else:
+            groups.append((
+                AssembledItem(
+                    kind="text",
+                    bbox=blk.bbox,
+                    text=blk.text,
+                    source=blk.source,
+                    confidence=blk.confidence,
+                    level=1,
+                    parent_index=None,
+                    font_size=blk.font_size,
+                    bold=blk.bold,
+                    label=blk.label,
+                ),
+                [],
+            ))
+
+    for g_idx in dirty_groups:
+        top, children = groups[g_idx]
+        groups[g_idx] = (top, xy_cut_order(children, lambda c: c.bbox))
+
+    ordered_groups = xy_cut_order(groups, lambda g: g[0].bbox)
+    out: list[AssembledItem] = []
+    for top, children in ordered_groups:
+        parent_idx = len(out)
+        out.append(top)
+        for child in children:
+            out.append(replace(child, parent_index=parent_idx))
+    return out
 
 
 def _link_diagram_text_elements(
@@ -157,6 +261,7 @@ def extract_ir(
                 unreadable_pages.append({"page": idx, "reason": "raster_page_ocr_disabled"})
 
         figures_by_page: dict[int, list[FigureBox]] = {}
+        semantic_regions: dict[int, list[SemanticRegion]] = {}
         candidate_pages = [
             p.page for p in profiles if not _uses_ocr_fallback(p, ocr) and p.kind != "raster" and p.figure_candidate
         ]
@@ -172,36 +277,62 @@ def extract_ir(
                 pdfium_doc=ctx.pdfium,
                 pdf_hash=ctx.pdf_hash,
                 warnings_out=warnings,
+                semantic_regions_out=semantic_regions if structure else None,
             )
 
         raster_by_page: dict[int, RasterPage] = {}
+        region_ocr_by_page: dict[int, list[TextBlock]] = {}
         if ocr:
             raster_pages = [p.page for p in profiles if _uses_ocr_fallback(p, ocr)]
-            if raster_pages:
-                from .raster import read_raster_pages
-
+            partial_regions_by_page = {
+                p.page: p.partial_raster_regions
+                for p in profiles
+                if not _uses_ocr_fallback(p, ocr) and p.kind == "hybrid" and p.partial_raster_regions
+            }
+            if raster_pages or partial_regions_by_page:
+                resolved_layout = layout if isinstance(layout, str) else "heron-onnx"
                 resolved_reader = (
                     get_backend(
                         "reader",
                         reader,
-                        layout=layout if isinstance(layout, str) else "heron-onnx",
+                        layout=resolved_layout,
                         ocr_backend=ocr_backend,
                         device=device,
                     )
                     if isinstance(reader, str)
                     else reader
                 )
-                prev_reader_stats = getattr(resolved_reader, "last_stats", None)
-                raster_by_page = read_raster_pages(
-                    pdf_path,
-                    raster_pages,
-                    reader=resolved_reader,
-                    layout=layout if isinstance(layout, str) else "heron-onnx",
-                    ocr_backend=ocr_backend,
-                    device=device,
-                    pdfium_doc=ctx.pdfium,
-                )
-                _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
+                if raster_pages:
+                    from .raster import read_raster_pages
+
+                    prev_reader_stats = getattr(resolved_reader, "last_stats", None)
+                    raster_by_page = read_raster_pages(
+                        pdf_path,
+                        raster_pages,
+                        reader=resolved_reader,
+                        layout=resolved_layout,
+                        ocr_backend=ocr_backend,
+                        device=device,
+                        pdfium_doc=ctx.pdfium,
+                    )
+                    _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
+                if partial_regions_by_page:
+                    from .raster import read_raster_regions
+
+                    prev_reader_stats = getattr(resolved_reader, "last_stats", None)
+                    try:
+                        region_ocr_by_page = read_raster_regions(
+                            pdf_path,
+                            partial_regions_by_page,
+                            reader=resolved_reader,
+                            layout=resolved_layout,
+                            ocr_backend=ocr_backend,
+                            device=device,
+                            pdfium_doc=ctx.pdfium,
+                        )
+                        _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
+                    except NotImplementedError:
+                        region_ocr_by_page = {}
 
         elements: list[dict[str, Any]] = []
         extracted_tables: list[dict[str, Any]] = []
@@ -220,6 +351,10 @@ def extract_ir(
                 if use_ocr
                 else extract_words(page, min_font_size=min_font_size, raw_words=raw_words_by_page[prof.page])
             )
+            region_ocr_blocks = region_ocr_by_page.get(prof.page, ())
+            kept_ocr: list[TextBlock] = []
+            if region_ocr_blocks:
+                words, kept_ocr = merge_hybrid_region_ocr(words, region_ocr_blocks)
             assembled = assemble_page(
                 prof,
                 words,
@@ -227,6 +362,8 @@ def extract_ir(
                 figures_by_page.get(prof.page, ()),
                 raster_by_page.get(prof.page),
             )
+            if kept_ocr:
+                assembled = _merge_assembled_with_region_ocr(assembled, kept_ocr)
             page_elems: list[dict[str, Any]] = []
             page_elem_ids: list[str] = []
             for ro, item in enumerate(assembled):
@@ -315,7 +452,12 @@ def extract_ir(
 
             elements.extend(page_elems)
 
-    tag_running_headers_footers(elements, {p["number"]: float(p["height_pt"]) for p in page_sizes})
+    toc_titles = [title for _, title, _ in toc] if structure else ()
+    tag_running_headers_footers(
+        elements,
+        {p["number"]: float(p["height_pt"]) for p in page_sizes},
+        toc_titles=toc_titles,
+    )
 
     ir = {
         "doc_id": pdf_path.stem,
@@ -334,5 +476,9 @@ def extract_ir(
         "diagrams": extracted_diagrams,
     }
     if structure:
-        apply_structure(ir, toc=toc, inplace=True)
+        apply_structure(ir, toc=toc, semantic_regions=semantic_regions, inplace=True)
+    if tables and ir["tables"]:
+        from .tables import link_table_continuations
+
+        ir["tables"] = link_table_continuations(ir["tables"], ir["elements"])
     return ir

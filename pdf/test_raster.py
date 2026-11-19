@@ -355,6 +355,128 @@ def test_zero_page_pdf_extract_ir_structure_true_without_handle_leak():
         assert ir["tables"] == []
 
 
+def test_pass2_high_dpi_refinement_accept_rollback_and_font_size():
+    class _Det:
+        def detect(self, image):
+            sx, sy = image.width / 600.0, image.height / 300.0
+            return [
+                LayoutItem("text", (20 * sx, 20 * sy, 260 * sx, 60 * sy), 0.92),
+                LayoutItem("text", (20 * sx, 80 * sy, 260 * sx, 120 * sy), 0.91),
+                LayoutItem("text", (20 * sx, 140 * sy, 260 * sx, 180 * sy), 0.90),
+                LayoutItem("picture", (300 * sx, 20 * sy, 560 * sx, 200 * sy), 0.95),
+            ]
+
+    class _Ocr:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def recognize(self, image, regions=None):
+            del regions
+            self.calls.append(image.size)
+            if len(self.calls) == 1:
+                sx, sy = image.width / 600.0, image.height / 300.0
+                return [
+                    OcrLine("Pass1 low conf", (25 * sx, 28 * sy, 240 * sx, 48 * sy), 0.62),
+                    OcrLine("Pass1 rollback", (25 * sx, 88 * sy, 240 * sx, 108 * sy), 0.70),
+                ]
+            if len(self.calls) == 2:
+                return [OcrLine("Pass2 improved", (10.0, 10.0, image.width - 10.0, image.height - 10.0), 0.91)]
+            if len(self.calls) == 3:
+                return [OcrLine("Pass2 worse", (10.0, 10.0, image.width - 10.0, image.height - 10.0), 0.55)]
+            return [OcrLine("Pass2 recovered", (10.0, 10.0, image.width - 10.0, image.height - 10.0), 0.84)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "pass2.pdf"
+        _make_raster_pdf(pdf_path)
+        ocr = _Ocr()
+        reader = ComposedReader(_Det(), ocr, dpi=150, high_dpi=275)
+        rp = reader.read(pdf_path, [1])[1]
+
+    assert len(ocr.calls) == 4
+    assert [b.text for b in rp.blocks] == ["Pass2 improved", "Pass1 rollback", "Pass2 recovered"]
+    assert [b.confidence for b in rp.blocks] == [0.91, 0.70, 0.84]
+    assert all(b.source == "ocr" and b.font_size > 0.0 for b in rp.blocks)
+    assert abs(rp.blocks[1].font_size - round(20.0 * 0.85, 2)) <= 0.1
+    assert reader.last_stats is not None and reader.last_stats.warnings == ()
+
+
+def test_orphan_ocr_lines_cluster_into_blocks_and_respect_pictures():
+    class _Det:
+        def detect(self, image):
+            sx, sy = image.width / 600.0, image.height / 300.0
+            return [LayoutItem("picture", (260 * sx, 40 * sy, 330 * sx, 220 * sy), 0.95)]
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            sx, sy = image.width / 600.0, image.height / 300.0
+            return [
+                OcrLine("Left line one", (30 * sx, 40 * sy, 220 * sx, 56 * sy), 0.90),
+                OcrLine("Left line two", (30 * sx, 60 * sy, 210 * sx, 76 * sy), 0.92),
+                OcrLine("Left line three", (30 * sx, 80 * sy, 200 * sx, 96 * sy), 0.94),
+                OcrLine("Right col one", (360 * sx, 40 * sy, 560 * sx, 56 * sy), 0.88),
+                OcrLine("Right col two", (360 * sx, 60 * sy, 540 * sx, 76 * sy), 0.90),
+                OcrLine("Inside picture", (270 * sx, 100 * sy, 320 * sx, 120 * sy), 0.85),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "orphans.pdf"
+        _make_raster_pdf(pdf_path)
+        reader = ComposedReader(_Det(), _Ocr())
+        rp = reader.read(pdf_path, [1])[1]
+
+    assert len(rp.figures) == 1 and rp.figures[0].kind == "figure"
+    assert len(rp.blocks) == 2
+    assert rp.blocks[0].text == "Left line one Left line two Left line three"
+    assert rp.blocks[1].text == "Right col one Right col two"
+    assert all(b.source == "ocr" and b.label == "text" for b in rp.blocks)
+    assert all(abs(b.font_size - round(16.0 * 0.85, 2)) <= 0.15 for b in rp.blocks)
+
+
+def test_read_raster_regions_alignment_sorting_and_handle_cleanup():
+    from pdf.raster import read_raster_regions
+
+    class _Det:
+        def detect(self, image):
+            del image
+            return []
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            return [
+                OcrLine("Line A", (0.1 * w, 0.1 * h, 0.8 * w, 0.3 * h), 0.92),
+                OcrLine("Line B", (0.1 * w, 0.35 * h, 0.7 * w, 0.55 * h), 0.94),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "regions.pdf"
+        _make_raster_pdf(pdf_path)
+        reader = ComposedReader(_Det(), _Ocr())
+        region = (100.0, 50.0, 300.0, 150.0)
+        res = read_raster_regions(pdf_path, {1: [region]}, reader=reader, dpi=275)
+
+        assert list(res.keys()) == [1]
+        assert len(res[1]) == 1
+        blk = res[1][0]
+        assert blk.text == "Line A Line B"
+        assert blk.source == "ocr"
+        assert blk.font_size > 0.0
+        exp_box = (120.0, 60.0, 260.0, 105.0)
+        for got, exp in zip(blk.bbox, exp_box):
+            assert abs(got - exp) <= 0.5, (blk.bbox, exp_box)
+
+        try:
+            reader.read_raster_regions(pdf_path, {2: [region]})
+            raise AssertionError("expected ValueError for out-of-range page")
+        except ValueError:
+            pass
+        assert reader.read_raster_regions(pdf_path, {}) == {}
+        assert reader.read_raster_regions(pdf_path, {1: []}) == {1: []}
+        pdf_path.unlink()
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

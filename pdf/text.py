@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import re
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 from ._pdf_io import clip_box, extract_words_raw, page_bbox
 from .models import BBox, TextBlock, TextSource, Word
 
-_SCALE = 72.0 / 150.0
-_X_INSET_MAX = 8.0 * _SCALE
-_X_GAP_TOL = 1.0 * _SCALE
-_Y_OVERLAP_MIN = 10.0 * _SCALE
-_Y_GAP_TOL = 2.0 * _SCALE
-_Y_BUCKET = 12.0 * _SCALE
-
 T = TypeVar("T")
+
+_MAX_XY_DEPTH = 64
+_UNICODE_BULLETS = frozenset("•●○◦▪▫‣⁃")
+_ASCII_BULLETS = frozenset(("-", "–", "—", "*", "+"))
+_LIST_MARKER_RE = re.compile(r"^(?:\d{1,3}[.)]|\(\d{1,3}\)|[a-zA-Z]\)|\[[A-Za-z0-9_.:-]{1,40}\])$")
 
 
 def _is_bold_font(fontname: str) -> bool:
@@ -37,9 +37,18 @@ def extract_words(
         box = clip_box(raw_box, bounds) or raw_box
         font_size = float(item.get("size", 0.0))
         bold = _is_bold_font(str(item.get("fontname", "")))
+        upright = bool(item.get("upright", True))
         if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
             continue
-        words.append(Word(text=str(item["text"]), bbox=box, font_size=round(font_size, 2), bold=bold))
+        words.append(
+            Word(
+                text=str(item["text"]),
+                bbox=box,
+                font_size=round(font_size, 2),
+                bold=bold,
+                upright=upright,
+            )
+        )
     return words
 
 
@@ -52,9 +61,128 @@ def _union_bbox(boxes: Sequence[BBox]) -> BBox:
     )
 
 
-def _words_to_line_segments(words: Sequence[Word]) -> list[tuple[BBox, list[Word]]]:
+def _median_font_size(words: Sequence[Word], page_rect: BBox | None = None) -> float:
+    sizes = sorted(w.font_size for w in words if w.font_size > 0.0)
+    if sizes:
+        return sizes[len(sizes) // 2]
+    heights = sorted(w.bbox[3] - w.bbox[1] for w in words if w.bbox[3] > w.bbox[1])
+    if heights:
+        return heights[len(heights) // 2]
+    if page_rect is not None:
+        pw = max(0.0, page_rect[2] - page_rect[0])
+        ph = max(0.0, page_rect[3] - page_rect[1])
+        min_dim = min(pw, ph) if (pw > 0.0 and ph > 0.0) else max(pw, ph)
+        if min_dim > 0.0:
+            return max(1.0, min_dim / 60.0)
+    return 10.0
+
+
+def _xy_tolerances(
+    page_rect: BBox | None = None,
+    font_size: float = 0.0,
+) -> tuple[float, float, float, float, float]:
+    if font_size > 0.0:
+        unit = max(0.5, float(font_size))
+    elif page_rect is not None:
+        pw = max(0.0, page_rect[2] - page_rect[0])
+        ph = max(0.0, page_rect[3] - page_rect[1])
+        min_dim = min(pw, ph) if (pw > 0.0 and ph > 0.0) else max(pw, ph)
+        unit = max(0.5, min_dim / 60.0) if min_dim > 0.0 else 10.0
+    else:
+        unit = 10.0
+    return (
+        0.384 * unit,
+        0.048 * unit,
+        0.48 * unit,
+        0.096 * unit,
+        max(0.5, 0.576 * unit),
+    )
+
+
+def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word]]:
+    horiz: list[Word] = []
+    vert: list[Word] = []
+    needs_check = [
+        i
+        for i, w in enumerate(words)
+        if not w.upright or (w.bbox[3] - w.bbox[1]) >= 1.4 * max(0.5, w.bbox[2] - w.bbox[0])
+    ]
+    if not needs_check:
+        return list(words), vert
+
+    by_y0 = sorted(range(len(words)), key=lambda i: words[i].bbox[1])
+    y0_vals = [words[i].bbox[1] for i in by_y0]
+    max_bh = max(max(0.5, w.bbox[3] - w.bbox[1]) for w in words)
+
+    def _has_horiz_neighbor(idx: int) -> bool:
+        b = words[idx].bbox
+        bh = max(0.5, b[3] - b[1])
+        gap_factor = 0.65 if words[idx].upright else 0.45
+        lo = bisect_left(y0_vals, b[1] - max_bh)
+        hi = bisect_right(y0_vals, b[3])
+        for k in range(lo, hi):
+            j = by_y0[k]
+            if j == idx:
+                continue
+            ob = words[j].bbox
+            oh = max(0.5, ob[3] - ob[1])
+            y_ov = min(b[3], ob[3]) - max(b[1], ob[1])
+            if y_ov < 0.55 * min(bh, oh):
+                continue
+            x_gap = max(b[0] - ob[2], ob[0] - b[2])
+            if x_gap <= gap_factor * min(bh, oh):
+                return True
+        return False
+
+    def _has_vert_neighbor(idx: int) -> bool:
+        b = words[idx].bbox
+        bw = max(0.5, b[2] - b[0])
+        bh = max(0.5, b[3] - b[1])
+        pad = max(1.5 * max(bw, bh), 1.5 * bh)
+        lo = bisect_left(y0_vals, b[1] - max_bh - pad)
+        hi = bisect_right(y0_vals, b[3] + pad)
+        for k in range(lo, hi):
+            j = by_y0[k]
+            if j == idx:
+                continue
+            ob = words[j].bbox
+            ow = max(0.5, ob[2] - ob[0])
+            x_ov = min(b[2], ob[2]) - max(b[0], ob[0])
+            if x_ov < 0.5 * min(bw, ow):
+                continue
+            y_gap = max(b[1] - ob[3], ob[1] - b[3])
+            if -0.25 * max(bw, ow) <= y_gap <= max(1.5 * max(bw, ow), 1.5 * bh):
+                return True
+        return False
+
+    for idx, w in enumerate(words):
+        bw = max(0.5, w.bbox[2] - w.bbox[0])
+        bh = max(0.5, w.bbox[3] - w.bbox[1])
+        if not w.upright:
+            # Slightly tilted horizontal tables (e.g. -1e-8 skew) have upright=False but chain horizontally.
+            if bh >= 1.35 * bw and not _has_horiz_neighbor(idx):
+                vert.append(w)
+            elif not _has_horiz_neighbor(idx) and _has_vert_neighbor(idx):
+                vert.append(w)
+            else:
+                horiz.append(w)
+        elif len(w.text) >= 3 and bh >= 2.2 * bw:
+            vert.append(w)
+        elif bh >= 1.4 * bw and not _has_horiz_neighbor(idx) and _has_vert_neighbor(idx):
+            vert.append(w)
+        else:
+            horiz.append(w)
+    return horiz, vert
+
+
+def _words_to_line_segments(
+    words: Sequence[Word],
+    *,
+    median_font_size: float = 0.0,
+) -> list[tuple[BBox, list[Word]]]:
     if not words:
         return []
+    ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
     ordered = sorted(words, key=lambda w: ((w.bbox[1] + w.bbox[3]) * 0.5, w.bbox[0]))
     lines: list[list[Word]] = []
     for word in ordered:
@@ -79,8 +207,8 @@ def _words_to_line_segments(words: Sequence[Word]) -> list[tuple[BBox, list[Word
         cur: list[Word] = [line[0]]
         for word in line[1:]:
             prev = cur[-1]
-            ref_size = max(prev.font_size, word.font_size, prev.bbox[3] - prev.bbox[1], 6.0)
-            gap_thr = max(1.8 * ref_size, 18.0)
+            ref_size = max(prev.font_size, word.font_size, prev.bbox[3] - prev.bbox[1], 0.6 * ref_fs, 1.0)
+            gap_thr = max(1.8 * ref_size, 1.8 * ref_fs)
             if word.bbox[0] - prev.bbox[2] > gap_thr:
                 segments.append((_union_bbox([w.bbox for w in cur]), cur))
                 cur = [word]
@@ -88,6 +216,51 @@ def _words_to_line_segments(words: Sequence[Word]) -> list[tuple[BBox, list[Word
                 cur.append(word)
         segments.append((_union_bbox([w.bbox for w in cur]), cur))
     return segments
+
+
+def _vertical_words_to_blocks(
+    words: Sequence[Word],
+    *,
+    source: TextSource,
+    confidence: float,
+    median_font_size: float = 0.0,
+) -> list[TextBlock]:
+    if not words:
+        return []
+    ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
+    ordered = sorted(words, key=lambda w: ((w.bbox[0] + w.bbox[2]) * 0.5, w.bbox[1]))
+    cols: list[list[Word]] = []
+    for word in ordered:
+        wx0, wx1 = word.bbox[0], word.bbox[2]
+        ww = max(1.0, wx1 - wx0)
+        placed = False
+        for col in reversed(cols):
+            cx0 = min(w.bbox[0] for w in col)
+            cx1 = max(w.bbox[2] for w in col)
+            cw = max(1.0, cx1 - cx0)
+            overlap = min(wx1, cx1) - max(wx0, cx0)
+            if overlap >= 0.45 * min(ww, cw):
+                col.append(word)
+                placed = True
+                break
+        if not placed:
+            cols.append([word])
+
+    blocks: list[TextBlock] = []
+    for col in cols:
+        col.sort(key=lambda w: (w.bbox[1], w.bbox[0]))
+        cur: list[Word] = [col[0]]
+        for word in col[1:]:
+            prev = cur[-1]
+            ref_size = max(prev.font_size, word.font_size, prev.bbox[2] - prev.bbox[0], 0.6 * ref_fs, 1.0)
+            gap_thr = max(1.5 * ref_size, 1.2 * ref_fs)
+            if word.bbox[1] - prev.bbox[3] > gap_thr:
+                blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+                cur = [word]
+            else:
+                cur.append(word)
+        blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+    return blocks
 
 
 def _segment_style(words: Sequence[Word]) -> tuple[float, bool]:
@@ -100,8 +273,42 @@ def _segment_style(words: Sequence[Word]) -> tuple[float, bool]:
     return round(median_size, 2), (total_chars > 0 and bold_chars >= 0.5 * total_chars)
 
 
+def _make_text_block(
+    lines: Sequence[Sequence[Word]],
+    *,
+    source: TextSource,
+    confidence: float,
+) -> TextBlock:
+    all_words = tuple(w for line in lines for w in line)
+    text = "\n".join(" ".join(w.text for w in line) for line in lines)
+    block_box = _union_bbox([w.bbox for w in all_words])
+    fs, bold = _segment_style(all_words)
+    return TextBlock(
+        text=text,
+        bbox=block_box,
+        font_size=fs,
+        bold=bold,
+        source=source,
+        confidence=confidence,
+        words=all_words,
+    )
+
+
 def _horiz_overlap(a: BBox, b: BBox) -> bool:
     return min(a[2], b[2]) > max(a[0], b[0])
+
+
+def _is_list_item_start(line_words: Sequence[Word]) -> bool:
+    if not line_words:
+        return False
+    first = line_words[0].text.strip()
+    if not first:
+        return False
+    if first[0] in _UNICODE_BULLETS:
+        return True
+    if first in _ASCII_BULLETS and len(line_words) >= 2:
+        return True
+    return bool(_LIST_MARKER_RE.match(first))
 
 
 def _segments_to_blocks(
@@ -109,138 +316,220 @@ def _segments_to_blocks(
     *,
     source: TextSource,
     confidence: float,
+    median_font_size: float = 0.0,
 ) -> list[TextBlock]:
     if not segments:
         return []
+    ref_fs = median_font_size if median_font_size > 0.0 else 10.0
     ordered = sorted(segments, key=lambda s: (s[0][1], s[0][0]))
     groups: list[list[tuple[BBox, list[Word], float, bool]]] = []
     for bbox, line_words in ordered:
         fs, bold = _segment_style(line_words)
         lh = max(1.0, bbox[3] - bbox[1])
+        is_list_start = _is_list_item_start(line_words)
         merged = False
-        for group in reversed(groups):
-            last_box, _, last_fs, last_bold = group[-1]
-            if not _horiz_overlap(last_box, bbox):
-                continue
-            gap_y = bbox[1] - last_box[3]
-            max_gap = max(0.8 * max(lh, last_box[3] - last_box[1]), 6.0)
-            if -0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= 1.0 and bold == last_bold:
-                group.append((bbox, line_words, fs, bold))
-                merged = True
-                break
+        if not is_list_start:
+            for group in reversed(groups):
+                last_box, _, last_fs, last_bold = group[-1]
+                if not _horiz_overlap(last_box, bbox):
+                    continue
+                gap_y = bbox[1] - last_box[3]
+                max_gap = max(0.8 * max(lh, last_box[3] - last_box[1]), 0.6 * ref_fs, 1.0)
+                fs_tol = max(0.1 * max(fs, last_fs, ref_fs), 0.5)
+                if -0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= fs_tol and bold == last_bold:
+                    group.append((bbox, line_words, fs, bold))
+                    merged = True
+                    break
         if not merged:
             groups.append([(bbox, line_words, fs, bold)])
 
-    blocks: list[TextBlock] = []
-    for group in groups:
-        all_words = tuple(w for _, seg_words, _, _ in group for w in seg_words)
-        text = "\n".join(" ".join(w.text for w in seg_words) for _, seg_words, _, _ in group)
-        block_box = _union_bbox([b for b, _, _, _ in group])
-        fs, bold = _segment_style(all_words)
-        blocks.append(
-            TextBlock(
-                text=text,
-                bbox=block_box,
-                font_size=fs,
-                bold=bold,
-                source=source,
-                confidence=confidence,
-                words=all_words,
-            )
-        )
-    return blocks
+    return [
+        _make_text_block([seg_words for _, seg_words, _, _ in group], source=source, confidence=confidence)
+        for group in groups
+    ]
 
 
-def xy_cut_order(items: Sequence[T], get_bbox: Callable[[T], BBox]) -> list[T]:
+def xy_cut_order(
+    items: Sequence[T],
+    get_bbox: Callable[[T], BBox],
+    *,
+    page_rect: BBox | None = None,
+    font_size: float = 0.0,
+) -> list[T]:
     if len(items) <= 1:
         return list(items)
 
-    def _recurse(group: list[T]) -> list[T]:
-        if len(group) <= 1:
-            return group
+    x_inset_max, x_gap_tol, y_overlap_min, y_gap_tol, y_bucket = _xy_tolerances(page_rect, font_size)
+    pairs = [(item, get_bbox(item)) for item in items]
 
-        min_x = min(get_bbox(it)[0] for it in group)
-        max_x = max(get_bbox(it)[2] for it in group)
-        group_w = max_x - min_x
+    def _fallback_sort(group: list[tuple[T, BBox]]) -> list[tuple[T, BBox]]:
+        return sorted(group, key=lambda p: (round(p[1][1] / y_bucket), p[1][0], p[1][1]))
 
-        x_sorted = sorted(group, key=lambda it: (get_bbox(it)[0], get_bbox(it)[1]))
-        cols: list[list[T]] = []
+    def _split_x(group: list[tuple[T, BBox]]) -> list[list[tuple[T, BBox]]] | None:
+        x_sorted = sorted(group, key=lambda p: (p[1][0], p[1][1]))
+        cols: list[list[tuple[T, BBox]]] = []
         cur_col = [x_sorted[0]]
-        b0 = get_bbox(x_sorted[0])
-        ins0 = min(_X_INSET_MAX, 0.05 * max(0.0, b0[2] - b0[0]))
+        b0 = x_sorted[0][1]
+        ins0 = min(x_inset_max, 0.05 * max(0.0, b0[2] - b0[0]))
         cur_max_x = b0[2] - ins0
 
-        for item in x_sorted[1:]:
-            b = get_bbox(item)
-            ins = min(_X_INSET_MAX, 0.05 * max(0.0, b[2] - b[0]))
+        for pair in x_sorted[1:]:
+            b = pair[1]
+            ins = min(x_inset_max, 0.05 * max(0.0, b[2] - b[0]))
             item_min_x = b[0] + ins
             item_max_x = b[2] - ins
-            if item_min_x >= cur_max_x - _X_GAP_TOL:
+            if item_min_x >= cur_max_x - x_gap_tol:
                 cols.append(cur_col)
-                cur_col = [item]
+                cur_col = [pair]
                 cur_max_x = item_max_x
             else:
-                cur_col.append(item)
+                cur_col.append(pair)
                 cur_max_x = max(cur_max_x, item_max_x)
         if cur_col:
             cols.append(cur_col)
 
-        if len(cols) >= 2:
-            has_parallel = False
-            for idx in range(len(cols) - 1):
-                col_a, col_b = cols[idx], cols[idx + 1]
-                min_ya = min(get_bbox(it)[1] for it in col_a)
-                max_ya = max(get_bbox(it)[3] for it in col_a)
-                min_yb = min(get_bbox(it)[1] for it in col_b)
-                max_yb = max(get_bbox(it)[3] for it in col_b)
-                if min(max_ya, max_yb) - max(min_ya, min_yb) > _Y_OVERLAP_MIN:
-                    has_parallel = True
-                    break
-            if has_parallel:
-                out: list[T] = []
-                for col in cols:
-                    out.extend(_recurse(col))
-                return out
+        if len(cols) < 2:
+            return None
+        for idx in range(len(cols) - 1):
+            col_a, col_b = cols[idx], cols[idx + 1]
+            min_ya = min(p[1][1] for p in col_a)
+            max_ya = max(p[1][3] for p in col_a)
+            min_yb = min(p[1][1] for p in col_b)
+            max_yb = max(p[1][3] for p in col_b)
+            if min(max_ya, max_yb) - max(min_ya, min_yb) > y_overlap_min:
+                return cols
+        return None
 
-        if len(group) >= 3 and group_w > 0:
-            top_item = min(group, key=lambda it: (get_bbox(it)[1], get_bbox(it)[0]))
-            top_b = get_bbox(top_item)
-            if (top_b[2] - top_b[0]) >= 0.55 * group_w:
-                rest = [it for it in group if it is not top_item]
-                return [top_item] + _recurse(rest)
+    def _find_mid_span(
+        group: list[tuple[T, BBox]],
+        group_w: float,
+    ) -> tuple[list[tuple[T, BBox]], list[tuple[T, BBox]], list[tuple[T, BBox]]] | None:
+        y1s = sorted(p[1][3] for p in group)
+        y0s = sorted(p[1][1] for p in group)
+        n = len(group)
+        best_score: tuple[int, float, float] | None = None
+        best_cand: tuple[T, BBox] | None = None
+        for cand in group:
+            cb = cand[1]
+            cw = cb[2] - cb[0]
+            if cw < 0.60 * group_w:
+                continue
+            n_upper = bisect_right(y1s, cb[1] + y_gap_tol)
+            if cb[3] <= cb[1] + y_gap_tol:
+                n_upper = max(0, n_upper - 1)
+            n_lower = n - bisect_left(y0s, cb[3] - y_gap_tol)
+            if cb[1] >= cb[3] - y_gap_tol and cb[3] > cb[1] + y_gap_tol:
+                n_lower = max(0, n_lower - 1)
+            balance = min(n_upper, n_lower)
+            if balance == 0:
+                continue
+            score = (balance, cw, -cb[1])
+            if best_score is None or score > best_score:
+                best_score = score
+                best_cand = cand
 
-            bot_item = max(group, key=lambda it: (get_bbox(it)[3], -get_bbox(it)[0]))
-            bot_b = get_bbox(bot_item)
-            if (bot_b[2] - bot_b[0]) >= 0.55 * group_w:
-                rest = [it for it in group if it is not bot_item]
-                return _recurse(rest) + [bot_item]
+        if best_cand is None:
+            return None
+        cb = best_cand[1]
+        upper: list[tuple[T, BBox]] = []
+        middle: list[tuple[T, BBox]] = [best_cand]
+        lower: list[tuple[T, BBox]] = []
+        for p in group:
+            if p is best_cand:
+                continue
+            pb = p[1]
+            if pb[3] <= cb[1] + y_gap_tol:
+                upper.append(p)
+            elif pb[1] >= cb[3] - y_gap_tol:
+                lower.append(p)
+            else:
+                middle.append(p)
+        if not upper or not lower:
+            return None
+        return upper, middle, lower
 
-        y_sorted = sorted(group, key=lambda it: (get_bbox(it)[1], get_bbox(it)[0]))
-        bands: list[list[T]] = []
+    def _recurse(group: list[tuple[T, BBox]], depth: int) -> list[tuple[T, BBox]]:
+        if len(group) <= 1:
+            return group
+        if depth >= _MAX_XY_DEPTH:
+            return _fallback_sort(group)
+
+        cols = _split_x(group)
+        if cols is not None and all(len(col) < len(group) for col in cols):
+            out: list[tuple[T, BBox]] = []
+            for col in cols:
+                out.extend(_recurse(col, depth + 1))
+            return out
+
+        min_x = min(p[1][0] for p in group)
+        max_x = max(p[1][2] for p in group)
+        group_w = max_x - min_x
+
+        if len(group) >= 3 and group_w > 0.0:
+            top_item = min(group, key=lambda p: (p[1][1], p[1][0]))
+            if (top_item[1][2] - top_item[1][0]) >= 0.55 * group_w:
+                rest = [p for p in group if p is not top_item]
+                if len(rest) < len(group):
+                    return [top_item] + _recurse(rest, depth + 1)
+
+            bot_item = max(group, key=lambda p: (p[1][3], -p[1][0]))
+            if (bot_item[1][2] - bot_item[1][0]) >= 0.55 * group_w:
+                rest = [p for p in group if p is not bot_item]
+                if len(rest) < len(group):
+                    return _recurse(rest, depth + 1) + [bot_item]
+
+            mid_split = _find_mid_span(group, group_w)
+            if mid_split is not None:
+                upper, middle, lower = mid_split
+                if (
+                    len(upper) >= 2
+                    and len(lower) >= 2
+                    and (_split_x(upper) is not None and _split_x(lower) is not None)
+                    and all(len(part) < len(group) for part in (upper, middle, lower))
+                ):
+                    return (
+                        _recurse(upper, depth + 1)
+                        + _recurse(middle, depth + 1)
+                        + _recurse(lower, depth + 1)
+                    )
+
+        y_sorted = sorted(group, key=lambda p: (p[1][1], p[1][0]))
+        bands: list[list[tuple[T, BBox]]] = []
         cur_band = [y_sorted[0]]
-        cur_max_y = get_bbox(y_sorted[0])[3]
+        cur_max_y = y_sorted[0][1][3]
 
-        for item in y_sorted[1:]:
-            b = get_bbox(item)
-            if b[1] >= cur_max_y - _Y_GAP_TOL:
+        for pair in y_sorted[1:]:
+            b = pair[1]
+            if b[1] >= cur_max_y - y_gap_tol:
                 bands.append(cur_band)
-                cur_band = [item]
+                cur_band = [pair]
                 cur_max_y = b[3]
             else:
-                cur_band.append(item)
+                cur_band.append(pair)
                 cur_max_y = max(cur_max_y, b[3])
         if cur_band:
             bands.append(cur_band)
 
-        if len(bands) >= 2:
+        if len(bands) >= 2 and all(len(band) < len(group) for band in bands):
             out = []
             for band in bands:
-                out.extend(_recurse(band))
+                out.extend(_recurse(band, depth + 1))
             return out
 
-        return sorted(group, key=lambda it: (round(get_bbox(it)[1] / _Y_BUCKET), get_bbox(it)[0]))
+        if len(group) >= 3 and group_w > 0.0:
+            mid_split = _find_mid_span(group, group_w)
+            if mid_split is not None:
+                upper, middle, lower = mid_split
+                if all(len(part) < len(group) for part in (upper, middle, lower)):
+                    return (
+                        _recurse(upper, depth + 1)
+                        + _recurse(middle, depth + 1)
+                        + _recurse(lower, depth + 1)
+                    )
 
-    return _recurse(list(items))
+        return _fallback_sort(group)
+
+    return [pair[0] for pair in _recurse(pairs, 0)]
 
 
 def order_blocks(
@@ -250,10 +539,26 @@ def order_blocks(
     source: TextSource = "text_layer",
     confidence: float = 1.0,
 ) -> list[TextBlock]:
-    del page_rect
-    segments = _words_to_line_segments(words)
-    blocks = _segments_to_blocks(segments, source=source, confidence=confidence)
-    return xy_cut_order(blocks, lambda b: b.bbox)
+    if not words:
+        return []
+    median_fs = _median_font_size(words, page_rect)
+    horiz_words, vert_words = _partition_orientation(words)
+    segments = _words_to_line_segments(horiz_words, median_font_size=median_fs)
+    blocks = _segments_to_blocks(
+        segments,
+        source=source,
+        confidence=confidence,
+        median_font_size=median_fs,
+    )
+    blocks.extend(
+        _vertical_words_to_blocks(
+            vert_words,
+            source=source,
+            confidence=confidence,
+            median_font_size=median_fs,
+        )
+    )
+    return xy_cut_order(blocks, lambda b: b.bbox, page_rect=page_rect, font_size=median_fs)
 
 
 def extract_text(page: Any, *, min_font_size: float = 0.0) -> list[TextBlock]:

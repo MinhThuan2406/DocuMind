@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .backends import PageReader, get as get_backend
-from .backends.reader_composed import DEFAULT_RASTER_DPI
-from .models import RasterPage
+from .backends.reader_composed import DEFAULT_HIGH_DPI, DEFAULT_RASTER_DPI
+from .models import BBox, RasterPage, TextBlock
+
+
+def _resolve_reader(
+    reader: str | PageReader,
+    *,
+    layout: str,
+    ocr_backend: str,
+    device: str,
+    dpi: int,
+) -> Any:
+    if not isinstance(reader, str):
+        return reader
+    return get_backend("reader", reader, layout=layout, ocr_backend=ocr_backend, device=device, dpi=dpi)
 
 
 def read_raster_pages(
@@ -24,11 +37,7 @@ def read_raster_pages(
     page_list = list(pages)
     if not page_list:
         return {}
-    page_reader = (
-        get_backend("reader", reader, layout=layout, ocr_backend=ocr_backend, device=device, dpi=dpi)
-        if isinstance(reader, str)
-        else reader
-    )
+    page_reader = _resolve_reader(reader, layout=layout, ocr_backend=ocr_backend, device=device, dpi=dpi)
     if pdfium_doc is not None and "pdfium_doc" in inspect.signature(page_reader.read).parameters:
         return page_reader.read(pdf_path, page_list, pdfium_doc=pdfium_doc)
     return page_reader.read(pdf_path, page_list)
@@ -55,3 +64,31 @@ def read_raster_page(
         dpi=dpi,
         pdfium_doc=pdfium_doc,
     )[page]
+
+
+def read_raster_regions(
+    pdf_path: str | Path,
+    regions_by_page: Mapping[int, Sequence[BBox]],
+    *,
+    reader: str | PageReader = "composed",
+    layout: str = "heron-onnx",
+    ocr_backend: str = "rapidocr-onnx",
+    device: str = "auto",
+    dpi: int = DEFAULT_HIGH_DPI,
+    pdfium_doc: Any = None,
+) -> dict[int, list[TextBlock]]:
+    if not regions_by_page:
+        return {}
+    page_reader = _resolve_reader(
+        reader, layout=layout, ocr_backend=ocr_backend, device=device, dpi=DEFAULT_RASTER_DPI
+    )
+    fn = getattr(page_reader, "read_raster_regions", None)
+    if not callable(fn):
+        raise NotImplementedError(f"reader {type(page_reader).__name__} does not support read_raster_regions")
+    params = inspect.signature(fn).parameters
+    kwargs: dict[str, Any] = {}
+    if "dpi" in params:
+        kwargs["dpi"] = dpi
+    if pdfium_doc is not None and "pdfium_doc" in params:
+        kwargs["pdfium_doc"] = pdfium_doc
+    return fn(pdf_path, regions_by_page, **kwargs)

@@ -88,12 +88,15 @@ def _convert_pdfplumber_table(tbl: Any, fallback_bbox: BBox) -> ExtractedTable:
     )
 
     cells: list[TableCell] = []
+    occupied: set[tuple[int, int]] = set()
     for r_idx, row_vals in enumerate(raw_rows):
         row_cells = getattr(row_objs[r_idx], "cells", ()) if r_idx < len(row_objs) else ()
         for c_idx, val in enumerate(row_vals):
             rect_val = row_cells[c_idx] if c_idx < len(row_cells) else None
             # pdfplumber sets covered slots of a merged cell to None.
             if val is None and rect_val is None:
+                continue
+            if (r_idx, c_idx) in occupied:
                 continue
             text = " ".join(str(val or "").split())
             if rect_val is not None:
@@ -105,6 +108,15 @@ def _convert_pdfplumber_table(tbl: Any, fallback_bbox: BBox) -> ExtractedTable:
                 rspan = min(rspan, num_rows - r_idx)
             else:
                 cell_box, rspan, cspan = None, 1, 1
+            while cspan > 1 and any((r_idx, c_idx + dc) in occupied for dc in range(cspan)):
+                cspan -= 1
+            while rspan > 1 and any(
+                (r_idx + dr, c_idx + dc) in occupied for dr in range(rspan) for dc in range(cspan)
+            ):
+                rspan -= 1
+            for dr in range(rspan):
+                for dc in range(cspan):
+                    occupied.add((r_idx + dr, c_idx + dc))
             cells.append(
                 TableCell(
                     row=r_idx,
@@ -114,6 +126,7 @@ def _convert_pdfplumber_table(tbl: Any, fallback_bbox: BBox) -> ExtractedTable:
                     text=text,
                     bbox=cell_box,
                     is_header=(r_idx == 0),
+                    confidence=1.0,
                 )
             )
 

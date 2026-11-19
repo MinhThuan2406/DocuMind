@@ -12,8 +12,13 @@ import pdfplumber  # noqa: E402
 import pdf.ir as ir_mod  # noqa: E402
 from pdf._pdf_io import page_bbox  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
-from pdf.assemble import assemble_page, filter_overlapping_figures, tag_running_headers_footers  # noqa: E402
-from pdf.models import FigureBox, PageProfile, RasterPage, TextBlock  # noqa: E402
+from pdf.assemble import (  # noqa: E402
+    assemble_page,
+    filter_overlapping_figures,
+    merge_hybrid_region_ocr,
+    tag_running_headers_footers,
+)
+from pdf.models import FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock, Word  # noqa: E402
 from pdf.text import extract_words  # noqa: E402
 
 
@@ -252,6 +257,273 @@ def test_running_header_footer_tagging_multipage():
     tag_running_headers_footers(direct_elems, {1: 800.0})
     assert direct_elems[0]["metadata"]["role"] == "page_header"
     assert "role" not in direct_elems[1]["metadata"]
+
+
+def test_filter_overlapping_figures_clips_grouper_against_clean_table():
+    grouper_fig = FigureBox((100.0, 100.0, 400.0, 300.0), "figure", "v2_vector_vision", 0.90)
+    clean_tbl = FigureBox((280.0, 100.0, 480.0, 300.0), "table", "layout_table", 0.85)
+    kept = filter_overlapping_figures([grouper_fig, clean_tbl])
+    assert len(kept) == 2
+    assert kept[0].kind == "figure" and kept[0].bbox == (100.0, 100.0, 280.0, 300.0)
+    assert kept[1] == clean_tbl
+
+    # True full containment (>= 0.85) drops spurious table, and non-grouper figure drops >= 0.50 overlap.
+    tiny_tbl = FigureBox((120.0, 120.0, 260.0, 260.0), "table", "layout_table", 0.80)
+    assert filter_overlapping_figures([grouper_fig, tiny_tbl]) == [grouper_fig]
+    raw_fig = FigureBox((100.0, 100.0, 400.0, 300.0), "figure", "layout_picture", 0.90)
+    assert filter_overlapping_figures([raw_fig, clean_tbl]) == [raw_fig]
+
+
+def test_assign_words_to_boxes_ioa_and_smallest_box_tie_break():
+    words = [
+        Word("MostlyIn", (85.0, 100.0, 125.0, 115.0), 10.0, False),   # 20/40 = 0.50 in box_big
+        Word("MostlyOut", (80.0, 100.0, 120.0, 115.0), 10.0, False),  # 15/40 = 0.375 < 0.50
+        Word("TieWord", (110.0, 110.0, 150.0, 125.0), 10.0, False),   # 1.0 in both -> smaller box_small wins
+    ]
+    box_big = FigureBox((105.0, 90.0, 250.0, 250.0), "figure", "v2_vector_vision", 0.9)       # area 23200
+    box_small = FigureBox((110.0, 110.0, 400.0, 140.0), "table", "layout_table", 0.9)         # area 8700, overlap 0.48
+    profile = PageProfile(1, "native", len(words), 0.1, 0.0, False)
+
+    items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), [box_big, box_small])
+    body = [it.text for it in items if it.parent_index is None and it.kind == "text"]
+    assert body == ["MostlyOut"]
+
+    fig_idx = next(i for i, it in enumerate(items) if it.kind == "figure")
+    tbl_idx = next(i for i, it in enumerate(items) if it.kind == "table")
+    fig_children = [it.text for it in items if it.parent_index == fig_idx]
+    tbl_children = [it.text for it in items if it.parent_index == tbl_idx]
+    assert fig_children == ["MostlyIn"]
+    assert tbl_children == ["TieWord"]
+
+
+def test_merge_hybrid_region_ocr_dedup():
+    native_words = [
+        Word("Hello", (50.0, 100.0, 95.0, 115.0), 10.0, False),
+        Word("World", (100.0, 100.0, 150.0, 115.0), 10.0, False),
+        Word("Body", (50.0, 200.0, 90.0, 215.0), 10.0, False),
+    ]
+    ocr_blocks = [
+        TextBlock("Hello World", (48.0, 99.0, 152.0, 116.0), 10.0, False, "ocr_high_dpi", 0.92),
+        TextBlock("Raster Label", (220.0, 300.0, 340.0, 320.0), 11.0, False, "ocr_high_dpi", 0.89),
+        TextBlock("Totally Different", (48.0, 99.0, 152.0, 116.0), 10.0, False, "ocr_high_dpi", 0.88),
+    ]
+    kept_words, kept_ocr = merge_hybrid_region_ocr(native_words, ocr_blocks)
+    assert kept_words == native_words
+    assert [b.text for b in kept_ocr] == ["Raster Label", "Totally Different"]
+
+
+def test_tag_running_headers_footers_even_odd_roman_and_toc():
+    elems = []
+    page_heights = {p: 800.0 for p in range(1, 7)}
+    romans = ["i", "ii", "iii", "iv", "v", "vi"]
+    for p in range(1, 7):
+        hdr = "Even Spec Header" if p % 2 == 0 else "Odd Chapter Header"
+        elems.append({"type": "text", "page": p, "level": 1, "bbox": [50, 30, 300, 45], "text": hdr, "metadata": {}})
+        elems.append({"type": "text", "page": p, "level": 1, "bbox": [260, 760, 340, 775], "text": f"Preface {romans[p - 1]}", "metadata": {}})
+    # Protected ToC title sitting inside the top header band across 4 pages must not be tagged.
+    for p in range(1, 5):
+        elems.append({"type": "text", "page": p, "level": 1, "bbox": [50, 50, 250, 65], "text": "1 Introduction", "metadata": {}})
+
+    tag_running_headers_footers(elems, page_heights, toc_titles=["1 Introduction"])
+
+    even_hdrs = [e for e in elems if e["text"] == "Even Spec Header"]
+    odd_hdrs = [e for e in elems if e["text"] == "Odd Chapter Header"]
+    footers = [e for e in elems if e["text"].startswith("Preface ")]
+    protected = [e for e in elems if e["text"] == "1 Introduction"]
+
+    assert len(even_hdrs) == 3 and all(e["metadata"].get("role") == "page_header" for e in even_hdrs)
+    assert len(odd_hdrs) == 3 and all(e["metadata"].get("role") == "page_header" for e in odd_hdrs)
+    assert len(footers) == 6 and all(e["metadata"].get("role") == "page_footer" for e in footers)
+    assert all("role" not in e["metadata"] for e in protected)
+
+    # On a 5-page doc, even-page header on pages 2, 4 (2/5 < 50% globally) still matches via even parity.
+    five_elems = [
+        {"type": "text", "page": 2, "level": 1, "bbox": [50, 30, 220, 45], "text": "Even Only Header", "metadata": {}},
+        {"type": "text", "page": 4, "level": 1, "bbox": [50, 30, 220, 45], "text": "Even Only Header", "metadata": {}},
+    ]
+    tag_running_headers_footers(five_elems, {p: 800.0 for p in range(1, 6)})
+    assert all(e["metadata"].get("role") == "page_header" for e in five_elems)
+
+    # Below 4 pages, single-parity header on 1 of 3 pages must not be tagged.
+    short_elems = [
+        {"type": "text", "page": 1, "level": 1, "bbox": [50, 30, 200, 45], "text": "Odd Only", "metadata": {}},
+        {"type": "text", "page": 2, "level": 1, "bbox": [50, 30, 200, 45], "text": "Even Only", "metadata": {}},
+        {"type": "text", "page": 3, "level": 1, "bbox": [50, 30, 200, 45], "text": "Odd Only", "metadata": {}},
+    ]
+    tag_running_headers_footers(short_elems, {1: 800.0, 2: 800.0, 3: 800.0})
+    assert "role" not in short_elems[1]["metadata"]
+
+
+def test_extract_ir_semantic_regions_and_toc_titles_e2e():
+    import pdf.figures as figures_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "step3_sem_toc.pdf"
+        b = TestPdfBuilder()
+        for pno in range(1, 5):
+            page = b.new_page(width=600, height=800)
+            page.insert_text((50, 30), f"Acme Running Header {pno}", fontsize=10)
+            page.insert_text((50, 58), "1 Introduction", fontsize=11)
+            if pno == 1:
+                page.insert_text((50, 120), "Unstyled Section Overview", fontsize=11)
+                page.insert_text((60, 260), "Hardware block layout", fontsize=11)
+                for i in range(8):
+                    page.draw_rect((65 + i * 25, 160, 80 + i * 25, 220))
+            else:
+                page.insert_text((50, 200), f"Body paragraph content on page {pno}.", fontsize=11)
+        b.save(pdf_path)
+
+        def _fake_detect(_p, pages, **kw):
+            sem_out = kw.get("semantic_regions_out")
+            if sem_out is not None and 1 in pages:
+                sem_out[1] = [
+                    SemanticRegion((45.0, 108.0, 320.0, 136.0), "section_header", 0.91),
+                    SemanticRegion((55.0, 248.0, 280.0, 274.0), "caption", 0.89),
+                ]
+            return {1: [FigureBox((60.0, 150.0, 280.0, 235.0), "figure", "v2_vector_vision", 0.93)]}
+
+        orig_detect = figures_mod.detect_figures
+        orig_toc = ir_mod.extract_toc
+        figures_mod.detect_figures = _fake_detect
+        ir_mod.extract_toc = lambda *_a, **_kw: [(1, "1 Introduction", 1)]
+        try:
+            ir = ir_mod.extract_ir(pdf_path, figures=True, ocr=False, structure=True)
+        finally:
+            figures_mod.detect_figures = orig_detect
+            ir_mod.extract_toc = orig_toc
+
+    elems = ir["elements"]
+    running = [e for e in elems if "Acme Running Header" in e["text"]]
+    assert len(running) == 4 and all(e["metadata"].get("role") == "page_header" for e in running)
+
+    protected = [e for e in elems if e["text"] == "1 Introduction"]
+    assert len(protected) == 4
+    assert all(e["metadata"].get("role") != "page_header" for e in protected)
+    p1_intro = next(e for e in protected if e["page"] == 1)
+    assert p1_intro["metadata"].get("role") == "heading"
+    assert p1_intro["metadata"].get("heading_level") == 1
+
+    unstyled_sec = next(e for e in elems if e["text"] == "Unstyled Section Overview")
+    assert unstyled_sec["metadata"].get("layout_label") == "section_header"
+    assert unstyled_sec["metadata"].get("role") == "heading"
+
+    cap_elem = next(e for e in elems if e["text"] == "Hardware block layout")
+    fig_elem = next(e for e in elems if e["type"] == "figure")
+    assert cap_elem["metadata"].get("layout_label") == "caption"
+    assert cap_elem["metadata"].get("role") == "caption"
+    assert cap_elem["metadata"].get("caption_of") == fig_elem["id"]
+    assert fig_elem["metadata"].get("caption_id") == cap_elem["id"]
+
+
+def test_extract_ir_hybrid_partial_raster_regions_and_table_continuations_e2e():
+    from PIL import Image
+    import pdf.figures as figures_mod
+    from pdf.backends.base import RunStats
+
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 240), color=(240, 240, 240)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    def _draw_2x2_table(page, y0: float):
+        for x in (40, 220, 480):
+            page.draw_line((x, y0), (x, y0 + 180), width=0.5)
+        for y in (y0, y0 + 60, y0 + 180):
+            page.draw_line((40, y), (480, y), width=0.5)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "hybrid_step3.pdf"
+        b = TestPdfBuilder()
+
+        p1 = b.new_page(width=600, height=800)
+        p1.insert_text((50, 60), "Top native paragraph on hybrid page", fontsize=12)
+        p1.insert_image((60, 180, 460, 420), stream=png_bytes)
+        _draw_2x2_table(p1, 540.0)
+        p1.insert_text((55, 575), "Param", fontsize=10)
+        p1.insert_text((235, 575), "Value", fontsize=10)
+        p1.insert_text((55, 650), "Alpha", fontsize=10)
+        p1.insert_text((235, 650), "100", fontsize=10)
+
+        p2 = b.new_page(width=600, height=800)
+        _draw_2x2_table(p2, 50.0)
+        p2.insert_text((55, 85), "Param", fontsize=10)
+        p2.insert_text((235, 85), "Value", fontsize=10)
+        p2.insert_text((55, 160), "Beta", fontsize=10)
+        p2.insert_text((235, 160), "200", fontsize=10)
+        b.save(pdf_path)
+
+        class _FakeHybridReader:
+            name = "fake_hybrid_reader"
+            last_stats = None
+
+            def __init__(self) -> None:
+                self.seen_regions = None
+
+            def read(self, _path, _pages, **_kw):
+                raise AssertionError("read_raster_pages should not be called for non-suspect hybrid page")
+
+            def read_raster_regions(self, _path, regions_by_page, **_kw):
+                self.seen_regions = dict(regions_by_page)
+                self.last_stats = RunStats(
+                    pages=len(regions_by_page),
+                    in_process=True,
+                    warnings=({"page": 1, "code": "region_ocr_note", "severity": "info", "reason": "test", "fallback": None},),
+                )
+                return {
+                    1: [
+                        TextBlock(
+                            "Top native paragraph on hybrid page",
+                            (48.0, 48.0, 265.0, 64.0),
+                            12.0,
+                            False,
+                            "ocr_high_dpi",
+                            0.90,
+                            label="text",
+                        ),
+                        TextBlock(
+                            "Embedded raster callout text",
+                            (80.0, 260.0, 320.0, 285.0),
+                            11.0,
+                            False,
+                            "ocr_high_dpi",
+                            0.94,
+                            label="text",
+                        ),
+                    ]
+                }
+
+        fake_reader = _FakeHybridReader()
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda _p, _pages, **_kw: {
+            1: [FigureBox((38.0, 538.0, 482.0, 722.0), "table", "layout_table", 0.95)],
+            2: [FigureBox((38.0, 48.0, 482.0, 232.0), "table", "layout_table", 0.95)],
+        }
+        try:
+            ir = ir_mod.extract_ir(
+                pdf_path,
+                figures=True,
+                ocr=True,
+                tables=True,
+                table_backend="pdfplumber",
+                reader=fake_reader,
+                structure=True,
+            )
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+    assert fake_reader.seen_regions == {1: ((60.0, 180.0, 460.0, 420.0),)}
+    assert any(w.get("code") == "region_ocr_note" for w in ir["metadata"]["warnings"])
+
+    p1_top_elems = [e for e in ir["elements"] if e["page"] == 1 and e["level"] == 1]
+    assert [e["type"] for e in p1_top_elems] == ["text", "text", "table"]
+    assert p1_top_elems[0]["text"] == "Top native paragraph on hybrid page"
+    assert p1_top_elems[0]["source"] == "text_layer"
+    assert p1_top_elems[1]["text"] == "Embedded raster callout text"
+    assert p1_top_elems[1]["source"] == "ocr_high_dpi"
+    assert p1_top_elems[1]["confidence"] == 0.94
+
+    assert len(ir["tables"]) == 2
+    assert ir["tables"][0]["id"] == "tbl_0001" and ir["tables"][0]["continuation_of"] is None
+    assert ir["tables"][1]["id"] == "tbl_0002" and ir["tables"][1]["continuation_of"] == "tbl_0001"
 
 
 def main():

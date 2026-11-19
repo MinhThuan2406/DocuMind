@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from pdf.hierarchy import apply_structure, build_section_tree  # noqa: E402
+from pdf.models import SemanticRegion  # noqa: E402
 
 
 def _elem(
@@ -506,6 +507,195 @@ def test_rejects_decorative_leaders_and_uml_multiplicity_and_preserves_common_ti
     # Common 16pt slide titles must remain strictly higher-level than common 14pt slide subheads.
     assert by_id["t0"]["metadata"]["heading_level"] < by_id["s0"]["metadata"]["heading_level"]
     assert 1 <= by_id["s0"]["metadata"]["heading_level"] <= 6
+
+
+def test_semantic_regions_projection_on_native_elements():
+    elements = [
+        _elem("hdr", page=1, bbox=[50.0, 15.0, 300.0, 35.0], reading_order=0, text="Running Header", font_size=12.0, bold=True),
+        _elem("t1", page=1, bbox=[50.0, 60.0, 350.0, 90.0], reading_order=1, text="Document Title", font_size=11.0, bold=False),
+        _elem("s1", page=1, bbox=[50.0, 110.0, 300.0, 130.0], reading_order=2, text="System Overview", font_size=11.0, bold=False),
+        _elem("fig", kind="figure", page=1, bbox=[60.0, 150.0, 300.0, 260.0], reading_order=3, font_size=None, bold=None),
+        _elem("child_txt", page=1, bbox=[80.0, 180.0, 200.0, 200.0], reading_order=4, level=2, parent_id="fig", text="Node A", font_size=10.0, bold=False),
+        _elem("cap", page=1, bbox=[60.0, 270.0, 300.0, 288.0], reading_order=5, text="Hardware layout sketch", font_size=11.0, bold=False),
+        _elem("low_ov", page=1, bbox=[50.0, 320.0, 450.0, 340.0], reading_order=6, text="Body paragraph with minor region overlap across the tail.", font_size=11.0, bold=False),
+    ]
+    regions = {
+        1: [
+            SemanticRegion((45.0, 10.0, 310.0, 40.0), "page_header", 0.95),
+            SemanticRegion((45.0, 55.0, 360.0, 95.0), "section_header", 0.70),
+            SemanticRegion((45.0, 55.0, 360.0, 95.0), "title", 0.92),
+            SemanticRegion((45.0, 105.0, 310.0, 135.0), "section_header", 0.88),
+            SemanticRegion((75.0, 175.0, 210.0, 205.0), "title", 0.99),
+            SemanticRegion((55.0, 268.0, 305.0, 290.0), "caption", 0.91),
+            SemanticRegion((350.0, 320.0, 450.0, 340.0), "section_header", 0.99),
+        ]
+    }
+    out = apply_structure(_ir(elements), semantic_regions=regions)
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["hdr"]["metadata"]["layout_label"] == "page_header"
+    assert "role" not in by_id["hdr"]["metadata"]
+    assert "heading_level" not in by_id["hdr"]["metadata"]
+    assert by_id["t1"]["metadata"]["layout_label"] == "title"
+    assert by_id["t1"]["metadata"]["heading_level"] == 1
+    assert by_id["s1"]["metadata"]["layout_label"] == "section_header"
+    assert by_id["s1"]["metadata"]["heading_level"] == 2
+    assert "layout_label" not in by_id["child_txt"]["metadata"]
+    assert by_id["cap"]["metadata"]["layout_label"] == "caption"
+    assert by_id["cap"]["metadata"]["caption_of"] == "fig"
+    assert by_id["fig"]["metadata"]["caption_id"] == "cap"
+    assert "layout_label" not in by_id["low_ov"]["metadata"]
+    assert by_id["low_ov"]["metadata"].get("role") is None
+
+
+def test_multiline_heading_and_caption_merging():
+    elements = [
+        _elem("h1a", page=1, bbox=[50.0, 50.0, 420.0, 70.0], reading_order=0, text="1.1 System Archi-", font_size=14.0, bold=True),
+        _elem("h1b", page=1, bbox=[50.0, 74.0, 280.0, 94.0], reading_order=1, text="tecture and Interfaces", font_size=14.0, bold=True),
+        _elem("b1", page=1, bbox=[50.0, 110.0, 500.0, 140.0], reading_order=2, text="Body paragraph describing the system interfaces in detail across multiple lines.", font_size=11.0, bold=False),
+        _elem("h2", page=1, bbox=[50.0, 160.0, 300.0, 180.0], reading_order=3, text="1.2 Signal Flow", font_size=14.0, bold=True),
+        _elem("h3", page=1, bbox=[50.0, 184.0, 300.0, 204.0], reading_order=4, text="1.3 Timing Rules", font_size=14.0, bold=True),
+        _elem("fig1", kind="figure", page=1, bbox=[60.0, 220.0, 360.0, 340.0], reading_order=5, font_size=None, bold=None),
+        _elem("c1a", page=1, bbox=[60.0, 346.0, 350.0, 360.0], reading_order=6, text="Figure 1.1: Overview of the", font_size=10.0, bold=True),
+        _elem("c1b", page=1, bbox=[60.0, 363.0, 280.0, 377.0], reading_order=7, text="layered communication bus", font_size=10.0, bold=True),
+        _elem("b2", page=1, bbox=[60.0, 381.0, 500.0, 410.0], reading_order=8, text="Figure 1.1 shows the layered communication bus. It connects modules.", font_size=11.0, bold=False),
+    ]
+    toc = [(2, "1.1 System Architecture and Interfaces", 1), (2, "1.2 Signal Flow", 1), (2, "1.3 Timing Rules", 1)]
+    out = apply_structure(_ir(elements), toc=toc)
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert "h1b" not in by_id
+    assert by_id["h1a"]["text"] == "1.1 System Architecture and Interfaces"
+    assert by_id["h1a"]["metadata"]["heading_level"] == 2
+    assert by_id["h1a"]["bbox"] == [50.0, 50.0, 420.0, 94.0]
+    assert "h2" in by_id and "h3" in by_id
+    assert by_id["h2"]["metadata"]["role"] == "heading"
+    assert by_id["h3"]["metadata"]["role"] == "heading"
+
+    assert "c1b" not in by_id
+    assert by_id["c1a"]["text"] == "Figure 1.1: Overview of the layered communication bus"
+    assert by_id["c1a"]["metadata"]["caption_of"] == "fig1"
+    assert by_id["fig1"]["metadata"]["caption_id"] == "c1a"
+    assert by_id["fig1"]["metadata"]["caption_text"] == "Figure 1.1: Overview of the layered communication bus"
+    assert by_id["b2"]["metadata"].get("role") is None
+
+    tree = build_section_tree(out["elements"])
+    assert [n["title"] for n in tree] == [
+        "1.1 System Architecture and Interfaces",
+        "1.2 Signal Flow",
+        "1.3 Timing Rules",
+    ]
+    assert tree[0]["element_ids"] == ["b1"]
+
+
+def test_sequence_continuity_rejects_false_numeric_and_anchors_styles():
+    body = "Regular body text repeated to dominate median font size accurately. " * 3
+    elements = [
+        _elem("h1", page=1, reading_order=0, text="1. Introduction", font_size=16.0, bold=True),
+        _elem("b1", page=1, reading_order=1, text=body, font_size=11.0, bold=False),
+        _elem("h1_1", page=1, reading_order=2, text="1.1 Scope", font_size=13.0, bold=True),
+        _elem("bad_qty", page=1, reading_order=3, text="42 Items", font_size=14.0, bold=True),
+        _elem("bad_year_only", page=1, reading_order=4, text="2025", font_size=16.0, bold=True),
+        _elem("bad_year_txt", page=1, reading_order=5, text="2025 Roadmap", font_size=14.0, bold=True),
+        _elem("bad_dec", page=1, reading_order=6, text="15.5 Percent", font_size=13.0, bold=True),
+        _elem("h2", page=2, reading_order=0, text="2. Architecture", font_size=16.0, bold=True),
+        _elem("unnum_top", page=2, reading_order=1, text="References", font_size=16.0, bold=True),
+        _elem("unnum_sub", page=2, reading_order=2, text="Terminology Notes", font_size=13.0, bold=True),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    for bad_id in ("bad_qty", "bad_year_only", "bad_year_txt", "bad_dec"):
+        assert by_id[bad_id]["metadata"].get("role") is None
+        assert "heading_level" not in by_id[bad_id]["metadata"]
+        assert by_id[bad_id]["metadata"]["section_parent_id"] == "h1_1"
+
+    assert by_id["unnum_top"]["metadata"]["heading_level"] == 1
+    assert by_id["unnum_sub"]["metadata"]["heading_level"] == 2
+    assert by_id["unnum_sub"]["metadata"]["section_parent_id"] == "unnum_top"
+
+    # Explicit ToC support retains an out-of-sequence numeric heading.
+    toc_out = apply_structure(_ir([dict(e, metadata=dict(e["metadata"])) for e in elements]), toc=[(1, "42 Items", 1)])
+    toc_by_id = {e["id"]: e for e in toc_out["elements"]}
+    assert toc_by_id["bad_qty"]["metadata"]["role"] == "heading"
+
+
+def test_expanded_caption_prefixes_and_bipartite_two_column_matching():
+    elements = [
+        _elem("fig_l", kind="figure", page=1, bbox=[50.0, 100.0, 240.0, 240.0], reading_order=0, font_size=None, bold=None),
+        _elem("fig_r", kind="figure", page=1, bbox=[260.0, 100.0, 480.0, 240.0], reading_order=1, font_size=None, bold=None),
+        # cap_l overlaps fig_r slightly more than fig_l, so greedy matching steals fig_r and strands cap_r.
+        _elem("cap_l", page=1, bbox=[180.0, 245.0, 340.0, 260.0], reading_order=2, text="Diagram 1: Left Pipeline", bold=True),
+        _elem("cap_r", page=1, bbox=[280.0, 255.0, 470.0, 270.0], reading_order=3, text="Chart 2: Right Metrics", bold=True),
+        _elem("fig_abb", kind="figure", page=2, bbox=[50.0, 60.0, 240.0, 160.0], reading_order=0, font_size=None, bold=None),
+        _elem("cap_abb", page=2, bbox=[50.0, 166.0, 240.0, 182.0], reading_order=1, text="Abb. 3: Modulaufbau", bold=True),
+        _elem("fig_lst", kind="figure", page=2, bbox=[280.0, 60.0, 480.0, 160.0], reading_order=2, font_size=None, bold=None),
+        _elem("cap_lst", page=2, bbox=[280.0, 166.0, 480.0, 182.0], reading_order=3, text="Listing 1 - Startup Hook", bold=True),
+        _elem("tbl_de", kind="table", page=2, bbox=[50.0, 220.0, 480.0, 320.0], reading_order=4, font_size=None, bold=None),
+        _elem("cap_de", page=2, bbox=[50.0, 200.0, 300.0, 215.0], reading_order=5, text="Tabelle 1: Zeitbudget", bold=True),
+        _elem("prose_fig", page=2, bbox=[50.0, 350.0, 480.0, 370.0], reading_order=6, text="Figure 4 illustrates the state machine transitions.", bold=False),
+        _elem("prose_diag", page=2, bbox=[50.0, 380.0, 480.0, 400.0], reading_order=7, text="Diagram 2 shows the startup flow.", bold=False),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["cap_l"]["metadata"]["caption_of"] == "fig_l"
+    assert by_id["fig_l"]["metadata"]["caption_id"] == "cap_l"
+    assert by_id["cap_r"]["metadata"]["caption_of"] == "fig_r"
+    assert by_id["fig_r"]["metadata"]["caption_id"] == "cap_r"
+
+    assert by_id["cap_abb"]["metadata"]["caption_of"] == "fig_abb"
+    assert by_id["cap_lst"]["metadata"]["caption_of"] == "fig_lst"
+    assert by_id["cap_de"]["metadata"]["caption_of"] == "tbl_de"
+    assert by_id["prose_fig"]["metadata"].get("role") is None
+    assert by_id["prose_diag"]["metadata"].get("role") is None
+
+
+def test_caption_propagation_to_tables_and_diagrams():
+    elements = [
+        _elem("cap_t", page=1, bbox=[50.0, 60.0, 300.0, 76.0], reading_order=0, text="Tabelle 1: Bus Parameters", bold=True),
+        _elem("tbl_e", kind="table", page=1, bbox=[50.0, 82.0, 400.0, 180.0], reading_order=1, font_size=None, bold=None),
+        _elem("fig_e", kind="figure", page=1, bbox=[50.0, 210.0, 400.0, 340.0], reading_order=2, font_size=None, bold=None),
+        _elem("cap_d1", page=1, bbox=[50.0, 346.0, 300.0, 360.0], reading_order=3, text="Diagram 1: Event", bold=True),
+        _elem("cap_d2", page=1, bbox=[50.0, 362.0, 300.0, 376.0], reading_order=4, text="Dispatch Graph", bold=True),
+        _elem("tbl_uncap", kind="table", page=2, bbox=[50.0, 80.0, 400.0, 180.0], reading_order=0, font_size=None, bold=None),
+        _elem("fig_uncap", kind="figure", page=2, bbox=[50.0, 220.0, 400.0, 320.0], reading_order=1, font_size=None, bold=None),
+    ]
+    elements[1]["metadata"]["table_id"] = "tbl_0001"
+    elements[2]["metadata"]["diagram_id"] = "diag_0001"
+    ir = _ir(elements)
+    ir["tables"] = [
+        {"id": "tbl_0001", "page": 1, "bbox": [50.0, 82.0, 400.0, 180.0], "metadata": {"element_id": "tbl_e"}},
+        {"id": "tbl_0002", "page": 2, "bbox": [50.0, 80.0, 400.0, 180.0], "metadata": {"element_id": "tbl_uncap"}},
+    ]
+    ir["diagrams"] = [
+        {"id": "diag_0001", "element_id": "fig_e", "page": 1, "bbox": [50.0, 210.0, 400.0, 340.0], "metadata": {"element_id": "fig_e"}},
+        {"id": "diag_0002", "element_id": "fig_uncap", "page": 2, "bbox": [50.0, 220.0, 400.0, 320.0], "metadata": {"element_id": "fig_uncap"}},
+    ]
+    out = apply_structure(ir)
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    t0, t1 = out["tables"]
+    d0, d1 = out["diagrams"]
+    assert t0["caption_id"] == "cap_t"
+    assert t0["caption_text"] == "Tabelle 1: Bus Parameters"
+    assert t0["metadata"]["caption_id"] == "cap_t"
+    assert t0["metadata"]["caption_text"] == "Tabelle 1: Bus Parameters"
+    assert "caption_id" not in t1 and "caption_id" not in t1["metadata"]
+
+    assert d0["caption_id"] == "cap_d1"
+    assert d0["caption_text"] == "Diagram 1: Event Dispatch Graph"
+    assert d0["metadata"]["caption_id"] == "cap_d1"
+    assert d0["metadata"]["caption_text"] == "Diagram 1: Event Dispatch Graph"
+    assert "caption_id" not in d1 and "caption_id" not in d1["metadata"]
+
+    for elem in out["elements"]:
+        em = elem["metadata"]
+        if "caption_of" in em:
+            tgt = by_id[em["caption_of"]]
+            assert tgt["metadata"]["caption_id"] == elem["id"]
+            assert tgt["metadata"]["caption_text"] == elem["text"]
+    assert apply_structure(out) == out
 
 
 def main():

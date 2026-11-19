@@ -12,13 +12,14 @@ from .backends.base import RunStats
 from .backends.layout_cache import file_sha256
 from .backends.layout_image import render_bgr
 from .backends.rss import peak_rss_mb
-from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox
+from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox, SemanticRegion
 
 DEFAULT_DPI = 150
 DEFAULT_RENDER_BATCH_SIZE = 16
 LAYOUT_BOX_CONFIDENCE = 0.95
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_SEMANTIC_LABELS = frozenset({"title", "section_header", "caption", "footnote", "list_item", "formula", "code"})
 
 
 def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_size_pt: tuple[float, float]) -> BBox:
@@ -56,6 +57,38 @@ def _table_boxes_px(
     return tables
 
 
+def _semantic_regions_pt(
+    items: list[dict[str, Any]],
+    img_size: tuple[int, int],
+    page_size: tuple[float, float],
+    page_size_pt: tuple[float, float],
+) -> list[SemanticRegion]:
+    iw, ih = img_size
+    dw, dh = page_size
+    sx = iw / dw if dw > 0 else 1.0
+    sy = ih / dh if dh > 0 else 1.0
+    regions: list[SemanticRegion] = []
+    for it in items:
+        label = str(it.get("label", "")).lower()
+        bbox = it.get("bbox")
+        if label not in _SEMANTIC_LABELS or not bbox or len(bbox) != 4:
+            continue
+        bx0 = max(0.0, min(float(iw), float(bbox[0]) * sx))
+        by0 = max(0.0, min(float(ih), float(bbox[1]) * sy))
+        bx1 = max(0.0, min(float(iw), float(bbox[2]) * sx))
+        by1 = max(0.0, min(float(ih), float(bbox[3]) * sy))
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        pt_box = _to_pt_box((bx0, by0, bx1, by1), img_size, page_size_pt)
+        if pt_box[2] <= pt_box[0] or pt_box[3] <= pt_box[1]:
+            continue
+        raw_score = it.get("score")
+        score = round(float(raw_score), 4) if raw_score is not None else LAYOUT_BOX_CONFIDENCE
+        regions.append(SemanticRegion(bbox=pt_box, label=label, confidence=score))
+    regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
+    return regions
+
+
 def detect_figures(
     pdf_path: str | Path,
     pages: Sequence[int] | None = None,
@@ -71,6 +104,7 @@ def detect_figures(
     pdfium_doc: Any = None,
     pdf_hash: str | None = None,
     warnings_out: list[dict[str, Any]] | None = None,
+    semantic_regions_out: dict[int, list[SemanticRegion]] | None = None,
 ) -> dict[int, list[FigureBox]]:
     path = Path(pdf_path)
     cache_root = (
@@ -127,6 +161,10 @@ def detect_figures(
                         bgr, img_size = render_bgr(page, dpi)
                         iw, ih = img_size
                     page_layout = layouts[pno]
+                    if semantic_regions_out is not None:
+                        semantic_regions_out[pno] = _semantic_regions_pt(
+                            page_layout.items, img_size, page_layout.frame, page_size_pt
+                        )
 
                     raw_figs = fig_grouper.group(bgr, page_layout, min_area)
                     kept_figs = [

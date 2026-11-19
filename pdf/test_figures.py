@@ -19,6 +19,7 @@ from pdf.backends.mineru import (  # noqa: E402
     mineru_middle_json_to_cache_pages,
 )
 from pdf.figures import LAYOUT_BOX_CONFIDENCE, detect_figures  # noqa: E402
+from pdf.models import SemanticRegion  # noqa: E402
 
 
 def test_importing_figures_does_not_load_docling_or_torch():
@@ -495,6 +496,184 @@ def test_extract_ir_single_pdf_open_and_no_double_render():
             figures_mod.render_bgr = orig_render_fig
             layout_image_mod.render_bgr = orig_render_img
             figures_mod._REPO_ROOT = orig_root
+
+
+def test_v2_vector_vision_dpi_invariance():
+    from pdf._pdf_io import render_bgr
+    from pdf.backends import get as get_backend
+    from pdf.grouping import V2VectorVisionGrouper
+
+    assert "v2_vector_vision" in registered("grouper")
+    grouper = get_backend("grouper", "v2_vector_vision")
+    assert isinstance(grouper, V2VectorVisionGrouper)
+
+    b = TestPdfBuilder()
+    page = b.new_page(width=600, height=400)
+    page.draw_rect((45, 45, 340, 220))
+    page.draw_rect((60, 60, 160, 140))
+    page.draw_rect((210, 60, 320, 140))
+    page.insert_text((220, 95), "Block", fontsize=11)
+
+    layout = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [55.0, 55.0, 170.0, 150.0], "text": "", "score": 0.80},
+            {"order": 1, "label": "picture", "bbox": [205.0, 55.0, 325.0, 150.0], "text": "", "score": 0.90},
+        ],
+        frame=(600.0, 400.0),
+    )
+
+    doc = pdfium.PdfDocument(b.to_bytes())
+    try:
+        pt_boxes_by_dpi: dict[int, list[tuple[float, float, float, float]]] = {}
+        scores_by_dpi: dict[int, list[float]] = {}
+        for dpi in (100, 150, 200):
+            bgr, (iw, ih) = render_bgr(doc[0], dpi)
+            grouped = grouper.group(bgr, layout)
+            assert len(grouped) == 1
+            assert grouped[0].source == "v2_vector_vision"
+            sx, sy = 600.0 / iw, 400.0 / ih
+            gx0, gy0, gx1, gy1 = grouped[0].bbox
+            pt_boxes_by_dpi[dpi] = [(gx0 * sx, gy0 * sy, gx1 * sx, gy1 * sy)]
+            scores_by_dpi[dpi] = [grouped[0].score]
+
+        assert scores_by_dpi[100] == scores_by_dpi[150] == scores_by_dpi[200]
+        base = pt_boxes_by_dpi[150][0]
+        for dpi in (100, 200):
+            cur = pt_boxes_by_dpi[dpi][0]
+            ix = max(0.0, min(base[2], cur[2]) - max(base[0], cur[0]))
+            iy = max(0.0, min(base[3], cur[3]) - max(base[1], cur[1]))
+            inter = ix * iy
+            union = (base[2] - base[0]) * (base[3] - base[1]) + (cur[2] - cur[0]) * (cur[3] - cur[1]) - inter
+            assert inter / union >= 0.95, (dpi, base, cur)
+    finally:
+        doc.close()
+
+
+def test_v2_vector_vision_table_barrier_and_caption_separator():
+    import cv2
+    import numpy as np
+
+    from pdf.grouping import V2VectorVisionGrouper
+
+    grouper = V2VectorVisionGrouper()
+
+    # Case 1: Table separated by >= 4 pt must never merge with picture.
+    bgr_blank = np.full((800, 1200, 3), 255, dtype=np.uint8)
+    layout_gap = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [40.0, 50.0, 240.0, 200.0], "text": "", "score": 0.85},
+            {"order": 1, "label": "table", "bbox": [246.0, 50.0, 460.0, 200.0], "text": "", "score": 0.88},
+        ],
+        frame=(600.0, 400.0),
+    )
+    res_gap = grouper.group(bgr_blank, layout_gap)
+    assert len(res_gap) == 1
+    assert res_gap[0].bbox[2] <= 510.0  # stays left of table (246 * 2 = 492 px)
+
+    # Case 2: Bordered table grid even < 4 pt away must never merge with picture.
+    bgr_grid = np.full((800, 1200, 3), 255, dtype=np.uint8)
+    for x in (504, 640, 780, 920):
+        cv2.line(bgr_grid, (x, 100), (x, 400), (0, 0, 0), 2)
+    for y in (100, 200, 300, 400):
+        cv2.line(bgr_grid, (504, y), (920, y), (0, 0, 0), 2)
+    layout_grid = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [40.0, 50.0, 250.0, 200.0], "text": "", "score": 0.85},
+            {"order": 1, "label": "table", "bbox": [252.0, 50.0, 460.0, 200.0], "text": "", "score": 0.90},
+        ],
+        frame=(600.0, 400.0),
+    )
+    res_grid = grouper.group(bgr_grid, layout_grid)
+    assert len(res_grid) == 1
+    assert res_grid[0].bbox[2] <= 520.0
+
+    # Case 3: Caption Separator (vertical and horizontal) prevents merging adjacent figures.
+    layout_cap_v = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [50.0, 40.0, 260.0, 140.0], "text": "", "score": 0.80},
+            {"order": 1, "label": "caption", "bbox": [50.0, 144.0, 220.0, 162.0], "text": "Fig 1", "score": 0.90},
+            {"order": 2, "label": "picture", "bbox": [50.0, 166.0, 260.0, 270.0], "text": "", "score": 0.86},
+        ],
+        frame=(600.0, 400.0),
+    )
+    res_cap_v = grouper.group(bgr_blank, layout_cap_v)
+    assert len(res_cap_v) == 2
+
+    layout_cap_h = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [40.0, 50.0, 200.0, 200.0], "text": "", "score": 0.80},
+            {"order": 1, "label": "caption", "bbox": [204.0, 90.0, 234.0, 140.0], "text": "Fig 2", "score": 0.90},
+            {"order": 2, "label": "picture", "bbox": [238.0, 50.0, 400.0, 200.0], "text": "", "score": 0.86},
+        ],
+        frame=(600.0, 400.0),
+    )
+    res_cap_h = grouper.group(bgr_blank, layout_cap_h)
+    assert len(res_cap_h) == 2
+
+    # Case 4: Merged figures emit area-weighted cluster score.
+    layout_merge = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [50.0, 50.0, 150.0, 150.0], "text": "", "score": 0.80},
+            {"order": 1, "label": "picture", "bbox": [160.0, 50.0, 360.0, 150.0], "text": "", "score": 0.92},
+        ],
+        frame=(600.0, 400.0),
+    )
+    res_merge = grouper.group(bgr_blank, layout_merge)
+    assert len(res_merge) == 1
+    expected = round((10000.0 * 0.80 + 20000.0 * 0.92) / 30000.0, 4)
+    assert res_merge[0].score == expected
+
+
+def test_detect_figures_exports_semantic_regions_out():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "semantic.pdf"
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400)
+        b.save(pdf_path)
+
+        items = [
+            {"order": 0, "label": "title", "bbox": [30.0, 15.0, 300.0, 40.0], "text": "", "score": 0.92},
+            {"order": 1, "label": "section_header", "bbox": [30.0, 50.0, 240.0, 70.0], "text": "", "score": 0.88},
+            {"order": 2, "label": "picture", "bbox": [40.0, 80.0, 260.0, 220.0], "text": "", "score": 0.95},
+            {"order": 3, "label": "caption", "bbox": [40.0, 225.0, 220.0, 242.0], "text": "", "score": 0.84},
+            {"order": 4, "label": "table", "bbox": [300.0, 80.0, 560.0, 220.0], "text": "", "score": 0.91},
+            {"order": 5, "label": "list_item", "bbox": [30.0, 255.0, 280.0, 275.0], "text": "", "score": 0.79},
+            {"order": 6, "label": "formula", "bbox": [300.0, 250.0, 480.0, 285.0], "text": "", "score": 0.87},
+            {"order": 7, "label": "code", "bbox": [30.0, 290.0, 320.0, 340.0], "text": "", "score": 0.83},
+            {"order": 8, "label": "footnote", "bbox": [30.0, 365.0, 300.0, 385.0], "text": "", "score": 0.76},
+            {"order": 9, "label": "text", "bbox": [300.0, 290.0, 560.0, 340.0], "text": "", "score": 0.90},
+        ]
+
+        class _SemBackend:
+            name = "sem_mock"
+            revision = "s1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def analyze(self, _pdf_path, pages):
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                return {p: PageLayout(items=items, frame=(600.0, 400.0)) for p in pages}
+
+        register("layout", "sem_mock", lambda **_kw: _SemBackend())
+        sem_out: dict[int, list[SemanticRegion]] = {}
+        figs = detect_figures(
+            pdf_path,
+            [1],
+            layout="sem_mock",
+            grouper="v2_vector_vision",
+            cache_dir=tmp_path / "cache",
+            semantic_regions_out=sem_out,
+        )
+        assert [f.kind for f in figs[1]] == ["figure", "table"]
+        assert 1 in sem_out
+        assert all(isinstance(r, SemanticRegion) for r in sem_out[1])
+        labels = [r.label for r in sem_out[1]]
+        assert set(labels) == {"title", "section_header", "caption", "footnote", "list_item", "formula", "code"}
+        assert len(labels) == 7
+        title_reg = [r for r in sem_out[1] if r.label == "title"][0]
+        assert title_reg.bbox == (30.0, 15.0, 300.0, 40.0)
+        assert title_reg.confidence == 0.92
 
 
 def main():

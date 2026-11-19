@@ -5,9 +5,9 @@ from typing import Literal
 
 BBox = tuple[float, float, float, float]
 PageKind = Literal["native", "raster", "hybrid"]
-TextSource = Literal["text_layer", "ocr"]
+TextSource = Literal["text_layer", "ocr", "ocr_high_dpi"]
 FigureKind = Literal["figure", "table"]
-FigureSource = Literal["layout_picture", "v1_group", "vector_only", "layout_table"]
+FigureSource = Literal["layout_picture", "v1_group", "vector_only", "layout_table", "v2_vector_vision"]
 TableSource = Literal["pdfplumber", "tatr_onnx", "auto", "auto_refined", "auto_tatr"]
 DiagramSource = Literal["vector_graph"]
 
@@ -24,6 +24,9 @@ class PageProfile:
     image_area_ratio: float
     suspect_ocr_layer: bool
     figure_candidate: bool = True
+    suspect_reasons: tuple[str, ...] = ()
+    partial_raster_regions: tuple[BBox, ...] = ()
+    watermark_word_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class Word:
     bbox: BBox
     font_size: float
     bold: bool
+    upright: bool = True
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,7 @@ class TableCell:
     text: str
     bbox: BBox | None
     is_header: bool = False
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,14 @@ class ExtractedTable:
     cells: tuple[TableCell, ...]
     source: str
     confidence: float
+    continuation_of: str | None = None
+
+
+@dataclass(frozen=True)
+class SemanticRegion:
+    bbox: BBox
+    label: str
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True)

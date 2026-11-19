@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from typing import Any
 
 from .models import BBox, FigureBox, PageProfile, RasterPage, TextBlock, Word
@@ -13,6 +14,11 @@ _FOOTER_BAND_FRAC = 0.90
 _MIN_MULTI_PAGE_DOCS = 3
 _MIN_REPEAT_PAGES = 3
 _MIN_REPEAT_FRAC = 0.5
+_GROUPER_SOURCES = frozenset({"v1_group", "v2_vector_vision"})
+_ROMAN_NUMERAL_RE = re.compile(
+    r"(?<![A-Za-z])(?:(?=[IVXLCD]+(?![A-Za-z]))D?C{0,3}(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))(?![A-Za-z])",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -39,16 +45,70 @@ def _inter_area(a: BBox, b: BBox) -> float:
     return ix * iy
 
 
+def _iou(a: BBox, b: BBox) -> float:
+    inter = _inter_area(a, b)
+    union = _area(a) + _area(b) - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def _clip_figure_against_table(fig_bbox: BBox, tbl_bbox: BBox) -> BBox | None:
+    fx0, fy0, fx1, fy1 = fig_bbox
+    tx0, ty0, tx1, ty1 = tbl_bbox
+    if tx0 >= fx1 or tx1 <= fx0 or ty0 >= fy1 or ty1 <= fy0:
+        return fig_bbox
+    cands: list[BBox] = []
+    if tx0 > fx0:
+        cands.append((fx0, fy0, tx0, fy1))
+    if tx1 < fx1:
+        cands.append((tx1, fy0, fx1, fy1))
+    if ty0 > fy0:
+        cands.append((fx0, fy0, fx1, ty0))
+    if ty1 < fy1:
+        cands.append((fx0, ty1, fx1, fy1))
+    best = max(cands, key=_area, default=None)
+    return best if best is not None and _area(best) > 0.0 else None
+
+
 def filter_overlapping_figures(figures: Sequence[FigureBox]) -> list[FigureBox]:
-    fig_boxes = [f for f in figures if f.kind == "figure"]
-    kept: list[FigureBox] = []
-    for box in figures:
-        if box.kind == "table":
-            t_area = _area(box.bbox)
-            if t_area > 0 and any(_inter_area(box.bbox, fb.bbox) / t_area >= 0.5 for fb in fig_boxes):
-                continue
-        kept.append(box)
-    return kept
+    fig_indices = [i for i, f in enumerate(figures) if f.kind == "figure"]
+    if not fig_indices:
+        return list(figures)
+    updated: list[FigureBox | None] = list(figures)
+    for ti, box in enumerate(figures):
+        if box.kind != "table":
+            continue
+        t_area = _area(box.bbox)
+        if t_area <= 0.0:
+            continue
+        overlapping_figs = [
+            (fi, _inter_area(box.bbox, updated[fi].bbox) / t_area)  # type: ignore[union-attr]
+            for fi in fig_indices
+            if updated[fi] is not None and _inter_area(box.bbox, updated[fi].bbox) / t_area >= 0.50  # type: ignore[union-attr]
+        ]
+        if not overlapping_figs:
+            continue
+        drop_table = False
+        pending_clips: list[tuple[int, BBox]] = []
+        for fi, frac in overlapping_figs:
+            fig_box = updated[fi]
+            assert fig_box is not None
+            if frac >= 0.85 or fig_box.source not in _GROUPER_SOURCES:
+                drop_table = True
+                break
+            clipped = _clip_figure_against_table(fig_box.bbox, box.bbox)
+            fig_area = _area(fig_box.bbox)
+            if clipped is None or (fig_area > 0.0 and _area(clipped) < 0.15 * fig_area):
+                drop_table = True
+                break
+            pending_clips.append((fi, clipped))
+        if drop_table:
+            updated[ti] = None
+        else:
+            for fi, clipped in pending_clips:
+                fig_box = updated[fi]
+                assert fig_box is not None
+                updated[fi] = replace(fig_box, bbox=clipped)
+    return [b for b in updated if b is not None]
 
 
 def _assign_words_to_boxes(
@@ -60,23 +120,78 @@ def _assign_words_to_boxes(
     indexed = [(_area(box.bbox), idx, box) for idx, box in enumerate(boxes)]
 
     for word in words:
-        cx = (word.bbox[0] + word.bbox[2]) * 0.5
-        cy = (word.bbox[1] + word.bbox[3]) * 0.5
+        w_area = _area(word.bbox)
         best_idx: int | None = None
-        best_key: tuple[float, int] | None = None
-        for area, idx, box in indexed:
-            bx0, by0, bx1, by1 = box.bbox
-            if bx0 <= cx <= bx1 and by0 <= cy <= by1:
-                key = (area, idx)
-                if best_key is None or key < best_key:
-                    best_key = key
-                    best_idx = idx
+        best_key: tuple[float, float, int] | None = None
+        if w_area <= 0.0:
+            cx = (word.bbox[0] + word.bbox[2]) * 0.5
+            cy = (word.bbox[1] + word.bbox[3]) * 0.5
+            for area, idx, box in indexed:
+                bx0, by0, bx1, by1 = box.bbox
+                if bx0 <= cx <= bx1 and by0 <= cy <= by1:
+                    key = (area, -1.0, idx)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_idx = idx
+        else:
+            for area, idx, box in indexed:
+                ioa = _inter_area(word.bbox, box.bbox) / w_area
+                if ioa >= 0.50:
+                    key = (area, -ioa, idx)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_idx = idx
         if best_idx is None:
             body_words.append(word)
         else:
             box_words[best_idx].append(word)
 
     return body_words, box_words
+
+
+def _norm_text_sim(a: str, b: str) -> float:
+    na = " ".join(a.lower().split())
+    nb = " ".join(b.lower().split())
+    if not na or not nb:
+        return 0.0
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def merge_hybrid_region_ocr(
+    native_words: Sequence[Word],
+    ocr_blocks: Sequence[TextBlock],
+) -> tuple[list[Word], list[TextBlock]]:
+    kept_words = list(native_words)
+    if not native_words or not ocr_blocks:
+        return kept_words, list(ocr_blocks)
+
+    native_blocks = order_blocks(native_words)
+    kept_ocr: list[TextBlock] = []
+    for blk in ocr_blocks:
+        is_dup = any(
+            _iou(blk.bbox, nb.bbox) >= 0.50 and _norm_text_sim(blk.text, nb.text) >= 0.60
+            for nb in native_blocks
+        )
+        if not is_dup:
+            overlapping: list[Word] = []
+            for w in native_words:
+                wa = _area(w.bbox)
+                if wa > 0.0 and _inter_area(w.bbox, blk.bbox) / wa >= 0.50:
+                    overlapping.append(w)
+            if overlapping:
+                u_box: BBox = (
+                    min(w.bbox[0] for w in overlapping),
+                    min(w.bbox[1] for w in overlapping),
+                    max(w.bbox[2] for w in overlapping),
+                    max(w.bbox[3] for w in overlapping),
+                )
+                overlapping.sort(key=lambda w: (round(w.bbox[1], 1), w.bbox[0]))
+                joined = " ".join(w.text for w in overlapping)
+                if _iou(blk.bbox, u_box) >= 0.50 and _norm_text_sim(blk.text, joined) >= 0.60:
+                    is_dup = True
+        if not is_dup:
+            kept_ocr.append(blk)
+    return kept_words, kept_ocr
 
 
 def _text_item(blk: TextBlock, *, level: int, parent_index: int | None) -> AssembledItem:
@@ -240,19 +355,31 @@ def assemble_page(
 
 
 def _normalize_band_text(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"\d+", "#", text)).strip().lower()
+    masked = _ROMAN_NUMERAL_RE.sub("#", re.sub(r"\d+", "#", text))
+    return re.sub(r"\s+", " ", masked).strip().lower()
+
+
+def _norm_toc_title(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", " ".join(text.split()).lower()).strip()
 
 
 def tag_running_headers_footers(
     elements: Sequence[dict[str, Any]],
     page_heights: Mapping[int, float],
+    toc_titles: Collection[str] = (),
 ) -> None:
     num_pages = len(page_heights)
+    protected_titles = {t for raw in toc_titles if (t := _norm_toc_title(raw))}
+    even_pages = {p for p in page_heights if p % 2 == 0}
+    odd_pages = {p for p in page_heights if p % 2 == 1}
     candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
     candidate_pages: dict[tuple[str, str], set[int]] = {}
 
     for elem in elements:
         if elem.get("type") != "text":
+            continue
+        raw_text = str(elem.get("text", ""))
+        if protected_titles and _norm_toc_title(raw_text) in protected_titles:
             continue
         meta = elem.setdefault("metadata", {})
         layout_label = meta.get("layout_label")
@@ -272,7 +399,7 @@ def tag_running_headers_footers(
             zone = "page_footer"
         else:
             continue
-        norm = _normalize_band_text(str(elem.get("text", "")))
+        norm = _normalize_band_text(raw_text)
         if not norm:
             continue
         key = (zone, norm)
@@ -280,7 +407,24 @@ def tag_running_headers_footers(
         candidate_pages.setdefault(key, set()).add(page_no)
 
     for key, pages_seen in candidate_pages.items():
+        role = key[0]
         if len(pages_seen) >= _MIN_REPEAT_PAGES or len(pages_seen) >= _MIN_REPEAT_FRAC * num_pages:
-            role = key[0]
             for elem in candidates[key]:
                 elem["metadata"].setdefault("role", role)
+            continue
+        if num_pages >= 4:
+            even_seen = pages_seen & even_pages
+            odd_seen = pages_seen & odd_pages
+            even_match = len(even_pages) >= 2 and (
+                len(even_seen) >= _MIN_REPEAT_PAGES or len(even_seen) >= 0.6 * len(even_pages)
+            )
+            odd_match = len(odd_pages) >= 2 and (
+                len(odd_seen) >= _MIN_REPEAT_PAGES or len(odd_seen) >= 0.6 * len(odd_pages)
+            )
+            if even_match or odd_match:
+                for elem in candidates[key]:
+                    pno = elem.get("page")
+                    if isinstance(pno, int) and (
+                        (even_match and pno in even_pages) or (odd_match and pno in odd_pages)
+                    ):
+                        elem["metadata"].setdefault("role", role)

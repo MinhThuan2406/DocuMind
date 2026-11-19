@@ -34,6 +34,7 @@ def _ensure_builtins() -> None:
     _FACTORIES[("reader", "heron-onnx+rapidocr-torch")] = _heron_onnx_rapidocr_torch_factory
     _FACTORIES[("reader", "mineru-pipeline")] = _mineru_reader_factory
     _FACTORIES[("grouper", "v1_anchor")] = _v1_anchor_factory
+    _FACTORIES[("grouper", "v2_vector_vision")] = _v2_vector_vision_factory
     _FACTORIES[("grouper", "raw_picture")] = _raw_picture_factory
     _FACTORIES[("table", "tatr-onnx")] = _tatr_onnx_factory
     _FACTORIES[("table", "pdfplumber")] = _pdfplumber_table_factory
@@ -134,6 +135,12 @@ def _v1_anchor_factory(**_extra: Any) -> Any:
     from ..grouping import V1AnchorGrouper
 
     return V1AnchorGrouper()
+
+
+def _v2_vector_vision_factory(**_extra: Any) -> Any:
+    from ..grouping import V2VectorVisionGrouper
+
+    return V2VectorVisionGrouper()
 
 
 def _raw_picture_factory(**_extra: Any) -> Any:
