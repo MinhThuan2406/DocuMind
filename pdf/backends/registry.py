@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper", "table")
+VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper", "table", "diagram")
 Factory = Callable[..., Any]
 
 _FACTORIES: dict[tuple[str, str], Factory] = {}
@@ -38,6 +38,7 @@ def _ensure_builtins() -> None:
     _FACTORIES[("table", "tatr-onnx")] = _tatr_onnx_factory
     _FACTORIES[("table", "pdfplumber")] = _pdfplumber_table_factory
     _FACTORIES[("table", "auto")] = _auto_table_factory
+    _FACTORIES[("diagram", "vector_first")] = _vector_first_diagram_factory
 
 
 def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
@@ -157,6 +158,12 @@ def _auto_table_factory(*, device: str = "auto", **_extra: Any) -> Any:
     from .table_auto import AutoTableExtractor
 
     return AutoTableExtractor(device=device)
+
+
+def _vector_first_diagram_factory(**_extra: Any) -> Any:
+    from ..diagrams import VectorFirstDiagramExtractor
+
+    return VectorFirstDiagramExtractor()
 
 
 def register(kind: str, name: str, factory: Factory) -> None:

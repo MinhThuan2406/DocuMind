@@ -7,7 +7,7 @@ import pdfplumber
 
 from ._pdf_io import PdfContext, extract_toc, extract_words_raw, page_bbox
 from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
-from .backends import FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
+from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
@@ -61,6 +61,48 @@ def _collect_stats_warnings(backend: Any, prev_stats: Any, warnings: list[dict[s
             warnings.append(dict(w))
 
 
+def _link_diagram_text_elements(
+    diag_dict: dict[str, Any],
+    fig_elem_id: str,
+    page_elems: list[dict[str, Any]],
+) -> None:
+    nodes = diag_dict.get("nodes") or ()
+    if not nodes:
+        return
+    children = [
+        e
+        for e in page_elems
+        if e.get("level") == 2 and e.get("parent_id") == fig_elem_id and e.get("type") == "text"
+    ]
+    if not children:
+        return
+    node_boxes = []
+    for node in nodes:
+        nb = node.get("bbox")
+        if nb and len(nb) == 4:
+            area = max(0.0, nb[2] - nb[0]) * max(0.0, nb[3] - nb[1])
+            node_boxes.append((area, node))
+    if not node_boxes:
+        return
+    for child in children:
+        tb = child["bbox"]
+        cx = (tb[0] + tb[2]) * 0.5
+        cy = (tb[1] + tb[3]) * 0.5
+        best_node: dict[str, Any] | None = None
+        best_area: float | None = None
+        for area, node in node_boxes:
+            nb = node["bbox"]
+            if nb[0] <= cx <= nb[2] and nb[1] <= cy <= nb[3]:
+                if best_area is None or area < best_area:
+                    best_area = area
+                    best_node = node
+        if best_node is not None:
+            ids = list(best_node.get("text_element_ids") or ())
+            if child["id"] not in ids:
+                ids.append(child["id"])
+            best_node["text_element_ids"] = ids
+
+
 def extract_ir(
     path: str | Path,
     *,
@@ -73,12 +115,11 @@ def extract_ir(
     reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr-onnx",
     table_backend: str | TableExtractor = "auto",
-    diagram_backend: str = "vector_first",
+    diagram_backend: str | DiagramExtractor = "vector_first",
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
 ) -> dict[str, Any]:
-    del diagrams, diagram_backend
     pdf_path = Path(path)
     source_file = pdf_path.name
 
@@ -164,9 +205,12 @@ def extract_ir(
 
         elements: list[dict[str, Any]] = []
         extracted_tables: list[dict[str, Any]] = []
+        extracted_diagrams: list[dict[str, Any]] = []
         elem_counter = 0
         tbl_counter = 0
+        diag_counter = 0
         resolved_table_backend: TableExtractor | None = None
+        resolved_diagram_backend: DiagramExtractor | None = None
 
         for prof in profiles:
             page = doc.pages[prof.page - 1]
@@ -230,6 +274,45 @@ def extract_ir(
                         tbl_elem["text"] = f"[Table {tbl_id}: {parsed.num_rows}x{parsed.num_cols}]"
                         extracted_tables.append(table_to_ir_dict(tbl_id, tbl_elem["id"], prof.page, source_file, parsed))
 
+            if diagrams:
+                fig_elems = [e for e in page_elems if e["type"] == "figure" and e["level"] == 1]
+                if fig_elems:
+                    from .diagrams import diagram_to_ir_dict, extract_diagrams_on_page
+
+                    if resolved_diagram_backend is None:
+                        resolved_diagram_backend = (
+                            get_backend("diagram", diagram_backend, device=device)
+                            if isinstance(diagram_backend, str)
+                            else diagram_backend
+                        )
+                    prev_diag_stats = getattr(resolved_diagram_backend, "last_stats", None)
+                    parsed_diagrams = extract_diagrams_on_page(
+                        page,
+                        [tuple(e["bbox"]) for e in fig_elems],
+                        words=words,
+                        is_raster=use_ocr,
+                        extractor=resolved_diagram_backend,
+                        ocr_backend=ocr_backend,
+                        device=device,
+                    )
+                    _collect_stats_warnings(resolved_diagram_backend, prev_diag_stats, warnings)
+                    for fig_elem, parsed in zip(fig_elems, parsed_diagrams):
+                        if not (parsed.nodes or parsed.edges or parsed.groups):
+                            warnings.append({
+                                "page": prof.page,
+                                "code": "diagram_parse_empty",
+                                "severity": "warning",
+                                "reason": "diagram_extractor_returned_empty_graph",
+                                "fallback": None,
+                            })
+                            continue
+                        diag_counter += 1
+                        diag_id = f"diag_{diag_counter:04d}"
+                        fig_elem["metadata"]["diagram_id"] = diag_id
+                        diag_dict = diagram_to_ir_dict(diag_id, fig_elem["id"], prof.page, source_file, parsed)
+                        _link_diagram_text_elements(diag_dict, fig_elem["id"], page_elems)
+                        extracted_diagrams.append(diag_dict)
+
             elements.extend(page_elems)
 
     tag_running_headers_footers(elements, {p["number"]: float(p["height_pt"]) for p in page_sizes})
@@ -248,7 +331,7 @@ def extract_ir(
         },
         "elements": elements,
         "tables": extracted_tables,
-        "diagrams": [],
+        "diagrams": extracted_diagrams,
     }
     if structure:
         apply_structure(ir, toc=toc, inplace=True)

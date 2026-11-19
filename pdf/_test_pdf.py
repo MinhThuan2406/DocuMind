@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,22 @@ def _pdf_escape(text: str) -> bytes:
         else:
             out.append(ord("?"))
     return bytes(out)
+
+
+def _dash_prefix(dash: tuple[float, float] | None) -> str:
+    if dash is None:
+        return ""
+    return f"[{float(dash[0]):.2f} {float(dash[1]):.2f}] 0 d "
+
+
+def _paint_op(fill: bool, stroke: bool) -> str:
+    if fill and stroke:
+        return "B"
+    if fill:
+        return "f"
+    if stroke:
+        return "S"
+    return "n"
 
 
 class _TestPage:
@@ -48,17 +65,58 @@ class _TestPage:
                 + f" {fontsize:.2f} Tf 1 0 0 1 {x:.2f} {y_pdf:.2f} Tm ({esc.decode('ascii')}) Tj ET".encode("ascii")
             )
 
-    def draw_line(self, p1: tuple[float, float], p2: tuple[float, float], *, width: float = 0.5) -> None:
+    def draw_line(
+        self,
+        p1: tuple[float, float],
+        p2: tuple[float, float],
+        *,
+        width: float = 0.5,
+        dash: tuple[float, float] | None = None,
+    ) -> None:
         y1 = self.height - float(p1[1])
         y2 = self.height - float(p2[1])
-        self._ops.append(f"{width:.2f} w {p1[0]:.2f} {y1:.2f} m {p2[0]:.2f} {y2:.2f} l S".encode("ascii"))
+        dash_str = _dash_prefix(dash)
+        self._ops.append(
+            f"q {width:.2f} w {dash_str}{float(p1[0]):.2f} {y1:.2f} m {float(p2[0]):.2f} {y2:.2f} l S Q".encode("ascii")
+        )
 
-    def draw_rect(self, bbox: tuple[float, float, float, float], *, width: float = 1.0) -> None:
+    def draw_rect(
+        self,
+        bbox: tuple[float, float, float, float],
+        *,
+        width: float = 1.0,
+        dash: tuple[float, float] | None = None,
+        fill: bool = False,
+        stroke: bool = True,
+    ) -> None:
         x0, y0, x1, y1 = (float(v) for v in bbox)
         w = x1 - x0
         h = y1 - y0
         y_pdf = self.height - y1
-        self._ops.append(f"{width:.2f} w {x0:.2f} {y_pdf:.2f} {w:.2f} {h:.2f} re S".encode("ascii"))
+        dash_str = _dash_prefix(dash)
+        paint = _paint_op(fill, stroke)
+        self._ops.append(
+            f"q {width:.2f} w {dash_str}{x0:.2f} {y_pdf:.2f} {w:.2f} {h:.2f} re {paint} Q".encode("ascii")
+        )
+
+    def draw_polygon(
+        self,
+        points: Sequence[tuple[float, float]],
+        width: float = 1.0,
+        fill: bool = False,
+        stroke: bool = True,
+        dash: tuple[float, float] | None = None,
+    ) -> None:
+        if len(points) < 2:
+            return
+        x0, y0 = float(points[0][0]), self.height - float(points[0][1])
+        segs = [f"{x0:.2f} {y0:.2f} m"]
+        for px, py in points[1:]:
+            segs.append(f"{float(px):.2f} {self.height - float(py):.2f} l")
+        segs.append("h")
+        dash_str = _dash_prefix(dash)
+        paint = _paint_op(fill, stroke)
+        self._ops.append(f"q {width:.2f} w {dash_str}{' '.join(segs)} {paint} Q".encode("ascii"))
 
     def insert_image(
         self,

@@ -8,7 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from ..layout.types import LayoutItem
-from ..models import BBox, ExtractedTable, GroupedFigure, RasterPage
+from ..models import BBox, ExtractedDiagram, ExtractedTable, GroupedFigure, RasterPage
 from ..ocr.types import OcrLine
 
 
@@ -103,4 +103,4 @@ class DiagramExtractor(Protocol):
         ocr_backend: str = "rapidocr-onnx",
         device: str | None = None,
         dpi: int = 150,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[ExtractedDiagram]: ...

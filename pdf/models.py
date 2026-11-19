@@ -9,6 +9,7 @@ TextSource = Literal["text_layer", "ocr"]
 FigureKind = Literal["figure", "table"]
 FigureSource = Literal["layout_picture", "v1_group", "vector_only", "layout_table"]
 TableSource = Literal["pdfplumber", "tatr_onnx", "auto", "auto_refined", "auto_tatr"]
+DiagramSource = Literal["vector_graph"]
 
 FIGURE_MIN_AREA = 0.015
 FIGURE_FOOTER_FRAC = 0.88
@@ -86,3 +87,47 @@ class ExtractedTable:
     cells: tuple[TableCell, ...]
     source: str
     confidence: float
+
+
+@dataclass(frozen=True)
+class DiagramNode:
+    id: str
+    shape_type: str
+    label: str
+    bbox: BBox
+    parent_group_id: str | None = None
+    text_element_ids: tuple[str, ...] = ()
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class DiagramEdge:
+    id: str
+    source_node_id: str | None
+    target_node_id: str | None
+    direction: str
+    style: str
+    label: str = ""
+    waypoints: tuple[tuple[float, float], ...] = ()
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class DiagramGroup:
+    id: str
+    label: str
+    bbox: BBox
+    parent_group_id: str | None = None
+    member_node_ids: tuple[str, ...] = ()
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class ExtractedDiagram:
+    bbox: BBox
+    diagram_type: str
+    nodes: tuple[DiagramNode, ...] = ()
+    edges: tuple[DiagramEdge, ...] = ()
+    groups: tuple[DiagramGroup, ...] = ()
+    source: str = "vector_graph"
+    confidence: float = 0.0
