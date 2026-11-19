@@ -162,11 +162,16 @@ def _waypoints_bbox(waypoints: Sequence[tuple[float, float]], fallback: BBox) ->
 
 def _is_dashed(obj: Mapping[str, Any]) -> bool:
     dash = obj.get("dash")
+    if isinstance(dash, bool):
+        return dash
     if not dash:
         return False
+    if isinstance(dash, Mapping):
+        arr = dash.get("dash") or ()
+        return any(isinstance(v, (int, float)) and v > 0 for v in arr)
     if isinstance(dash, (tuple, list)):
         if len(dash) == 2 and isinstance(dash[0], (tuple, list)):
-            return bool(dash[0])
+            return any(isinstance(v, (int, float)) and v > 0 for v in dash[0])
         return any(isinstance(v, (int, float)) and v > 0 for v in dash)
     return False
 
@@ -276,11 +281,7 @@ def _reconstruct_rect_loops(
     vert.sort(key=lambda item: item[1])
 
     for i, (hi_top, hx0, hx1, hy_top, hd_top) in enumerate(horiz):
-        if hi_top in consumed:
-            continue
         for hi_bot, bx0, bx1, hy_bot, hd_bot in horiz[i + 1 :]:
-            if hi_bot in consumed:
-                continue
             if hy_bot - hy_top <= 8.0:
                 continue
             if abs(hx0 - bx0) > _LOOP_EPS_PT * 2.0 or abs(hx1 - bx1) > _LOOP_EPS_PT * 2.0:
@@ -290,8 +291,6 @@ def _reconstruct_rect_loops(
             left_match: tuple[int, bool] | None = None
             right_match: tuple[int, bool] | None = None
             for vi, vx, vy0, vy1, vd in vert:
-                if vi in consumed:
-                    continue
                 if abs(vy0 - hy_top) <= _LOOP_EPS_PT and abs(vy1 - hy_bot) <= _LOOP_EPS_PT:
                     if left_match is None and abs(vx - x0) <= _LOOP_EPS_PT:
                         left_match = (vi, vd)
@@ -452,8 +451,8 @@ def _chain_polylines(polylines: Sequence[_Polyline]) -> list[_Polyline]:
                 continue
             adj[(p1, e1)] = (p2, e2)
             adj[(p2, e2)] = (p1, e1)
-        elif len(inc) >= 3:
-            # At crossings or T-junctions, pair only collinear opposite segments so crossings stay intact.
+        elif len(inc) >= 4:
+            # At 4+ crossings, pair collinear opposite segments; leave degree-3 forks unmerged for fan-out.
             used_local: set[int] = set()
             for i in range(len(inc)):
                 if i in used_local:
@@ -546,11 +545,10 @@ def _matches_arrow_poly(
         for v in arrow.verts
     ]
     max_p = max(projs)
-    min_p = min(projs)
     if max_p <= 0.5:
         return False
     front_count = sum(1 for p in projs if p >= max_p * 0.65)
-    back_count = sum(1 for p in projs if p <= min_p * 0.5)
+    back_count = sum(1 for p in projs if p <= -0.1 * max_p)
     return front_count == 1 and back_count >= 2
 
 
@@ -732,16 +730,24 @@ def _nearest_parent_group(
     return best_gid
 
 
+def _is_group_container(idx: int, shapes: Sequence[_RawShape]) -> bool:
+    outer = shapes[idx].bbox
+    outer_area = _bbox_area(outer)
+    children = [shapes[j].bbox for j in range(len(shapes)) if j != idx and _strictly_encloses(outer, shapes[j].bbox)]
+    if len(children) >= 2:
+        return True
+    if len(children) == 1:
+        cb = children[0]
+        return max(cb[2] - cb[0], cb[3] - cb[1]) >= 24.0 and _bbox_area(cb) <= 0.75 * outer_area
+    return False
+
+
 def _build_shape_hierarchy(
     shapes: Sequence[_RawShape],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     n_shapes = len(shapes)
-    encloses_count = [
-        sum(1 for j in range(n_shapes) if i != j and _strictly_encloses(shapes[i].bbox, shapes[j].bbox))
-        for i in range(n_shapes)
-    ]
     group_indices = sorted(
-        (i for i in range(n_shapes) if encloses_count[i] >= 2),
+        (i for i in range(n_shapes) if _is_group_container(i, shapes)),
         key=lambda i: (shapes[i].bbox[1], shapes[i].bbox[0], -_bbox_area(shapes[i].bbox)),
     )
     group_set = set(group_indices)
@@ -861,6 +867,61 @@ def _match_text_node_cluster(
     return best_cidx
 
 
+def _fan_out_forks(
+    connectors: Sequence[_Polyline],
+    node_entries: Sequence[dict[str, Any]],
+    has_arrow_fn: Any,
+) -> list[_Polyline]:
+    items = [list(poly.pts) for poly in connectors if len(poly.pts) >= 2]
+    dasheds = [poly.dashed for poly in connectors if len(poly.pts) >= 2]
+    if len(items) <= 1:
+        return [poly for poly in connectors if len(poly.pts) >= 2]
+
+    info: list[dict[str, Any]] = []
+    for pts in items:
+        a0 = bool(has_arrow_fn(pts[0], pts[1]))
+        a1 = bool(has_arrow_fn(pts[-1], pts[-2]))
+        n0 = _snap_node_id(pts[0], node_entries)
+        n1 = _snap_node_id(pts[-1], node_entries)
+        info.append({"a0": a0, "a1": a1, "n0": n0, "n1": n1})
+
+    consumed: set[int] = set()
+    fanned: list[_Polyline] = []
+    for si, stem in enumerate(items):
+        sinfo = info[si]
+        for stem_end in (0, 1):
+            other_end = 1 - stem_end
+            stem_node = sinfo[f"n{other_end}"]
+            if sinfo[f"n{stem_end}"] is not None or sinfo[f"a{stem_end}"] or stem_node is None:
+                continue
+            jpt = stem[0] if stem_end == 0 else stem[-1]
+            branches: list[tuple[int, int]] = []
+            for bi, bpts in enumerate(items):
+                if bi == si or dasheds[bi] != dasheds[si]:
+                    continue
+                binfo = info[bi]
+                for b_end in (0, 1):
+                    bfar = 1 - b_end
+                    bpt = bpts[0] if b_end == 0 else bpts[-1]
+                    if _dist(jpt, bpt) <= _JOINT_EPS_PT and binfo[f"n{b_end}"] is None and not binfo[f"a{b_end}"]:
+                        if binfo[f"n{bfar}"] is not None or binfo[f"a{bfar}"]:
+                            branches.append((bi, b_end))
+                            break
+            if len(branches) >= 2:
+                stem_ordered = list(reversed(stem)) if stem_end == 0 else list(stem)
+                consumed.add(si)
+                for bi, b_end in branches:
+                    consumed.add(bi)
+                    b_ordered = list(items[bi]) if b_end == 0 else list(reversed(items[bi]))
+                    joint = ((stem_ordered[-1][0] + b_ordered[0][0]) * 0.5, (stem_ordered[-1][1] + b_ordered[0][1]) * 0.5)
+                    fanned.append(_Polyline(pts=[*stem_ordered[:-1], joint, *b_ordered[1:]], dashed=dasheds[si]))
+                break
+
+    out = [_Polyline(pts=items[idx], dashed=dasheds[idx]) for idx in range(len(items)) if idx not in consumed]
+    out.extend(fanned)
+    return out
+
+
 def _extract_edges_and_text_nodes(
     connectors: Sequence[_Polyline],
     arrow_polys: Sequence[_ArrowPoly],
@@ -882,8 +943,28 @@ def _extract_edges_and_text_nodes(
             for tip, bis in matched_chevrons
         )
 
+    def _create_text_node_at(end_pt: tuple[float, float], prev_pt: tuple[float, float]) -> str | None:
+        best_cidx = _match_text_node_cluster(end_pt, prev_pt, word_clusters, used_word_ids)
+        if best_cidx < 0:
+            return None
+        w_idxs, cbox = word_clusters[best_cidx]
+        used_word_ids.update(w_idxs)
+        nid = f"node_{len(node_entries) + 1}"
+        node_entries.append(
+            {
+                "id": nid,
+                "shape_type": "text_node",
+                "bbox": cbox,
+                "parent_group_id": _nearest_parent_group(cbox, group_entries),
+                "words": [fig_words[k] for k in w_idxs],
+                "confidence": 0.85,
+            }
+        )
+        return nid
+
+    resolved_connectors = _fan_out_forks(connectors, node_entries, _has_arrow_at)
     edge_entries: list[dict[str, Any]] = []
-    for poly in connectors:
+    for poly in resolved_connectors:
         pts = list(poly.pts)
         if len(pts) < 2:
             continue
@@ -897,29 +978,21 @@ def _extract_edges_and_text_nodes(
         src_id = _snap_node_id(pts[0], node_entries)
         dst_id = _snap_node_id(pts[-1], node_entries)
 
-        if src_id is not None and src_id == dst_id and not (arrow_start or arrow_end):
+        if src_id is not None and src_id == dst_id:
             nb = next(ne["bbox"] for ne in node_entries if ne["id"] == src_id)
-            if all(nb[0] - 1.0 <= p[0] <= nb[2] + 1.0 and nb[1] - 1.0 <= p[1] <= nb[3] + 1.0 for p in pts):
+            max_outside = max((_point_to_box_dist(p, nb) for p in pts), default=0.0)
+            if len(pts) < 3 or max_outside <= _SNAP_DIST_PT * 0.5:
                 continue
 
         if dst_id is None and arrow_end:
-            best_cidx = _match_text_node_cluster(pts[-1], pts[-2], word_clusters, used_word_ids)
-            if best_cidx >= 0:
-                w_idxs, cbox = word_clusters[best_cidx]
-                used_word_ids.update(w_idxs)
-                dst_id = f"node_{len(node_entries) + 1}"
-                node_entries.append(
-                    {
-                        "id": dst_id,
-                        "shape_type": "text_node",
-                        "bbox": cbox,
-                        "parent_group_id": _nearest_parent_group(cbox, group_entries),
-                        "words": [fig_words[k] for k in w_idxs],
-                        "confidence": 0.85,
-                    }
-                )
-                if src_id is None:
-                    src_id = _snap_node_id(pts[0], node_entries)
+            dst_id = _create_text_node_at(pts[-1], pts[-2])
+            if dst_id is not None and src_id is None:
+                src_id = _snap_node_id(pts[0], node_entries)
+
+        if src_id is None and arrow_start:
+            src_id = _create_text_node_at(pts[0], pts[1])
+            if src_id is not None and dst_id is None:
+                dst_id = _snap_node_id(pts[-1], node_entries)
 
         if (src_id is None or dst_id is None) and not (arrow_start or arrow_end):
             continue
@@ -953,6 +1026,13 @@ def _assign_group_and_edge_labels(
     edge_entries: Sequence[dict[str, Any]],
 ) -> None:
     sorted_groups = sorted(group_entries, key=lambda g: _bbox_area(g["bbox"]))
+    cluster_min_edge: dict[int, float] = {}
+    if edge_entries:
+        for w_idxs, cbox in word_clusters:
+            d_min = min(_box_to_polyline_dist(cbox, ee["pts"]) for ee in edge_entries)
+            for wi in w_idxs:
+                cluster_min_edge[wi] = d_min
+
     for ge in sorted_groups:
         gb = ge["bbox"]
         child_tops = [ne["bbox"][1] for ne in node_entries if ne["parent_group_id"] == ge["id"]] + [
@@ -965,6 +1045,9 @@ def _assign_group_and_edge_labels(
             cx = (w.bbox[0] + w.bbox[2]) * 0.5
             cy = (w.bbox[1] + w.bbox[3]) * 0.5
             if gb[0] - 1.5 <= cx <= gb[2] + 1.5 and gb[1] - 1.5 <= cy <= min(gb[3] + 1.5, header_limit_y):
+                d_edge = cluster_min_edge.get(w_idx, float("inf"))
+                if d_edge <= _EDGE_LABEL_DIST_PT and d_edge < max(0.0, cy - gb[1]) * 0.6:
+                    continue
                 ge["words"].append(w)
                 used_word_ids.add(w_idx)
 
@@ -1027,8 +1110,8 @@ def _extract_diagram_from_box(
     fig_words = [
         w
         for w in words
-        if clip[0] <= (w.bbox[0] + w.bbox[2]) * 0.5 <= clip[2]
-        and clip[1] <= (w.bbox[1] + w.bbox[3]) * 0.5 <= clip[3]
+        if fig_box[0] <= (w.bbox[0] + w.bbox[2]) * 0.5 <= fig_box[2]
+        and fig_box[1] <= (w.bbox[1] + w.bbox[3]) * 0.5 <= fig_box[3]
     ]
     used_word_ids = _assign_node_words(fig_words, node_entries)
     word_clusters = _build_word_clusters(fig_words, used_word_ids)
@@ -1136,6 +1219,17 @@ def _estimate_confidence(nodes: Sequence[DiagramNode], edges: Sequence[DiagramEd
     return _round_conf(max(0.5, min(0.95, score)))
 
 
+def _make_run_stats(t0: float, *, infer_sec: float | None = None) -> RunStats:
+    return RunStats(
+        load_sec=0.0,
+        infer_sec=round(time.perf_counter() - t0, 4) if infer_sec is None else infer_sec,
+        pages=1,
+        peak_rss_mb=peak_rss_mb(),
+        in_process=True,
+        warnings=(),
+    )
+
+
 class VectorFirstDiagramExtractor:
     name = "vector_first"
 
@@ -1156,14 +1250,7 @@ class VectorFirstDiagramExtractor:
         del ocr_backend, device, dpi
         t0 = time.perf_counter()
         if not diagram_boxes_pt:
-            self.last_stats = RunStats(
-                load_sec=0.0,
-                infer_sec=0.0,
-                pages=1,
-                peak_rss_mb=peak_rss_mb(),
-                in_process=True,
-                warnings=(),
-            )
+            self.last_stats = _make_run_stats(t0, infer_sec=0.0)
             return []
 
         if is_raster:
@@ -1179,14 +1266,7 @@ class VectorFirstDiagramExtractor:
                 )
                 for box in diagram_boxes_pt
             ]
-            self.last_stats = RunStats(
-                load_sec=0.0,
-                infer_sec=round(time.perf_counter() - t0, 4),
-                pages=1,
-                peak_rss_mb=peak_rss_mb(),
-                in_process=True,
-                warnings=(),
-            )
+            self.last_stats = _make_run_stats(t0)
             return out
 
         if words is None:
@@ -1212,14 +1292,7 @@ class VectorFirstDiagramExtractor:
             )
             for box in diagram_boxes_pt
         ]
-        self.last_stats = RunStats(
-            load_sec=0.0,
-            infer_sec=round(time.perf_counter() - t0, 4),
-            pages=1,
-            peak_rss_mb=peak_rss_mb(),
-            in_process=True,
-            warnings=(),
-        )
+        self.last_stats = _make_run_stats(t0)
         return results
 
 

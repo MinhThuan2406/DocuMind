@@ -365,6 +365,149 @@ def test_golden_gt_loader_and_split_filtering():
             figures_mod.detect_figures = orig_detect
 
 
+def test_fork_shared_border_stub_arrow_and_label_regressions():
+    from pdf.diagrams import _is_dashed, _matches_arrow_poly, _ArrowPoly, extract_diagrams_on_page
+    from pdf.text import extract_words
+
+    # 1. _is_dashed handles zero-dash, dict, and bool.
+    assert _is_dashed({"dash": ([0, 0], 0)}) is False
+    assert _is_dashed({"dash": ([4, 3], 0)}) is True
+    assert _is_dashed({"dash": {"dash": [4, 2], "phase": 0}}) is True
+    assert _is_dashed({"dash": True}) is True
+
+    # 2. _matches_arrow_poly handles skewed 3-vertex triangles.
+    skew = _ArrowPoly(
+        centroid=(280.0, 199.33),
+        verts=[(285.0, 200.0), (277.0, 195.0), (278.0, 203.0)],
+        bbox=(277.0, 195.0, 285.0, 203.0),
+    )
+    assert _matches_arrow_poly((285.0, 200.0), (0.985, 0.174), skew) is True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # 3. Orthogonal degree-3 fork + stacked shared-border boxes + stub pin.
+        pdf_fork = Path(tmp) / "fork_shared.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=460.0, height=300.0)
+        # Stacked shared-border line boxes ("Top" and "Bot").
+        p.draw_line((40.0, 100.0), (120.0, 100.0))
+        p.draw_line((40.0, 145.0), (120.0, 145.0))
+        p.draw_line((40.0, 190.0), (120.0, 190.0))
+        p.draw_line((40.0, 100.0), (40.0, 145.0))
+        p.draw_line((120.0, 100.0), (120.0, 145.0))
+        p.draw_line((40.0, 145.0), (40.0, 190.0))
+        p.draw_line((120.0, 145.0), (120.0, 190.0))
+        p.insert_text((65.0, 125.0), "Top", fontsize=10.0)
+        p.insert_text((65.0, 170.0), "Bot", fontsize=10.0)
+        # 5pt stub pin off Top (must NOT emit self-loop).
+        p.draw_line((120.0, 110.0), (125.0, 110.0))
+        # Fork from Top -> B and C.
+        p.draw_line((120.0, 122.0), (190.0, 122.0))
+        p.draw_line((190.0, 122.0), (190.0, 65.0))
+        p.draw_line((190.0, 65.0), (260.0, 65.0))
+        p.draw_polygon([(260.0, 65.0), (252.0, 61.0), (252.0, 69.0)], fill=True)
+        p.draw_rect((260.0, 45.0, 340.0, 85.0))
+        p.insert_text((285.0, 68.0), "B", fontsize=10.0)
+        p.draw_line((190.0, 122.0), (190.0, 190.0))
+        p.draw_line((190.0, 190.0), (260.0, 190.0))
+        p.draw_polygon([(260.0, 190.0), (252.0, 186.0), (252.0, 194.0)], fill=True)
+        p.draw_rect((260.0, 170.0, 340.0, 210.0))
+        p.insert_text((285.0, 193.0), "C", fontsize=10.0)
+        b.save(pdf_fork)
+
+        with pdfplumber.open(str(pdf_fork)) as doc:
+            d = extract_diagrams_on_page(doc.pages[0], [(20.0, 30.0, 360.0, 230.0)], words=extract_words(doc.pages[0]))[0]
+        labels = {n.label: n.id for n in d.nodes}
+        assert {"Top", "Bot", "B", "C"}.issubset(labels.keys()), labels
+        assert not any(e.source_node_id == e.target_node_id for e in d.edges)
+        pairs = {(e.source_node_id, e.target_node_id) for e in d.edges}
+        assert (labels["Top"], labels["B"]) in pairs and (labels["Top"], labels["C"]) in pairs, pairs
+
+        # 4. Bidir text_node at source + group header not stealing top-routed edge label + near-edge text_element_ids.
+        pdf_lbl = Path(tmp) / "bidir_lbl.pdf"
+        b2 = TestPdfBuilder()
+        p2 = b2.new_page(width=480.0, height=320.0)
+        p2.draw_rect((40.0, 40.0, 440.0, 270.0))
+        p2.insert_text((55.0, 60.0), "MyGroup", fontsize=10.0, bold=True)
+        p2.draw_rect((80.0, 140.0, 170.0, 190.0))
+        p2.insert_text((100.0, 145.0), "NearEdge", fontsize=9.0)
+        p2.draw_rect((300.0, 140.0, 390.0, 190.0))
+        p2.insert_text((325.0, 168.0), "Dst", fontsize=10.0)
+        p2.draw_line((125.0, 140.0), (125.0, 110.0))
+        p2.draw_line((125.0, 110.0), (345.0, 110.0))
+        p2.draw_line((345.0, 110.0), (345.0, 140.0))
+        p2.draw_polygon([(345.0, 140.0), (341.0, 132.0), (349.0, 132.0)], fill=True)
+        p2.insert_text((215.0, 102.0), "trigger", fontsize=9.0)
+        p2.insert_text((80.0, 232.0), "SrcLabel", fontsize=10.0)
+        p2.draw_line((135.0, 228.0), (295.0, 228.0))
+        p2.draw_polygon([(135.0, 228.0), (143.0, 224.0), (143.0, 232.0)], fill=True)
+        p2.draw_polygon([(295.0, 228.0), (287.0, 224.0), (287.0, 232.0)], fill=True)
+        p2.draw_rect((295.0, 208.0, 390.0, 248.0))
+        p2.insert_text((325.0, 232.0), "EndBox", fontsize=10.0)
+        b2.save(pdf_lbl)
+
+        ir2 = _extract_ir_with_fig_boxes(pdf_lbl, [FigureBox((30.0, 30.0, 450.0, 280.0), "figure", "layout_picture", 0.95)], diagrams=True)
+        d2 = ir2["diagrams"][0]
+        assert check_diagram_integrity(d2) == []
+        assert any(g["label"] == "MyGroup" for g in d2["groups"]), d2["groups"]
+        assert any(e["label"] == "trigger" for e in d2["edges"]), d2["edges"]
+        assert any(n["shape_type"] == "text_node" and "SrcLabel" in n["label"] for n in d2["nodes"]), d2["nodes"]
+        near = next(n for n in d2["nodes"] if "NearEdge" in n["label"])
+        assert near["text_element_ids"], near
+
+
+def test_bench_gt_diagrams_ignores_unrelated_zero_iou_diagram_and_checks_integrity():
+    from pdf.eval.diagrams import bench_gt_diagrams, check_diagram_integrity
+    from pdf.models import FigureBox
+    import pdf.figures as figures_mod
+
+    bad = {
+        "nodes": [{"id": "n1", "parent_group_id": "g1", "text_element_ids": ["", "elem_0001", "elem_0001"]}],
+        "edges": [
+            {"id": "e1", "source_node_id": "n1", "target_node_id": "n1"},
+            {"id": "e1", "source_node_id": "n1", "target_node_id": "n1"},
+        ],
+        "groups": [{"id": "g1", "member_node_ids": []}],
+    }
+    viols = check_diagram_integrity(bad)
+    assert any("duplicate edge id" in v for v in viols)
+    assert any("invalid text_element_id" in v for v in viols)
+    assert any("duplicate text_element_id" in v for v in viols)
+    assert any("missing from member_node_ids" in v for v in viols)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "two_regions.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=500.0, height=600.0)
+        p.draw_rect((60.0, 60.0, 160.0, 110.0))
+        p.insert_text((90.0, 90.0), "Alpha", fontsize=10.0)
+        b.save(pdf_path)
+
+        gt_json = tmp_path / "gt.json"
+        gt_json.write_text(
+            json.dumps([{
+                "name": "disjoint",
+                "split": "dev",
+                "pdf_path": str(pdf_path),
+                "page": 1,
+                "diagram": {
+                    "bbox": [60.0, 400.0, 260.0, 520.0],
+                    "nodes": [{"id": "g1", "label": "Missing", "bbox": [70.0, 410.0, 150.0, 450.0], "shape_type": "rect"}],
+                    "edges": [],
+                    "groups": [],
+                },
+            }]),
+            encoding="utf-8",
+        )
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda _p, pages, **_kw: {pno: [FigureBox((50.0, 50.0, 250.0, 150.0), "figure", "layout_picture", 0.95)] for pno in pages}
+        try:
+            res = bench_gt_diagrams(gt_path=gt_json, split="dev")
+        finally:
+            figures_mod.detect_figures = orig_detect
+        assert res["fixtures"][0]["node_fp"] == 0 and res["fixtures"][0]["node_fn"] == 1
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

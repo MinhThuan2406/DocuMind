@@ -126,8 +126,16 @@ def check_diagram_integrity(diagram_dict: dict[str, Any]) -> list[str]:
         group_ids.add(gid)
         parent_map[gid] = group.get("parent_group_id")
 
+    edge_ids: set[str] = set()
     for edge in edges:
-        eid = edge.get("id", "?")
+        eid = edge.get("id")
+        if not eid:
+            violations.append("edge missing id")
+            eid = "?"
+        else:
+            if eid in edge_ids:
+                violations.append(f"duplicate edge id {eid!r}")
+            edge_ids.add(eid)
         src = edge.get("source_node_id")
         dst = edge.get("target_node_id")
         if src is not None and src not in node_ids:
@@ -135,19 +143,44 @@ def check_diagram_integrity(diagram_dict: dict[str, Any]) -> list[str]:
         if dst is not None and dst not in node_ids:
             violations.append(f"edge {eid!r} target_node_id {dst!r} missing")
 
+    node_parent: dict[str, str | None] = {}
     for node in nodes:
+        nid = node.get("id", "?")
         pg = node.get("parent_group_id")
         if pg is not None and pg not in group_ids:
-            violations.append(f"node {node.get('id', '?')!r} parent_group_id {pg!r} missing")
+            violations.append(f"node {nid!r} parent_group_id {pg!r} missing")
+        if nid in node_ids:
+            node_parent[nid] = pg
+        tids = node.get("text_element_ids") or ()
+        seen_tids: set[str] = set()
+        for tid in tids:
+            if not isinstance(tid, str) or not tid:
+                violations.append(f"node {nid!r} has invalid text_element_id {tid!r}")
+            elif tid in seen_tids:
+                violations.append(f"node {nid!r} has duplicate text_element_id {tid!r}")
+            else:
+                seen_tids.add(tid)
 
+    group_members: dict[str, set[str]] = {}
     for group in groups:
         gid = group.get("id", "?")
+        members: set[str] = set()
         for mid in group.get("member_node_ids") or ():
             if mid not in node_ids:
                 violations.append(f"group {gid!r} member_node_id {mid!r} missing")
+            else:
+                members.add(mid)
+                if node_parent.get(mid) != gid:
+                    violations.append(f"group {gid!r} member_node_id {mid!r} parent_group_id mismatch")
+        if gid in group_ids:
+            group_members[gid] = members
         pg = group.get("parent_group_id")
         if pg is not None and pg not in group_ids:
             violations.append(f"group {gid!r} parent_group_id {pg!r} missing")
+
+    for nid, pg in node_parent.items():
+        if pg is not None and pg in group_members and nid not in group_members[pg]:
+            violations.append(f"node {nid!r} parent_group_id {pg!r} missing from member_node_ids")
 
     reported_cycles: set[frozenset[str]] = set()
     for gid in parent_map:
@@ -269,7 +302,7 @@ def diagram_graph_metrics(
     if label_total > 0:
         text_to_shape_acc = label_exact / label_total
     else:
-        text_to_shape_acc = 1.0 if (node_tp + node_fp + node_fn == 0) else 0.0
+        text_to_shape_acc = 0.0
 
     pred_to_gt_id = {
         pred_nodes[pi]["id"]: gt_nodes[gi]["id"]
@@ -655,15 +688,21 @@ def bench_gt_diagrams(
         raise FileNotFoundError(f"no diagram GT entries found for split={split!r}")
 
     rows: list[dict[str, Any]] = []
+    ir_cache: dict[Path, dict[str, Any]] = {}
     t0 = time.perf_counter()
     for entry in entries:
-        ir = extract_ir(entry["pdf_path"], figures=True, ocr=False, tables=False, diagrams=True, device=device)
+        pdf_path = entry["pdf_path"]
+        ir = ir_cache.get(pdf_path)
+        if ir is None:
+            ir = extract_ir(pdf_path, figures=True, ocr=False, tables=False, diagrams=True, device=device)
+            ir_cache[pdf_path] = ir
         page_diags = [d for d in ir.get("diagrams", ()) if int(d.get("page", 0)) == entry["page"]]
         gt_diag = entry["gt_diagram"]
         if page_diags:
             gt_box = gt_diag.get("bbox")
             if gt_box and len(gt_box) == 4:
-                pred_dict = max(page_diags, key=lambda d: iou(d["bbox"], gt_box))
+                best = max(page_diags, key=lambda d: iou(d["bbox"], gt_box))
+                pred_dict = best if iou(best["bbox"], gt_box) >= 0.3 else {"nodes": [], "edges": [], "groups": []}
             else:
                 pred_dict = page_diags[0]
         else:

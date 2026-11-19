@@ -92,7 +92,7 @@ def _link_diagram_text_elements(
         best_area: float | None = None
         for area, node in node_boxes:
             nb = node["bbox"]
-            if nb[0] <= cx <= nb[2] and nb[1] <= cy <= nb[3]:
+            if nb[0] - 1.5 <= cx <= nb[2] + 1.5 and nb[1] - 1.5 <= cy <= nb[3] + 1.5:
                 if best_area is None or area < best_area:
                     best_area = area
                     best_node = node
