@@ -7,23 +7,16 @@ from typing import Any
 
 import cv2
 import numpy as np
-import pymupdf
+import pypdfium2 as pdfium
 from PIL import Image
 
+from .._pdf_io import render_bgr
 from ..layout.detector import clamp_and_rescale
 from ..layout.postprocess import clusters_to_items, postprocess_layout
 from .base import LayoutDetector, PageLayout, RunStats
 from .rss import peak_rss_mb
 
 _PNG_DEFAULT_DPI = 96.012
-
-
-def render_bgr(page: pymupdf.Page, dpi: int) -> tuple[np.ndarray, tuple[int, int]]:
-    zoom = dpi / 72.0
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    return bgr, (pix.width, pix.height)
 
 
 def run_layout_items(
@@ -75,7 +68,7 @@ class ImageLayoutBackend:
             if ensure():
                 load_sec = time.perf_counter() - t_load0
 
-        doc = pymupdf.open(str(pdf_path))
+        doc = pdfium.PdfDocument(str(pdf_path))
         t0 = time.perf_counter()
         out: dict[int, PageLayout] = {}
         try:

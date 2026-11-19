@@ -7,10 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.backends import LayoutCache  # noqa: E402
 from pdf.layout import (  # noqa: E402
     LayoutItem,
@@ -76,11 +76,10 @@ def test_pipeline_works_with_docling_blocked():
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             native_pdf = tmp_path / "native.pdf"
-            doc = pymupdf.open()
-            p = doc.new_page(width=600, height=800)
+            b = TestPdfBuilder()
+            p = b.new_page(width=600, height=800)
             p.insert_text((50, 60), "Native text without docling installed", fontsize=12)
-            doc.save(str(native_pdf))
-            doc.close()
+            b.save(native_pdf)
 
             ir_native = extract_ir(native_pdf, figures=True, ocr=True)
             assert ir_native["elements"] and "docling" not in sys.modules or sys.modules["docling"] is None
@@ -90,11 +89,10 @@ def test_pipeline_works_with_docling_blocked():
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             raster_pdf = tmp_path / "raster.pdf"
-            rdoc = pymupdf.open()
-            rp = rdoc.new_page(width=600, height=200)
-            rp.insert_image(rp.rect, stream=buf.getvalue())
-            rdoc.save(str(raster_pdf))
-            rdoc.close()
+            rb = TestPdfBuilder()
+            rp = rb.new_page(width=600, height=200)
+            rp.insert_image((0, 0, 600, 200), stream=buf.getvalue())
+            rb.save(raster_pdf)
 
             ir_raster = extract_ir(raster_pdf, figures=False, ocr=True)
             assert any("RAPIDOCR" in e["text"].upper() for e in ir_raster["elements"] if e["type"] == "text")

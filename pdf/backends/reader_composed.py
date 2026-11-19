@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
-import pymupdf
+import pypdfium2 as pdfium
 from PIL import Image
 
 from ..layout import Cluster, postprocess_layout
@@ -91,12 +91,11 @@ class ComposedReader:
         self.dpi = dpi
         self.last_stats: RunStats | None = None
 
-    def _read_single_page(self, pdf_page: pymupdf.Page) -> RasterPage:
-        page_w_pt = float(pdf_page.rect.width)
-        page_h_pt = float(pdf_page.rect.height)
+    def _read_single_page(self, pdf_page: pdfium.PdfPage) -> RasterPage:
+        page_w_pt, page_h_pt = pdf_page.get_size()
+        page_w_pt, page_h_pt = float(page_w_pt), float(page_h_pt)
         zoom = self.dpi / 72.0
-        pix = pdf_page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        image = pdf_page.render(scale=zoom).to_pil().convert("RGB")
 
         iw, ih = image.size
         sx = page_w_pt / iw
@@ -188,7 +187,7 @@ class ComposedReader:
                     load_sec += time.perf_counter() - t_load0
 
         t0 = time.perf_counter()
-        doc_pdf = pymupdf.open(str(pdf_path))
+        doc_pdf = pdfium.PdfDocument(str(pdf_path))
         out: dict[int, RasterPage] = {}
         try:
             for pno in page_list:

@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pymupdf
+import pdfplumber
 
+from ._pdf_io import extract_toc, extract_words_raw, page_bbox
 from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
-from .backends import FigureGrouper, LayoutBackend, PageReader
+from .backends import FigureGrouper, LayoutBackend, PageReader, TableExtractor
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
@@ -15,11 +16,6 @@ from .text import extract_words
 
 def _round_bbox(bbox: BBox) -> list[float]:
     return [round(v, 3) + 0.0 for v in bbox]
-
-
-def _page_rect(page: pymupdf.Page) -> BBox:
-    r = page.rect
-    return (float(r.x0), float(r.y0), float(r.x1), float(r.y1))
 
 
 def _element_dict(
@@ -63,33 +59,37 @@ def extract_ir(
     *,
     figures: bool = True,
     ocr: bool = True,
+    tables: bool = False,
     layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr-onnx",
+    table_backend: str | TableExtractor = "auto",
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
 ) -> dict[str, Any]:
     pdf_path = Path(path)
     source_file = pdf_path.name
-    doc = pymupdf.open(str(pdf_path))
+    toc = extract_toc(pdf_path) if structure else ()
 
-    try:
-        toc = doc.get_toc() if structure else ()
+    with pdfplumber.open(str(pdf_path)) as doc:
         profiles: list[PageProfile] = []
+        raw_words_by_page: dict[int, list[dict[str, Any]]] = {}
         page_sizes: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
         unreadable_pages: list[dict[str, Any]] = []
 
-        for idx, page in enumerate(doc, start=1):
-            prof = classify_page(page, page_number=idx)
+        for idx, page in enumerate(doc.pages, start=1):
+            raw_words = extract_words_raw(page, with_style=True)
+            raw_words_by_page[idx] = raw_words
+            prof = classify_page(page, page_number=idx, raw_words=raw_words)
             profiles.append(prof)
             page_sizes.append({
                 "number": idx,
                 "kind": prof.kind,
-                "width_pt": round(float(page.rect.width), 3),
-                "height_pt": round(float(page.rect.height), 3),
+                "width_pt": round(float(page.width), 3),
+                "height_pt": round(float(page.height), 3),
                 "suspect_ocr_layer": prof.suspect_ocr_layer,
                 "figure_candidate": prof.figure_candidate,
             })
@@ -126,31 +126,58 @@ def extract_ir(
                 )
 
         elements: list[dict[str, Any]] = []
+        extracted_tables: list[dict[str, Any]] = []
         elem_counter = 0
+        tbl_counter = 0
 
         for prof in profiles:
-            page = doc[prof.page - 1]
+            page = doc.pages[prof.page - 1]
+            use_ocr = _uses_ocr_fallback(prof, ocr) or prof.kind == "raster"
             words = (
                 []
-                if _uses_ocr_fallback(prof, ocr) or prof.kind == "raster"
-                else extract_words(page, min_font_size=min_font_size)
+                if use_ocr
+                else extract_words(page, min_font_size=min_font_size, raw_words=raw_words_by_page[prof.page])
             )
             assembled = assemble_page(
                 prof,
                 words,
-                _page_rect(page),
+                page_bbox(page),
                 figures_by_page.get(prof.page, ()),
                 raster_by_page.get(prof.page),
             )
+            page_elems: list[dict[str, Any]] = []
             page_elem_ids: list[str] = []
             for ro, item in enumerate(assembled):
                 elem_counter += 1
                 elem_id = f"elem_{elem_counter:04d}"
                 page_elem_ids.append(elem_id)
                 parent_id = None if item.parent_index is None else page_elem_ids[item.parent_index]
-                elements.append(_element_dict(elem_id, prof.page, ro, source_file, item, parent_id))
-    finally:
-        doc.close()
+                page_elems.append(_element_dict(elem_id, prof.page, ro, source_file, item, parent_id))
+
+            if tables:
+                tbl_elems = [e for e in page_elems if e["type"] == "table" and e["level"] == 1]
+                if tbl_elems:
+                    from .tables import extract_tables_on_page, table_to_ir_dict
+
+                    parsed_tables = extract_tables_on_page(
+                        page,
+                        [tuple(e["bbox"]) for e in tbl_elems],
+                        words=words,
+                        is_raster=use_ocr,
+                        extractor=table_backend,
+                        ocr_backend=ocr_backend,
+                        device=device,
+                    )
+                    for tbl_elem, parsed in zip(tbl_elems, parsed_tables):
+                        if parsed.num_rows == 0 or parsed.num_cols == 0:
+                            continue
+                        tbl_counter += 1
+                        tbl_id = f"tbl_{tbl_counter:04d}"
+                        tbl_elem["metadata"]["table_id"] = tbl_id
+                        tbl_elem["text"] = f"[Table {tbl_id}: {parsed.num_rows}x{parsed.num_cols}]"
+                        extracted_tables.append(table_to_ir_dict(tbl_id, tbl_elem["id"], prof.page, source_file, parsed))
+
+            elements.extend(page_elems)
 
     tag_running_headers_footers(elements, {p["number"]: float(p["height_pt"]) for p in page_sizes})
 
@@ -160,14 +187,14 @@ def extract_ir(
         "doc_type": "pdf",
         "metadata": {
             "coord_unit": "pt",
-            "parser": f"pdf (pymupdf {pymupdf.__version__})",
+            "parser": f"pdf (pdfplumber {pdfplumber.__version__})",
             "reading_order_status": "xy_cut",
             "pages": page_sizes,
             "unreadable_pages": unreadable_pages,
             "warnings": warnings,
         },
         "elements": elements,
-        "tables": [],
+        "tables": extracted_tables,
         "diagrams": [],
     }
     if structure:

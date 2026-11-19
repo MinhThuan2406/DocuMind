@@ -1,0 +1,634 @@
+import inspect
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from PIL import Image  # noqa: E402
+
+import pdf.ir as ir_mod  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
+from pdf.backends import TableExtractor, get, register, registered, reset_cache  # noqa: E402
+from pdf.backends.table_auto import AutoTableExtractor, _row_y_spans_pt, refine_table_headers  # noqa: E402
+from pdf.backends.tatr_onnx import objects_to_table, table_to_html  # noqa: E402
+from pdf.eval.tables import teds_score  # noqa: E402
+from pdf.models import ExtractedTable, FigureBox, TableCell  # noqa: E402
+from pdf.ocr.types import OcrLine  # noqa: E402
+from pdf.tables import extract_tables_on_page  # noqa: E402
+
+
+def test_objects_to_table_grid_headers_and_merged_cells():
+    # 3x3 table in a 300x180 crop: row 0 is header with col 1-2 merged; col 0 rows 1-2 merged.
+    objects = [
+        ("table", (0.0, 0.0, 300.0, 180.0), 0.99),
+        ("table column", (0.0, 0.0, 98.0, 180.0), 0.96),
+        ("table column", (102.0, 0.0, 198.0, 180.0), 0.95),
+        ("table column", (202.0, 0.0, 300.0, 180.0), 0.94),
+        # Duplicate overlapping row should be deduplicated cleanly.
+        ("table row", (0.0, 0.0, 300.0, 58.0), 0.97),
+        ("table row", (0.0, 4.0, 300.0, 56.0), 0.70),
+        ("table row", (0.0, 62.0, 300.0, 118.0), 0.95),
+        ("table row", (0.0, 122.0, 300.0, 180.0), 0.93),
+        ("table column header", (0.0, 0.0, 300.0, 58.0), 0.96),
+        ("table spanning cell", (102.0, 0.0, 300.0, 58.0), 0.92),
+        ("table spanning cell", (0.0, 62.0, 98.0, 180.0), 0.90),
+    ]
+    tokens = [
+        ("Metric", (10.0, 15.0, 55.0, 30.0)),
+        ("Values", (150.0, 15.0, 210.0, 30.0)),
+        ("GroupA", (20.0, 90.0, 70.0, 110.0)),
+        ("10", (130.0, 75.0, 150.0, 95.0)),
+        ("20", (230.0, 75.0, 250.0, 95.0)),
+        ("30", (130.0, 135.0, 150.0, 155.0)),
+        ("40", (230.0, 135.0, 250.0, 155.0)),
+    ]
+    tbl = objects_to_table(objects, (300, 180), (0.0, 0.0, 300.0, 180.0), tokens)
+    assert tbl.num_rows == 3 and tbl.num_cols == 3
+    assert len(tbl.cells) == 7
+
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 0)].text == "Metric" and by_rc[(0, 0)].is_header
+    assert by_rc[(0, 1)].colspan == 2 and by_rc[(0, 1)].rowspan == 1 and by_rc[(0, 1)].text == "Values"
+    assert by_rc[(1, 0)].rowspan == 2 and by_rc[(1, 0)].colspan == 1 and by_rc[(1, 0)].text == "GroupA"
+    assert by_rc[(2, 2)].text == "40" and not by_rc[(2, 2)].is_header
+
+    out_html = table_to_html(tbl)
+    assert '<th colspan="2">Values</th>' in out_html
+    assert '<td rowspan="2">GroupA</td>' in out_html
+
+
+def test_teds_metric_exact_and_span_difference():
+    gt = '<table><tr><td>A</td><td colspan="2">B</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>'
+    same = "<table><tr><th>A</th><th colspan='2'>B</th></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>"
+    unmerged = "<table><tr><td>A</td><td>B</td><td></td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>"
+    assert teds_score(same, gt, structure_only=True) == 1.0
+    assert teds_score(same, gt, structure_only=False) == 1.0
+    assert 0.5 < teds_score(unmerged, gt, structure_only=True) < 1.0
+
+
+def test_pdfplumber_table_extractor_and_extract_ir_tables_true():
+    assert "tatr-onnx" in registered("table") and "pdfplumber" in registered("table")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "tbl.pdf"
+        b = TestPdfBuilder()
+        page = b.new_page(width=400, height=300)
+        # Draw a crisp 3x3 grid (8 lines >= MIN_CANDIDATE_DRAWINGS).
+        for x in (40, 120, 200, 280):
+            page.draw_line((x, 50), (x, 170), width=0.5)
+        for y in (50, 90, 130, 170):
+            page.draw_line((40, y), (280, y), width=0.5)
+        page.insert_text((50, 74), "Key", fontsize=10)
+        page.insert_text((130, 74), "Val", fontsize=10)
+        page.insert_text((210, 74), "Unit", fontsize=10)
+        page.insert_text((50, 114), "Alpha", fontsize=10)
+        page.insert_text((130, 114), "42", fontsize=10)
+        page.insert_text((210, 114), "ms", fontsize=10)
+        page.insert_text((50, 154), "Beta", fontsize=10)
+        page.insert_text((130, 154), "99", fontsize=10)
+        page.insert_text((210, 154), "kb", fontsize=10)
+        b.save(pdf_path)
+
+        import pdf.figures as figures_mod
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda _p, pages, **_kw: {
+            p: [FigureBox((38.0, 48.0, 282.0, 172.0), "table", "layout_table", 0.95)] for p in pages
+        }
+        try:
+            ir = ir_mod.extract_ir(pdf_path, figures=True, ocr=False, tables=True, table_backend="pdfplumber")
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+    assert json.loads(json.dumps(ir)) == ir
+    assert len(ir["tables"]) == 1
+    tbl = ir["tables"][0]
+    assert tbl["id"] == "tbl_0001"
+    assert tbl["num_rows"] == 3 and tbl["num_cols"] == 3
+    assert [c["text"] for c in tbl["cells"]] == ["Key", "Val", "Unit", "Alpha", "42", "ms", "Beta", "99", "kb"]
+
+    tbl_elems = [e for e in ir["elements"] if e["type"] == "table"]
+    assert len(tbl_elems) == 1
+    assert tbl_elems[0]["metadata"]["table_id"] == "tbl_0001"
+    assert tbl_elems[0]["text"] == "[Table tbl_0001: 3x3]"
+
+    # Custom TableExtractor via registry works cleanly through extract_ir.
+    class _FakeTableExtractor:
+        name = "fake_tbl"
+        last_stats = None
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            del image, tokens
+            return objects_to_table(
+                [
+                    ("table row", (0.0, 0.0, 100.0, 50.0), 0.9),
+                    ("table column", (0.0, 0.0, 100.0, 50.0), 0.9),
+                ],
+                (100, 50),
+                table_bbox_pt,
+                [("OnlyCell", (10.0, 10.0, 50.0, 30.0))],
+            )
+
+    register("table", "fake_tbl", lambda **_kw: _FakeTableExtractor())
+    assert "fake_tbl" in registered("table")
+
+
+def test_pdfplumber_merged_cells_rowspan_and_colspan():
+    import pdfplumber
+    from pdf.backends import get
+    from pdf.tables import extract_tables_on_page
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "merged.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        # 3x3 grid: row 0 merges cols 1..2; col 0 merges rows 1..2.
+        p.draw_line((40, 50), (280, 50), width=0.5)
+        p.draw_line((40, 90), (280, 90), width=0.5)
+        p.draw_line((120, 130), (280, 130), width=0.5)
+        p.draw_line((40, 170), (280, 170), width=0.5)
+        p.draw_line((40, 50), (40, 170), width=0.5)
+        p.draw_line((120, 50), (120, 170), width=0.5)
+        p.draw_line((200, 90), (200, 170), width=0.5)
+        p.draw_line((280, 50), (280, 170), width=0.5)
+        p.insert_text((50, 74), "Hdr", fontsize=10)
+        p.insert_text((160, 74), "WideSpan", fontsize=10)
+        p.insert_text((50, 114), "TallSpan", fontsize=10)
+        p.insert_text((135, 114), "A1", fontsize=10)
+        p.insert_text((215, 114), "B1", fontsize=10)
+        p.insert_text((135, 154), "A2", fontsize=10)
+        p.insert_text((215, 154), "B2", fontsize=10)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tables = extract_tables_on_page(
+                doc.pages[0],
+                [(38.0, 48.0, 282.0, 172.0)],
+                extractor=get("table", "pdfplumber"),
+            )
+    tbl = tables[0]
+    assert tbl.num_rows == 3 and tbl.num_cols == 3
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 1)].text == "WideSpan" and by_rc[(0, 1)].colspan == 2 and by_rc[(0, 1)].rowspan == 1
+    assert by_rc[(1, 0)].text == "TallSpan" and by_rc[(1, 0)].rowspan == 2 and by_rc[(1, 0)].colspan == 1
+    assert all(c.col + c.colspan <= tbl.num_cols and c.row + c.rowspan <= tbl.num_rows for c in tbl.cells)
+
+
+def test_auto_backend_registration_protocol_and_defaults():
+    assert "auto" in registered("table")
+    ext = get("table", "auto")
+    assert ext.name == "auto"
+    assert ext.last_stats is None
+    assert isinstance(ext, TableExtractor)
+    assert inspect.signature(ir_mod.extract_ir).parameters["table_backend"].default == "auto"
+    assert inspect.signature(ir_mod.extract_ir).parameters["tables"].default is False
+    assert inspect.signature(extract_tables_on_page).parameters["extractor"].default == "auto"
+    assert inspect.signature(extract_tables_on_page).parameters["words"].default is None
+
+
+def test_auto_bordered_multirow_projected_headers_and_staggered_rowspan():
+    import pdfplumber
+
+    # Synthetic check for _row_y_spans_pt linear interpolation on a missing interior boundary.
+    synth = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 2, 1, "A", (0.0, 0.0, 50.0, 60.0), True),
+            TableCell(0, 1, 2, 1, "B", (50.0, 0.0, 100.0, 60.0), True),
+            TableCell(2, 0, 1, 1, "C", (0.0, 60.0, 50.0, 90.0), False),
+            TableCell(2, 1, 1, 1, "D", (50.0, 60.0, 100.0, 90.0), False),
+        ),
+        source="pdfplumber",
+        confidence=1.0,
+    )
+    assert _row_y_spans_pt(synth) == [(0.0, 30.0), (30.0, 60.0), (60.0, 90.0)]
+
+    # Verify body rowspan crossing a projected row header stays non-header.
+    cross_tbl = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 2, "Hdr", (0.0, 0.0, 100.0, 30.0), True),
+            TableCell(1, 0, 2, 1, "SpanBody", (0.0, 30.0, 50.0, 90.0), False),
+            TableCell(1, 1, 1, 1, "Body1", (50.0, 30.0, 100.0, 60.0), False),
+            TableCell(2, 1, 1, 1, "GroupB", (50.0, 60.0, 100.0, 90.0), False),
+        ),
+        source="pdfplumber",
+        confidence=1.0,
+    )
+    refined_cross = refine_table_headers(
+        cross_tbl,
+        [
+            ("table column header", (0.0, 0.0, 100.0, 30.0), 0.9),
+            ("table projected row header", (0.0, 60.0, 100.0, 90.0), 0.9),
+        ],
+        (100, 90),
+        (0.0, 0.0, 100.0, 90.0),
+    )
+    cross_by_rc = {(c.row, c.col): c for c in refined_cross.cells}
+    assert cross_by_rc[(0, 0)].is_header is True
+    assert cross_by_rc[(1, 0)].is_header is False
+    assert cross_by_rc[(2, 1)].is_header is True
+
+    # Real pdfplumber table with multi-row header (rowspan=2 + colspan=2), projected row header, and staggered body rowspans.
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "staggered.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=420, height=300)
+        # Rows at y = 40, 70, 100, 130, 160, 190, 220 (6 rows); cols at x = 40, 120, 200, 280, 360 (4 cols).
+        for y in (40, 100, 130, 220):
+            p.draw_line((40, y), (360, y), width=0.5)
+        p.draw_line((120, 70), (280, 70), width=0.5)
+        p.draw_line((120, 160), (200, 160), width=0.5)
+        p.draw_line((280, 160), (360, 160), width=0.5)
+        p.draw_line((40, 190), (120, 190), width=0.5)
+        p.draw_line((200, 190), (280, 190), width=0.5)
+
+        p.draw_line((40, 40), (40, 220), width=0.5)
+        p.draw_line((360, 40), (360, 220), width=0.5)
+        for x in (120, 280):
+            p.draw_line((x, 40), (x, 100), width=0.5)
+            p.draw_line((x, 130), (x, 220), width=0.5)
+        p.draw_line((200, 70), (200, 100), width=0.5)
+        p.draw_line((200, 130), (200, 220), width=0.5)
+
+        p.insert_text((50, 74), "Param", fontsize=9)
+        p.insert_text((170, 58), "Limits", fontsize=9)
+        p.insert_text((295, 74), "Unit", fontsize=9)
+        p.insert_text((140, 88), "Min", fontsize=9)
+        p.insert_text((220, 88), "Max", fontsize=9)
+        p.insert_text((160, 118), "Section A", fontsize=9)
+        p.insert_text((55, 164), "S0", fontsize=9)
+        p.insert_text((140, 148), "1", fontsize=9)
+        p.insert_text((215, 164), "S2", fontsize=9)
+        p.insert_text((300, 148), "ms", fontsize=9)
+        p.insert_text((55, 208), "Tail0", fontsize=9)
+        p.insert_text((140, 194), "2", fontsize=9)
+        p.insert_text((220, 208), "3", fontsize=9)
+        p.insert_text((300, 194), "kb", fontsize=9)
+        b.save(pdf_path)
+
+        class _FakeTatr:
+            def detect_objects(self, crop: Image.Image):
+                cw, ch = float(crop.width), float(crop.height)
+                # Crop bbox is (40-4, 40-4, 360+4, 220+4) -> height 188 pt (y from 36 to 224).
+                def py(y_pt: float) -> float:
+                    return (y_pt - 36.0) / 188.0 * ch
+
+                return [
+                    ("table", (0.0, py(40.0), cw, py(220.0)), 0.99),
+                    ("table row", (0.0, py(40.0), cw, py(70.0)), 0.96),
+                    ("table row", (0.0, py(70.0), cw, py(100.0)), 0.95),
+                    ("table row", (0.0, py(100.0), cw, py(130.0)), 0.94),
+                    ("table row", (0.0, py(130.0), cw, py(160.0)), 0.93),
+                    ("table row", (0.0, py(160.0), cw, py(190.0)), 0.92),
+                    ("table row", (0.0, py(190.0), cw, py(220.0)), 0.91),
+                    ("table column header", (0.0, py(40.0), cw, py(100.0)), 0.97),
+                    ("table projected row header", (0.0, py(100.0), cw, py(130.0)), 0.95),
+                ]
+
+        ext = AutoTableExtractor(tatr_extractor=_FakeTatr())
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tables = extract_tables_on_page(
+                doc.pages[0],
+                [(38.0, 38.0, 362.0, 222.0)],
+                extractor=ext,
+            )
+
+    tbl = tables[0]
+    assert tbl.source == "auto" and tbl.confidence == 1.0
+    assert tbl.num_rows == 6 and tbl.num_cols == 4
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 0)].rowspan == 2 and by_rc[(0, 0)].is_header is True
+    assert by_rc[(0, 1)].colspan == 2 and by_rc[(0, 1)].is_header is True
+    assert by_rc[(1, 1)].is_header is True and by_rc[(1, 2)].is_header is True
+    assert by_rc[(2, 0)].colspan == 4 and by_rc[(2, 0)].is_header is True
+    assert by_rc[(3, 0)].rowspan == 2 and by_rc[(3, 0)].is_header is False
+    assert by_rc[(4, 1)].rowspan == 2 and by_rc[(4, 1)].is_header is False
+    assert by_rc[(3, 2)].rowspan == 2 and by_rc[(3, 2)].is_header is False
+    assert by_rc[(4, 3)].rowspan == 2 and by_rc[(4, 3)].is_header is False
+
+
+def test_auto_bordered_key_value_no_header_and_column_only_fallback():
+    import pdfplumber
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "kv.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        for x in (40, 160, 280):
+            p.draw_line((x, 50), (x, 140), width=0.5)
+        for y in (50, 80, 110, 140):
+            p.draw_line((40, y), (280, y), width=0.5)
+        p.insert_text((50, 68), "Name", fontsize=10)
+        p.insert_text((170, 68), "DocuMind", fontsize=10)
+        p.insert_text((50, 98), "Version", fontsize=10)
+        p.insert_text((170, 98), "2.0", fontsize=10)
+        p.insert_text((50, 128), "Mode", fontsize=10)
+        p.insert_text((170, 128), "Auto", fontsize=10)
+        b.save(pdf_path)
+
+        class _TatrObjects:
+            def __init__(self, objs):
+                self._objs = objs
+
+            def detect_objects(self, _crop: Image.Image):
+                return self._objs
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            page = doc.pages[0]
+            kv_ext = AutoTableExtractor(
+                tatr_extractor=_TatrObjects([
+                    ("table", (0.0, 0.0, 200.0, 100.0), 0.99),
+                    ("table row", (0.0, 0.0, 200.0, 33.0), 0.95),
+                    ("table row", (0.0, 33.0, 200.0, 66.0), 0.94),
+                    ("table row", (0.0, 66.0, 200.0, 100.0), 0.93),
+                ])
+            )
+            kv_tbl = extract_tables_on_page(page, [(38.0, 48.0, 282.0, 142.0)], extractor=kv_ext)[0]
+            assert kv_tbl.source == "auto" and kv_tbl.confidence == 1.0
+            assert all(not c.is_header for c in kv_tbl.cells)
+
+            for col_only_objs in (
+                [],
+                [("table", (0.0, 0.0, 200.0, 100.0), 0.95), ("table column", (0.0, 0.0, 100.0, 100.0), 0.90)],
+            ):
+                fb_ext = AutoTableExtractor(tatr_extractor=_TatrObjects(col_only_objs))
+                fb_tbl = extract_tables_on_page(page, [(38.0, 48.0, 282.0, 142.0)], extractor=fb_ext)[0]
+                assert fb_tbl.source == "auto" and fb_tbl.confidence == 1.0
+                assert all(c.is_header == (c.row == 0) for c in fb_tbl.cells)
+
+
+def test_auto_borderless_0x0_and_1x1_and_zebra_nx1_fallback_to_tatr():
+    import pdfplumber
+
+    def _make_tatr(cols: int):
+        class _FakeTatr:
+            def __init__(self):
+                self.detect_calls = 0
+
+            def _objs_for(self, w: int, h: int):
+                cw, ch = float(w), float(h)
+                objs = [
+                    ("table", (0.0, 0.0, cw, ch), 0.91),
+                    ("table row", (0.0, 0.0, cw, ch * 0.5), 0.90),
+                    ("table row", (0.0, ch * 0.5, cw, ch), 0.89),
+                    ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.92),
+                ]
+                if cols >= 2:
+                    objs.append(("table column", (0.0, 0.0, cw * 0.5, ch), 0.93))
+                    objs.append(("table column", (cw * 0.5, 0.0, cw, ch), 0.93))
+                else:
+                    objs.append(("table column", (0.0, 0.0, cw, ch), 0.93))
+                return objs
+
+            def detect_objects(self, crop: Image.Image):
+                self.detect_calls += 1
+                return self._objs_for(crop.width, crop.height)
+
+            def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+                return objects_to_table(self._objs_for(image.width, image.height), image.size, table_bbox_pt, tokens)
+
+        return _FakeTatr()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "fallback_cases.pdf"
+        b = TestPdfBuilder()
+
+        # Page 1: borderless 0x0.
+        p1 = b.new_page(width=400, height=300)
+        p1.insert_text((60, 74), "ColA", fontsize=10)
+        p1.insert_text((200, 74), "ColB", fontsize=10)
+        p1.insert_text((60, 124), "Val1", fontsize=10)
+        p1.insert_text((200, 124), "Val2", fontsize=10)
+
+        # Page 2: single outer box 1x1.
+        p2 = b.new_page(width=400, height=300)
+        p2.draw_rect((40, 50, 280, 150), width=0.5)
+        p2.insert_text((60, 74), "ColA", fontsize=10)
+        p2.insert_text((200, 74), "ColB", fontsize=10)
+        p2.insert_text((60, 124), "Val1", fontsize=10)
+        p2.insert_text((200, 124), "Val2", fontsize=10)
+
+        # Page 3: boxed booktabs / zebra Nx1 (outer box + horizontal lines, no vertical split).
+        p3 = b.new_page(width=400, height=300)
+        p3.draw_rect((40, 50, 280, 150), width=0.5)
+        p3.draw_line((40, 100), (280, 100), width=0.5)
+        p3.insert_text((60, 74), "ColA", fontsize=10)
+        p3.insert_text((200, 74), "ColB", fontsize=10)
+        p3.insert_text((60, 124), "Val1", fontsize=10)
+        p3.insert_text((200, 124), "Val2", fontsize=10)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            box = [(38.0, 48.0, 282.0, 152.0)]
+
+            t_0x0 = extract_tables_on_page(doc.pages[0], box, words=None, extractor=AutoTableExtractor(tatr_extractor=_make_tatr(2)))[0]
+            assert t_0x0.source == "auto" and t_0x0.confidence == 0.91
+            assert t_0x0.num_rows == 2 and t_0x0.num_cols == 2
+            assert [c.text for c in t_0x0.cells] == ["ColA", "ColB", "Val1", "Val2"]
+
+            t_1x1 = extract_tables_on_page(doc.pages[1], box, extractor=AutoTableExtractor(tatr_extractor=_make_tatr(2)))[0]
+            assert t_1x1.source == "auto" and t_1x1.confidence == 0.91
+            assert t_1x1.num_rows == 2 and t_1x1.num_cols == 2
+            assert [c.text for c in t_1x1.cells] == ["ColA", "ColB", "Val1", "Val2"]
+
+            tatr_multi = _make_tatr(2)
+            t_nx1_split = extract_tables_on_page(doc.pages[2], box, extractor=AutoTableExtractor(tatr_extractor=tatr_multi))[0]
+            assert tatr_multi.detect_calls == 1
+            assert t_nx1_split.source == "auto" and t_nx1_split.confidence == 0.91
+            assert t_nx1_split.num_rows == 2 and t_nx1_split.num_cols == 2
+
+            tatr_single = _make_tatr(1)
+            t_nx1_keep = extract_tables_on_page(doc.pages[2], box, extractor=AutoTableExtractor(tatr_extractor=tatr_single))[0]
+            assert tatr_single.detect_calls == 1
+            assert t_nx1_keep.source == "auto" and t_nx1_keep.confidence == 1.0
+            assert t_nx1_keep.num_rows == 2 and t_nx1_keep.num_cols == 1
+            assert t_nx1_keep.cells[0].is_header is True and t_nx1_keep.cells[1].is_header is False
+
+
+def test_auto_mixed_page_bordered_and_borderless():
+    import pdfplumber
+
+    class _FakeTatr:
+        def _objs(self, crop: Image.Image):
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.88),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.9),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.9),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.9),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.9),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.9),
+            ]
+
+        def detect_objects(self, crop: Image.Image):
+            return self._objs(crop)
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            return objects_to_table(self._objs(image), image.size, table_bbox_pt, tokens)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "mixed.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=400)
+        # Top bordered 2x2 table.
+        for x in (40, 160, 280):
+            p.draw_line((x, 40), (x, 120), width=0.5)
+        for y in (40, 80, 120):
+            p.draw_line((40, y), (280, y), width=0.5)
+        p.insert_text((50, 64), "H1", fontsize=10)
+        p.insert_text((170, 64), "H2", fontsize=10)
+        p.insert_text((50, 104), "V1", fontsize=10)
+        p.insert_text((170, 104), "V2", fontsize=10)
+
+        # Bottom borderless 2x2 table.
+        p.insert_text((50, 224), "B1", fontsize=10)
+        p.insert_text((200, 224), "B2", fontsize=10)
+        p.insert_text((50, 264), "D1", fontsize=10)
+        p.insert_text((200, 264), "D2", fontsize=10)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tables = extract_tables_on_page(
+                doc.pages[0],
+                [(38.0, 38.0, 282.0, 122.0), (38.0, 200.0, 282.0, 280.0)],
+                extractor=AutoTableExtractor(tatr_extractor=_FakeTatr()),
+            )
+    assert len(tables) == 2
+    assert tables[0].source == "auto" and tables[0].confidence == 1.0
+    assert [c.text for c in tables[0].cells] == ["H1", "H2", "V1", "V2"]
+    assert tables[1].source == "auto" and tables[1].confidence < 1.0
+    assert [c.text for c in tables[1].cells] == ["B1", "B2", "D1", "D2"]
+
+
+def test_auto_raster_and_suspect_ocr_skip_pdfplumber():
+    import pdfplumber
+
+    class _FailPlumber:
+        def extract_from_page(self, *_args, **_kwargs):
+            raise AssertionError("pdfplumber must not be called on raster/suspect pages")
+
+    class _FakeOcr:
+        def recognize(self, image: Image.Image):
+            cw, ch = float(image.width), float(image.height)
+            return [
+                OcrLine("OcrH1", (0.05 * cw, 0.1 * ch, 0.4 * cw, 0.4 * ch), 0.99),
+                OcrLine("OcrH2", (0.55 * cw, 0.1 * ch, 0.9 * cw, 0.4 * ch), 0.99),
+                OcrLine("OcrV1", (0.05 * cw, 0.6 * ch, 0.4 * cw, 0.9 * ch), 0.99),
+                OcrLine("OcrV2", (0.55 * cw, 0.6 * ch, 0.9 * cw, 0.9 * ch), 0.99),
+            ]
+
+    class _FakeTatr:
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            cw, ch = float(image.width), float(image.height)
+            objs = [
+                ("table", (0.0, 0.0, cw, ch), 0.92),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.9),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.9),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.9),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.9),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.9),
+            ]
+            return objects_to_table(objs, image.size, table_bbox_pt, tokens)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "decoy.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        for x in (40, 160, 280):
+            p.draw_line((x, 50), (x, 150), width=0.5)
+        for y in (50, 100, 150):
+            p.draw_line((40, y), (280, y), width=0.5)
+        p.insert_text((50, 74), "BAD_TEXT_LAYER", fontsize=10)
+        b.save(pdf_path)
+
+        ext = AutoTableExtractor(
+            pdfplumber_extractor=_FailPlumber(),
+            tatr_extractor=_FakeTatr(),
+            ocr_recognizer=_FakeOcr(),
+        )
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tables = extract_tables_on_page(
+                doc.pages[0],
+                [(38.0, 48.0, 282.0, 152.0)],
+                is_raster=True,
+                extractor=ext,
+            )
+    tbl = tables[0]
+    assert tbl.source == "auto"
+    assert [c.text for c in tbl.cells] == ["OcrH1", "OcrH2", "OcrV1", "OcrV2"]
+    assert all("BAD_TEXT_LAYER" not in c.text for c in tbl.cells)
+
+
+def test_explicit_pdfplumber_and_tatr_backends_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "explicit.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        # 3x3 grid (8 lines >= MIN_CANDIDATE_DRAWINGS).
+        for x in (40, 120, 200, 280):
+            p.draw_line((x, 50), (x, 170), width=0.5)
+        for y in (50, 90, 130, 170):
+            p.draw_line((40, y), (280, y), width=0.5)
+        p.insert_text((50, 74), "K1", fontsize=10)
+        p.insert_text((130, 74), "K2", fontsize=10)
+        p.insert_text((210, 74), "K3", fontsize=10)
+        p.insert_text((50, 114), "D1", fontsize=10)
+        p.insert_text((130, 114), "D2", fontsize=10)
+        p.insert_text((210, 114), "D3", fontsize=10)
+        p.insert_text((50, 154), "E1", fontsize=10)
+        p.insert_text((130, 154), "E2", fontsize=10)
+        p.insert_text((210, 154), "E3", fontsize=10)
+        b.save(pdf_path)
+
+        import pdf.figures as figures_mod
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda _p, pages, **_kw: {
+            pno: [FigureBox((38.0, 48.0, 282.0, 172.0), "table", "layout_table", 0.95)] for pno in pages
+        }
+        try:
+            ir_pl = ir_mod.extract_ir(pdf_path, figures=True, ocr=False, tables=True, table_backend="pdfplumber")
+            assert ir_pl["tables"][0]["metadata"]["source"] == "pdfplumber"
+
+            reset_cache()
+            tatr_ext = get("table", "tatr-onnx")
+            tatr_ext.ensure_loaded = lambda: False
+            tatr_ext.detect_objects = lambda crop: [
+                ("table", (0.0, 0.0, float(crop.width), float(crop.height)), 0.93),
+                ("table row", (0.0, 0.0, float(crop.width), crop.height * 0.5), 0.9),
+                ("table row", (0.0, crop.height * 0.5, float(crop.width), float(crop.height)), 0.9),
+                ("table column", (0.0, 0.0, crop.width * 0.5, float(crop.height)), 0.9),
+                ("table column", (crop.width * 0.5, 0.0, float(crop.width), float(crop.height)), 0.9),
+                ("table column header", (0.0, 0.0, float(crop.width), crop.height * 0.5), 0.9),
+            ]
+            ir_tatr = ir_mod.extract_ir(pdf_path, figures=True, ocr=False, tables=True, table_backend="tatr-onnx")
+            assert ir_tatr["tables"][0]["metadata"]["source"] == "tatr_onnx"
+        finally:
+            figures_mod.detect_figures = orig_detect
+            reset_cache()
+
+
+def main():
+    tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"PASS {name}")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {name}: {type(e).__name__}: {e}")
+    print(f"{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

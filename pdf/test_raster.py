@@ -7,10 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.assemble import assemble_page  # noqa: E402
 from pdf.backends import ComposedReader, register  # noqa: E402
 from pdf.backends.mineru import mineru_middle_json_to_raster_pages  # noqa: E402
@@ -26,11 +26,10 @@ def _make_raster_pdf(path: Path, text: str = "RASTER OCR SAMPLE") -> None:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
 
-    doc = pymupdf.open()
-    page = doc.new_page(width=600, height=300)
-    page.insert_image(page.rect, stream=buf.getvalue())
-    doc.save(str(path))
-    doc.close()
+    b = TestPdfBuilder()
+    page = b.new_page(width=600, height=300)
+    page.insert_image((0, 0, 600, 300), stream=buf.getvalue())
+    b.save(path)
 
 
 def test_importing_raster_does_not_load_docling_or_torch():
@@ -159,16 +158,15 @@ def test_extract_ir_batch_calls_read_raster_pages_once_for_mineru():
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "scan2.pdf"
-        doc = pymupdf.open()
+        b = TestPdfBuilder()
         for label in ("Page One", "Page Two"):
             img = Image.new("RGB", (600, 300), color=(255, 255, 255))
             ImageDraw.Draw(img).text((40, 80), label, fill=(0, 0, 0))
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            p = doc.new_page(width=600, height=300)
-            p.insert_image(p.rect, stream=buf.getvalue())
-        doc.save(str(pdf_path))
-        doc.close()
+            p = b.new_page(width=600, height=300)
+            p.insert_image((0, 0, 600, 300), stream=buf.getvalue())
+        b.save(pdf_path)
 
         calls = 0
         fake_mj = {
@@ -220,12 +218,11 @@ def test_hybrid_suspect_ocr_layer_fallback_vs_ocr_disabled():
 
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "hybrid_suspect.pdf"
-        doc = pymupdf.open()
-        page = doc.new_page(width=595, height=842)
-        page.insert_image(page.rect, stream=buf.getvalue())
+        b = TestPdfBuilder()
+        page = b.new_page(width=595, height=842)
+        page.insert_image((0, 0, 595, 842), stream=buf.getvalue())
         page.insert_text((72, 72), "hidden tiny ocr text words", fontsize=2)
-        doc.save(str(pdf_path))
-        doc.close()
+        b.save(pdf_path)
 
         register("detector", "fake_hyb_det", lambda **_kw: _Det())
         register("ocr", "fake_hyb_ocr", lambda **_kw: _Ocr())

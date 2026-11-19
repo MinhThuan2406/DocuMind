@@ -79,9 +79,10 @@ def _score_against_toc(
 
 
 def _run_heron_sample(pdf_dir: Path, sample_spec: dict[str, list[int]]) -> None:
-    import pymupdf
-    from PIL import Image
+    import pdfplumber
+    import pypdfium2 as pdfium
 
+    from pdf._pdf_io import extract_words_raw
     from pdf.backends import get as get_backend
     from pdf.layout import postprocess_layout
 
@@ -91,33 +92,36 @@ def _run_heron_sample(pdf_dir: Path, sample_spec: dict[str, list[int]]) -> None:
         path = pdf_dir / name
         if not path.exists():
             continue
-        doc = pymupdf.open(str(path))
-        try:
-            print(f"\n[{name}]")
-            for pno in pages:
-                page = doc[pno - 1]
-                zoom = 150.0 / 72.0
-                pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                raw = detector.detect(img)
-                clusters = postprocess_layout(raw, (float(pix.width), float(pix.height)), keep_empty_clusters=True)
-                counts = Counter(c.label for c in clusters)
-                sx, sy = float(page.rect.width) / pix.width, float(page.rect.height) / pix.height
-                words = page.get_text("words")
-                header_texts = []
-                for c in clusters:
-                    if c.label not in ("title", "section_header", "caption"):
-                        continue
-                    bx0, by0, bx1, by1 = c.bbox[0] * sx, c.bbox[1] * sy, c.bbox[2] * sx, c.bbox[3] * sy
-                    txt = " ".join(
-                        w[4]
-                        for w in words
-                        if bx0 <= (w[0] + w[2]) * 0.5 <= bx1 and by0 <= (w[1] + w[3]) * 0.5 <= by1
-                    )
-                    header_texts.append((c.label, round(c.confidence, 2), txt[:70]))
-                print(f"  p{pno:03d} counts={dict(counts)}")
-                for lbl, conf, txt in header_texts:
-                    print(f"    {lbl} ({conf}): {txt!r}")
+        fdoc = pdfium.PdfDocument(str(path))
+        with pdfplumber.open(str(path)) as doc:
+            try:
+                print(f"\n[{name}]")
+                for pno in pages:
+                    page = doc.pages[pno - 1]
+                    zoom = 150.0 / 72.0
+                    img = fdoc[pno - 1].render(scale=zoom).to_pil().convert("RGB")
+                    iw, ih = img.size
+                    raw = detector.detect(img)
+                    clusters = postprocess_layout(raw, (float(iw), float(ih)), keep_empty_clusters=True)
+                    counts = Counter(c.label for c in clusters)
+                    sx, sy = float(page.width) / iw, float(page.height) / ih
+                    words = extract_words_raw(page)
+                    header_texts = []
+                    for c in clusters:
+                        if c.label not in ("title", "section_header", "caption"):
+                            continue
+                        bx0, by0, bx1, by1 = c.bbox[0] * sx, c.bbox[1] * sy, c.bbox[2] * sx, c.bbox[3] * sy
+                        txt = " ".join(
+                            w["text"]
+                            for w in words
+                            if bx0 <= (w["x0"] + w["x1"]) * 0.5 <= bx1 and by0 <= (w["top"] + w["bottom"]) * 0.5 <= by1
+                        )
+                        header_texts.append((c.label, round(c.confidence, 2), txt[:70]))
+                    print(f"  p{pno:03d} counts={dict(counts)}")
+                    for lbl, conf, txt in header_texts:
+                        print(f"    {lbl} ({conf}): {txt!r}")
+            finally:
+                fdoc.close()
         finally:
             doc.close()
 

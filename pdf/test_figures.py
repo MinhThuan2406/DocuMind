@@ -6,10 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
+import pypdfium2 as pdfium  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.backends import LayoutCache, PageLayout, RunStats, file_sha256, register, registered  # noqa: E402
 from pdf.backends.mineru import (  # noqa: E402
     MINERU_PIPELINE_BACKEND,
@@ -29,10 +30,9 @@ def test_cache_and_live_confidence_match_and_table_boxes_emitted():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf_path = tmp_path / "sample.pdf"
-        doc = pymupdf.open()
-        doc.new_page(width=600, height=400)
-        doc.save(str(pdf_path))
-        doc.close()
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400)
+        b.save(pdf_path)
 
         cache_root = tmp_path / "cache"
         items = [
@@ -107,47 +107,50 @@ def test_matches_structure_branch_compute_boxes_on_dev_pages():
         print("SKIP structure scripts require docling (not installed)")
         return
 
-    doc = pymupdf.open(str(layered))
+    doc = pdfium.PdfDocument(str(layered))
     zoom = 150.0 / 72.0
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        for pno in dev_pages:
-            page = doc[pno - 1]
-            png = tmp_dir / f"p{pno:03d}.png"
-            page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).save(str(png))
-            cached = json.loads((docling_cache / f"p{pno:03d}.json").read_text(encoding="utf-8"))
-            with Image.open(png) as im:
-                img_size = im.size
-            ref_boxes = compute_boxes(
-                page,
-                png,
-                cached["items"],
-                tuple(cached["page_size"]),
-                img_size,
-                group=True,
-                refine=False,
-                add_missing=False,
-                min_area=0.015,
-                footer_frac=0.88,
-                v1_rule="anchor",
-            )
-            sx = page.rect.width / img_size[0]
-            sy = page.rect.height / img_size[1]
-            expected_pts = [
-                (
-                    round(b["bbox"][0] * sx, 3),
-                    round(b["bbox"][1] * sy, 3),
-                    round(b["bbox"][2] * sx, 3),
-                    round(b["bbox"][3] * sy, 3),
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            for pno in dev_pages:
+                page = doc[pno - 1]
+                pw, ph = page.get_size()
+                png = tmp_dir / f"p{pno:03d}.png"
+                page.render(scale=zoom).to_pil().save(str(png))
+                cached = json.loads((docling_cache / f"p{pno:03d}.json").read_text(encoding="utf-8"))
+                with Image.open(png) as im:
+                    img_size = im.size
+                ref_boxes = compute_boxes(
+                    page,
+                    png,
+                    cached["items"],
+                    tuple(cached["page_size"]),
+                    img_size,
+                    group=True,
+                    refine=False,
+                    add_missing=False,
+                    min_area=0.015,
+                    footer_frac=0.88,
+                    v1_rule="anchor",
                 )
-                for b in ref_boxes
-            ]
-            got_pts = [b.bbox for b in actual[pno]]
-            assert len(got_pts) == len(expected_pts), (pno, got_pts, expected_pts)
-            for g, e in zip(got_pts, expected_pts):
-                for gv, ev in zip(g, e):
-                    assert abs(gv - ev) <= 0.1, (pno, g, e)
-    doc.close()
+                sx = float(pw) / img_size[0]
+                sy = float(ph) / img_size[1]
+                expected_pts = [
+                    (
+                        round(b["bbox"][0] * sx, 3),
+                        round(b["bbox"][1] * sy, 3),
+                        round(b["bbox"][2] * sx, 3),
+                        round(b["bbox"][3] * sy, 3),
+                    )
+                    for b in ref_boxes
+                ]
+                got_pts = [b.bbox for b in actual[pno]]
+                assert len(got_pts) == len(expected_pts), (pno, got_pts, expected_pts)
+                for g, e in zip(got_pts, expected_pts):
+                    for gv, ev in zip(g, e):
+                        assert abs(gv - ev) <= 0.1, (pno, g, e)
+    finally:
+        doc.close()
 
 
 def test_mineru_fixture_mapping_clamping_and_cache_hit():
@@ -189,10 +192,9 @@ def test_mineru_fixture_mapping_clamping_and_cache_hit():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf_path = tmp_path / "mineru_sample.pdf"
-        doc = pymupdf.open()
-        doc.new_page(width=600, height=400)
-        doc.save(str(pdf_path))
-        doc.close()
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400)
+        b.save(pdf_path)
 
         cache_root = tmp_path / "cache"
         LayoutCache(
@@ -234,16 +236,15 @@ def test_mineru_subprocess_integration_optional():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pdf_path = tmp_path / "two_pages.pdf"
-        doc = pymupdf.open()
-        p1 = doc.new_page(width=600, height=400)
+        b = TestPdfBuilder()
+        p1 = b.new_page(width=600, height=400)
         p1.insert_text((40, 40), "Page one text", fontsize=12)
-        p2 = doc.new_page(width=600, height=400)
+        p2 = b.new_page(width=600, height=400)
         img = Image.new("RGB", (300, 200), (220, 230, 240))
         buf = tmp_path / "box.png"
         img.save(buf)
-        p2.insert_image(pymupdf.Rect(100, 80, 400, 280), filename=str(buf))
-        doc.save(str(pdf_path))
-        doc.close()
+        p2.insert_image((100, 80, 400, 280), filename=str(buf))
+        b.save(pdf_path)
 
         cache_root = tmp_path / "cache"
         had_torch = "torch" in sys.modules

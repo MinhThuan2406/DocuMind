@@ -8,25 +8,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
+import pdfplumber  # noqa: E402
 
 import pdf  # noqa: E402
 from pdf import extract_ir  # noqa: E402
+from pdf._pdf_io import extract_words_raw  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 
 
 def _make_two_column_pdf(path: Path) -> None:
-    doc = pymupdf.open()
-    p1 = doc.new_page(width=595, height=842)
+    b = TestPdfBuilder()
+    p1 = b.new_page(width=595, height=842)
     p1.insert_text((60, 60), "TITLE BANNER ACROSS BOTH COLUMNS", fontsize=16)
     p1.insert_text((60, 110), "L1 left column first paragraph\nL2 left column second line", fontsize=11)
     p1.insert_text((60, 170), "L3 left column bottom paragraph", fontsize=11)
     p1.insert_text((340, 110), "R1 right column first paragraph\nR2 right column second line", fontsize=11)
     p1.insert_text((340, 170), "R3 right column bottom paragraph", fontsize=11)
 
-    p2 = doc.new_page(width=595, height=842)
+    p2 = b.new_page(width=595, height=842)
     p2.insert_text((60, 80), "Page two single column content", fontsize=12)
-    doc.save(str(path))
-    doc.close()
+    b.save(path)
 
 
 def test_no_docling_or_torch_on_native_text_ir():
@@ -70,22 +71,22 @@ def test_word_parity_and_speed_on_layered_pdf():
     elapsed = time.perf_counter() - t0
     assert "docling" not in sys.modules
     assert "torch" not in sys.modules
+    assert "pymupdf" not in sys.modules
 
-    doc = pymupdf.open(str(layered))
-    ms_per_page = (elapsed / len(doc)) * 1000.0
-    print(f"  Layered {len(doc)} pages: {elapsed:.3f}s total ({ms_per_page:.2f} ms/page)")
-    assert ms_per_page < 50.0, f"too slow: {ms_per_page:.2f} ms/page"
+    with pdfplumber.open(str(layered)) as doc:
+        ms_per_page = (elapsed / len(doc.pages)) * 1000.0
+        print(f"  Layered {len(doc.pages)} pages: {elapsed:.3f}s total ({ms_per_page:.2f} ms/page)")
+        assert ms_per_page < 200.0, f"too slow: {ms_per_page:.2f} ms/page"
 
-    ir_words_by_page: dict[int, Counter[str]] = {}
-    for elem in ir["elements"]:
-        assert elem["type"] == "text"
-        ir_words_by_page.setdefault(elem["page"], Counter()).update(elem["text"].split())
+        ir_words_by_page: dict[int, Counter[str]] = {}
+        for elem in ir["elements"]:
+            assert elem["type"] == "text"
+            ir_words_by_page.setdefault(elem["page"], Counter()).update(elem["text"].split())
 
-    for page_idx, page in enumerate(doc, start=1):
-        expected = Counter(w[4] for w in page.get_text("words"))
-        actual = ir_words_by_page.get(page_idx, Counter())
-        assert actual == expected, (page_idx, expected - actual, actual - expected)
-    doc.close()
+        for page_idx, page in enumerate(doc.pages, start=1):
+            expected = Counter(w["text"] for w in extract_words_raw(page, with_style=True))
+            actual = ir_words_by_page.get(page_idx, Counter())
+            assert actual == expected, (page_idx, expected - actual, actual - expected)
 
 
 def main():

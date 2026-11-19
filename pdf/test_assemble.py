@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import tempfile
@@ -6,17 +7,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
+import pdfplumber  # noqa: E402
 
 import pdf.ir as ir_mod  # noqa: E402
+from pdf._pdf_io import page_bbox  # noqa: E402
+from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.assemble import assemble_page, filter_overlapping_figures, tag_running_headers_footers  # noqa: E402
 from pdf.models import FigureBox, PageProfile, RasterPage, TextBlock  # noqa: E402
 from pdf.text import extract_words  # noqa: E402
 
 
-def _make_synthetic_page():
-    doc = pymupdf.open()
-    page = doc.new_page(width=600, height=800)
+def _make_synthetic_builder():
+    b = TestPdfBuilder()
+    page = b.new_page(width=600, height=800)
     page.insert_text((50, 50), "Intro paragraph before diagram", fontsize=12)
     page.insert_text((80, 140), "NodeA", fontsize=10)
     page.insert_text((200, 140), "NodeB", fontsize=10)
@@ -24,20 +27,18 @@ def _make_synthetic_page():
     page.insert_text((220, 320), "ColB row1\nColB row2", fontsize=10)
     page.insert_text((50, 520), "Conclusion paragraph after table", fontsize=12)
     for i in range(8):
-        page.draw_rect(pymupdf.Rect(60 + i * 30, 600, 80 + i * 30, 620))
-    return doc, page
+        page.draw_rect((60 + i * 30, 600, 80 + i * 30, 620))
+    return b
 
 
 def test_figure_and_table_children_ordering_and_no_body_leak():
-    doc, page = _make_synthetic_page()
-    try:
-        words = extract_words(page)
-        profile = PageProfile(1, "native", len(words), 0.1, 0.0, False)
-        fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
-        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
-        items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), [fig, tbl])
-    finally:
-        doc.close()
+    b = _make_synthetic_builder()
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        words = extract_words(doc.pages[0])
+    profile = PageProfile(1, "native", len(words), 0.1, 0.0, False)
+    fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
+    tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
+    items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), [fig, tbl])
 
     kinds = [it.kind for it in items]
     assert kinds == ["text", "figure", "text", "text", "table", "text", "text", "text"]
@@ -69,11 +70,11 @@ def test_overlapping_table_drop_and_innermost_box_assignment():
     kept = filter_overlapping_figures([fig, subsumed_tbl, partial_tbl])
     assert kept == [fig, partial_tbl]
 
-    doc = pymupdf.open()
-    page = doc.new_page(width=600, height=400)
+    b = TestPdfBuilder()
+    page = b.new_page(width=600, height=400)
     page.insert_text((365, 180), "SharedWord", fontsize=10)
-    words = extract_words(page)
-    doc.close()
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        words = extract_words(doc.pages[0])
 
     # partial_tbl area (40,000) < fig area (60,000), so SharedWord belongs solely to partial_tbl.
     profile = PageProfile(1, "native", len(words), 0.05, 0.0, False)
@@ -87,9 +88,7 @@ def test_overlapping_table_drop_and_innermost_box_assignment():
 def test_extract_ir_end_to_end_with_mocked_figures():
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "assembled.pdf"
-        doc, _ = _make_synthetic_page()
-        doc.save(str(pdf_path))
-        doc.close()
+        _make_synthetic_builder().save(pdf_path)
 
         fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
         tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
@@ -116,15 +115,14 @@ def test_extract_ir_end_to_end_with_mocked_figures():
 
 
 def _save_pdf(path, with_diagram_page):
-    doc = pymupdf.open()
-    doc.new_page(width=600, height=800).insert_text((50, 50), "Text only page", fontsize=12)
+    b = TestPdfBuilder()
+    b.new_page(width=600, height=800).insert_text((50, 50), "Text only page", fontsize=12)
     if with_diagram_page:
-        page = doc.new_page(width=600, height=800)
+        page = b.new_page(width=600, height=800)
         page.insert_text((50, 50), "Page with a diagram", fontsize=12)
         for i in range(8):
-            page.draw_rect(pymupdf.Rect(60 + i * 30, 200, 80 + i * 30, 220))
-    doc.save(str(path))
-    doc.close()
+            page.draw_rect((60 + i * 30, 200, 80 + i * 30, 220))
+    b.save(path)
 
 
 def test_extract_ir_detects_figures_only_on_candidate_pages():
@@ -157,15 +155,14 @@ def test_autosar_dev_pages_figure_assembly_integration():
     from pdf.figures import detect_figures
 
     dev_figure_pages = [13, 17, 21, 25, 29, 33, 37, 41]
-    doc = pymupdf.open(str(layered))
-    try:
+    with pdfplumber.open(str(layered)) as doc:
         figs_by_page = detect_figures(layered, dev_figure_pages)
         assert any(any(b.kind == "figure" for b in boxes) for boxes in figs_by_page.values())
         for pno in dev_figure_pages:
-            page = doc[pno - 1]
+            page = doc.pages[pno - 1]
             words = extract_words(page)
             profile = PageProfile(pno, "native", len(words), 0.1, 0.0, False)
-            items = assemble_page(profile, words, (0.0, 0.0, page.rect.width, page.rect.height), figs_by_page[pno])
+            items = assemble_page(profile, words, page_bbox(page), figs_by_page[pno])
             kept_figs = [it.bbox for it in items if it.kind == "figure"]
             body_items = [it for it in items if it.parent_index is None and it.kind == "text"]
             for w in words:
@@ -175,16 +172,14 @@ def test_autosar_dev_pages_figure_assembly_integration():
                 if inside_fig:
                     assert any(it.parent_index is not None and w.text in it.text for it in items), (pno, w.text)
             assert len(body_items) >= 1
-    finally:
-        doc.close()
 
 
 def test_assemble_page_hybrid_suspect_ocr_fallback():
-    doc = pymupdf.open()
-    page = doc.new_page(width=600, height=800)
+    b = TestPdfBuilder()
+    page = b.new_page(width=600, height=800)
     page.insert_text((72, 72), "garbled layer text", fontsize=10)
-    words = extract_words(page)
-    doc.close()
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        words = extract_words(doc.pages[0])
 
     profile = PageProfile(1, "hybrid", len(words), 0.005, 0.9, True)
     rp = RasterPage(
@@ -204,16 +199,15 @@ def test_assemble_page_hybrid_suspect_ocr_fallback():
 def test_running_header_footer_tagging_multipage():
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "multipage.pdf"
-        doc = pymupdf.open()
+        b = TestPdfBuilder()
         for pno in range(1, 5):
-            page = doc.new_page(width=600, height=800)
+            page = b.new_page(width=600, height=800)
             page.insert_text((50, 40), f"Acme Spec   Page {pno}", fontsize=10)
             page.insert_text((50, 200), "Repeated body note", fontsize=12)
             page.insert_text((50, 320), f"Unique body paragraph {pno}", fontsize=12)
             footer_text = str(pno) if pno <= 3 else "Final endnote"
             page.insert_text((280, 770), footer_text, fontsize=10)
-        doc.save(str(pdf_path))
-        doc.close()
+        b.save(pdf_path)
 
         ir = ir_mod.extract_ir(pdf_path, figures=False, ocr=False)
 
@@ -239,13 +233,12 @@ def test_running_header_footer_tagging_multipage():
 
     with tempfile.TemporaryDirectory() as tmp:
         two_page = Path(tmp) / "twopage.pdf"
-        doc2 = pymupdf.open()
+        b2 = TestPdfBuilder()
         for _ in range(2):
-            p = doc2.new_page(width=600, height=800)
+            p = b2.new_page(width=600, height=800)
             p.insert_text((50, 40), "Short Doc Header", fontsize=10)
             p.insert_text((50, 200), "Body content", fontsize=12)
-        doc2.save(str(two_page))
-        doc2.close()
+        b2.save(two_page)
         ir2 = ir_mod.extract_ir(two_page, figures=False, ocr=False)
         assert all(e["metadata"].get("role") not in ("page_header", "page_footer") for e in ir2["elements"])
 

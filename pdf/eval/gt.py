@@ -7,9 +7,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import pymupdf
 from PIL import Image
 
+from .._test_pdf import TestPdfBuilder
 from .metrics import char_counts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -124,13 +124,11 @@ def load_omnidoc_gt(
 
 
 def build_raster_pdf(image_paths: Sequence[Path], dst: Path) -> None:
-    out = pymupdf.open()
-    try:
-        for img_path in image_paths:
-            with Image.open(img_path) as im:
-                w, h = im.size
-            page = out.new_page(width=w * 72.0 / 150.0, height=h * 72.0 / 150.0)
-            page.insert_image(page.rect, stream=img_path.read_bytes())
-        out.save(str(dst))
-    finally:
-        out.close()
+    builder = TestPdfBuilder()
+    for img_path in image_paths:
+        with Image.open(img_path) as im:
+            w, h = im.size
+        pw, ph = w * 72.0 / 150.0, h * 72.0 / 150.0
+        page = builder.new_page(width=pw, height=ph)
+        page.insert_image((0.0, 0.0, pw, ph), stream=img_path.read_bytes())
+    builder.save(dst)

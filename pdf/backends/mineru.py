@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import pymupdf
+import pypdfium2 as pdfium
 
 from ..layout.detector import clamp_and_rescale
 from ..layout.postprocess import clusters_to_items, postprocess_layout
@@ -307,9 +307,9 @@ class MinerULayoutBackend:
 
     def analyze(self, pdf_path: str | Path, pages: Sequence[int]) -> dict[int, PageLayout]:
         path = Path(pdf_path)
-        doc = pymupdf.open(str(path))
+        doc = pdfium.PdfDocument(str(path))
         try:
-            page_sizes = {i + 1: (float(doc[i].rect.width), float(doc[i].rect.height)) for i in range(len(doc))}
+            page_sizes = {i + 1: tuple(float(v) for v in doc[i].get_size()) for i in range(len(doc))}
         finally:
             doc.close()
 
@@ -345,9 +345,12 @@ class MinerUReader:
         if not page_list:
             return {}
         path = Path(pdf_path)
-        doc_pdf = pymupdf.open(str(path))
+        doc_pdf = pdfium.PdfDocument(str(path))
         try:
-            page_sizes = {idx: (float(p.rect.width), float(p.rect.height)) for idx, p in enumerate(doc_pdf, start=1)}
+            page_sizes = {
+                idx: tuple(float(v) for v in doc_pdf[idx - 1].get_size())
+                for idx in range(1, len(doc_pdf) + 1)
+            }
         finally:
             doc_pdf.close()
 

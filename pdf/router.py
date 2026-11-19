@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pymupdf
+from typing import Any
 
+from ._pdf_io import clip_box, extract_words_raw, page_bbox
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, PageKind, PageProfile
 
 FULL_PAGE_IMAGE_RATIO = 0.96
@@ -13,16 +14,6 @@ MIN_NATIVE_TEXT_AREA_RATIO = 0.002
 SUSPECT_INVALID_CHAR_RATIO = 0.05
 SUSPECT_IMAGE_RATIO = 0.80
 SUSPECT_TINY_TEXT_RATIO = 0.01
-
-
-def _clip_box(box: tuple[float, float, float, float], bounds: pymupdf.Rect) -> BBox | None:
-    x0 = max(box[0], bounds.x0)
-    y0 = max(box[1], bounds.y0)
-    x1 = min(box[2], bounds.x1)
-    y1 = min(box[3], bounds.y1)
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return (float(x0), float(y0), float(x1), float(y1))
 
 
 def _box_area(box: BBox) -> float:
@@ -59,42 +50,57 @@ def _is_invalid_char(ch: str) -> bool:
     return ch == "\ufffd" or (ord(ch) < 32 and ch not in "\t\n\r")
 
 
-def _is_figure_candidate(page: pymupdf.Page, rect: pymupdf.Rect, image_boxes: list[BBox]) -> bool:
-    page_area = rect.width * rect.height
-    footer_y = rect.y0 + FIGURE_FOOTER_FRAC * rect.height
+def _is_figure_candidate(page: Any, bounds: BBox, image_boxes: list[BBox]) -> bool:
+    page_w = bounds[2] - bounds[0]
+    page_h = bounds[3] - bounds[1]
+    page_area = page_w * page_h
+    footer_y = bounds[1] + FIGURE_FOOTER_FRAC * page_h
     if any(
         FIGURE_MIN_AREA * page_area <= _box_area(b) < FULL_PAGE_IMAGE_RATIO * page_area and b[1] < footer_y
         for b in image_boxes
     ):
         return True
     drawings = thick = 0
-    for d in page.get_drawings():
-        r = d["rect"]
-        if (r.width >= FULL_PAGE_IMAGE_RATIO * rect.width and r.height >= FULL_PAGE_IMAGE_RATIO * rect.height) or r.y0 >= footer_y:
+    for obj in (*page.lines, *page.rects, *page.curves):
+        x0, top, x1, bottom = float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"])
+        w = max(0.0, x1 - x0)
+        h = max(0.0, bottom - top)
+        if (w >= FULL_PAGE_IMAGE_RATIO * page_w and h >= FULL_PAGE_IMAGE_RATIO * page_h) or top >= footer_y:
             continue
         drawings += 1
-        thick += min(r.width, r.height) >= THICK_DRAWING_MIN_SIDE
+        thick += min(w, h) >= THICK_DRAWING_MIN_SIDE
     return drawings >= MIN_CANDIDATE_DRAWINGS or thick >= MIN_CANDIDATE_THICK_DRAWINGS
 
 
-def classify_page(page: pymupdf.Page, page_number: int | None = None) -> PageProfile:
-    number = page.number + 1 if page_number is None else page_number
-    rect = page.rect
-    page_area = rect.width * rect.height
+def classify_page(
+    page: Any,
+    page_number: int | None = None,
+    *,
+    raw_words: list[dict[str, Any]] | None = None,
+) -> PageProfile:
+    number = int(getattr(page, "page_number", 1)) if page_number is None else page_number
+    bounds = page_bbox(page)
+    page_w = bounds[2] - bounds[0]
+    page_h = bounds[3] - bounds[1]
+    page_area = page_w * page_h
     if page_area <= 0:
         return PageProfile(number, "native", 0, 0.0, 0.0, False)
 
-    raw_words = page.get_text("words")
-    word_count = len(raw_words)
-    word_boxes = [b for w in raw_words if (b := _clip_box((w[0], w[1], w[2], w[3]), rect)) is not None]
+    words = extract_words_raw(page) if raw_words is None else raw_words
+    word_count = len(words)
+    word_boxes = [
+        b for w in words if (b := clip_box((w["x0"], w["top"], w["x1"], w["bottom"]), bounds)) is not None
+    ]
     text_area_ratio = min(1.0, sum(_box_area(b) for b in word_boxes) / page_area)
 
-    image_boxes = [b for info in page.get_image_info() if (b := _clip_box(info["bbox"], rect)) is not None]
+    image_boxes = [
+        b for im in page.images if (b := clip_box((im["x0"], im["top"], im["x1"], im["bottom"]), bounds)) is not None
+    ]
     max_image_cover = max((_box_area(b) / page_area for b in image_boxes), default=0.0)
     image_area_ratio = min(1.0, _union_area(image_boxes) / page_area)
 
-    total_chars = sum(len(w[4]) for w in raw_words)
-    invalid_chars = sum(1 for w in raw_words for ch in w[4] if _is_invalid_char(ch))
+    total_chars = sum(len(w["text"]) for w in words)
+    invalid_chars = sum(1 for w in words for ch in w["text"] if _is_invalid_char(ch))
     invalid_ratio = invalid_chars / total_chars if total_chars > 0 else 0.0
 
     suspect_ocr_layer = (
@@ -124,5 +130,5 @@ def classify_page(page: pymupdf.Page, page_number: int | None = None) -> PagePro
         text_area_ratio=round(text_area_ratio, 6),
         image_area_ratio=round(image_area_ratio, 6),
         suspect_ocr_layer=suspect_ocr_layer,
-        figure_candidate=_is_figure_candidate(page, rect, image_boxes),
+        figure_candidate=_is_figure_candidate(page, bounds, image_boxes),
     )

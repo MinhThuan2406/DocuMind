@@ -1,28 +1,33 @@
 # pdf
 
-Lightweight multi-page PDF parser for DocuMind Problem 3 with zero `docling` dependency. Pages with a usable text layer run on PyMuPDF alone; the swappable layout detectors (`heron-onnx` by default via `onnxruntime`, `heron` via `transformers` + `torch`, or `mineru-pipeline` in an isolated venv) and OCR recognizers (`rapidocr-onnx` by default, or `rapidocr-torch`) are imported lazily only when `figures=True` or `ocr=True` is needed.
+Lightweight multi-page PDF parser for DocuMind Problem 3 with zero `docling` or `pymupdf` dependency. Pages with a usable text layer run on `pdfplumber` (+ `pypdfium2` for page rendering and bookmarks); the swappable layout detectors (`heron-onnx` by default via `onnxruntime`, `heron` via `transformers` + `torch`, or `mineru-pipeline` in an isolated venv), table extractors (`auto` by default, or `tatr-onnx` / `pdfplumber`), and OCR recognizers (`rapidocr-onnx` by default, or `rapidocr-torch`) are imported lazily only when `figures=True`, `tables=True`, or `ocr=True` is needed.
 
 ## 1. Layout and usage
 
 ```
 pdf/
   __init__.py         public exports (models + extract_ir)
+  _pdf_io.py          shared pdfplumber / pypdfium2 helpers (bbox, word extraction, ToC, page/crop rendering)
   models.py           frozen dataclasses in PDF points (top-left origin)
   router.py           classify_page(page) -> PageProfile (includes figure_candidate pre-filter)
-  text.py             PyMuPDF word extraction + recursive XY-cut block ordering
+  text.py             pdfplumber word extraction (x_tolerance_ratio=0.15) + recursive XY-cut block ordering
   grouping.py         FigureGrouper implementations: v1_anchor (OpenCV + DSU) and raw_picture
   figures.py          lazy layout backend + cache + grouper + layout_table boxes
+  tables.py           lazy table extractor dispatch (crop render + native tokens / OCR fallback)
   raster.py           lazy PageReader dispatch for raster pages
   assemble.py         overlap filter, innermost-box word assignment, atomic XY-cut assembly, running header/footer tagging
   hierarchy.py        heading detection, section tree builder (apply_structure, build_section_tree), caption linking
-  ir.py               extract_ir(path, *, figures=True, ocr=True, layout="heron-onnx", grouper="v1_anchor", reader="composed", ocr_backend="rapidocr-onnx", device="auto", min_font_size=0.0, structure=True) -> dict
+  ir.py               extract_ir(path, *, figures=True, ocr=True, tables=False, ..., structure=True) -> dict
   benchmark.py        isolated timing/RAM benchmark (native, figures_cached, figures_live, raster)
   backends/
-    base.py           Protocols (LayoutDetector, LayoutBackend, TextRecognizer, PageReader, FigureGrouper), PageLayout, RunStats
+    base.py           Protocols (LayoutDetector, LayoutBackend, TextRecognizer, PageReader, FigureGrouper, TableExtractor), PageLayout, RunStats
     registry.py       register(), get(kind, name, **opts), registered(), lazy built-in factories
     heron_onnx.py     RT-DETR v2 Heron ONNX detector (default layout/detector backend)
     heron.py          RT-DETR v2 Heron PyTorch/transformers detector
     rapidocr.py       RapidOCR recognizer (onnxruntime or torch engine)
+    tatr_onnx.py      Table Transformer v1.1 ONNX structure extractor
+    table_pdfplumber.py PdfPlumber TableFinder native table extractor (table="pdfplumber")
+    table_auto.py     Hybrid table extractor (default table="auto": pdfplumber grid + TATR header refinement / fallback)
     mineru.py         MinerULayoutBackend and MinerUReader (isolated venv subprocess)
     mineru_child.py   child script run inside the MinerU venv
     layout_image.py   ImageLayoutBackend wrapping per-image LayoutDetector at 96.012 DPI PNG scale
@@ -51,7 +56,7 @@ pdf/
 ```python
 from pdf import extract_ir
 
-# Pure PyMuPDF CPU path (imports neither onnxruntime, torch, transformers, nor rapidocr):
+# Pure pdfplumber CPU path (imports neither pymupdf, onnxruntime, torch, transformers, nor rapidocr):
 ir_text = extract_ir("datasets/AUTOSAR/AUTOSAR_CP_EXP_VFB.pdf", figures=False, ocr=False)
 
 # Full path (default ONNX backends for Heron layout and RapidOCR):
@@ -89,14 +94,15 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 ## 2. Pipeline rules
 
 - **Router (`router.py`):** classifies each page as `native`, `raster`, or `hybrid` for text-source selection (`raster` when `word_count < 5` and a single embedded image covers `>= 0.96` of the page; `native` when `word_count >= 5`, `text_area_ratio >= 0.002`, `max_image_cover < 0.96`, and `not suspect_ocr_layer`; blank pages with zero text and zero images are `native`; all others are `hybrid`), and sets `figure_candidate` from non-background drawings/embedded images.
-- **Text pipeline (`text.py`):** uses `pymupdf` `get_text("words")` as the word baseline and maps `font_size` and `bold` from `get_text("dict")` spans. Groups words to line segments (splitting across wide column gaps) and blocks, then orders blocks with a recursive XY-cut ported from `ir_postprocessor.py` (scaled by `72/150`).
+- **Text pipeline (`text.py`):** uses `pdfplumber` `extract_words(x_tolerance_ratio=0.15, extra_attrs=["fontname", "size"])` as the word baseline with font size and bold detection from `fontname`. Groups words to line segments (splitting across wide column gaps) and blocks, then orders blocks with a recursive XY-cut ported from `ir_postprocessor.py` (scaled by `72/150`).
 - **Backends & registry (`pdf/backends/registry.py`):** resolves backends lazily by `(kind, name)`:
   - `detector` / `layout`: `heron-onnx` (default, `docling-project/docling-layout-heron-onnx` revision `40bde044036bb181c130ddf6c51792187268748f`), `heron` (`docling-project/docling-layout-heron` revision `8f39ad3c0b4c58e9c2d2c84a38465abf757272d8`), `mineru-pipeline` (`layout` only, runs via `DOCUMIND_MINERU_PYTHON` or `~/.venvs/mineru-4.2.3`).
   - `ocr`: `rapidocr-onnx` (default), `rapidocr-torch`, `rapidocr` (CPU ONNX).
   - `reader`: `composed` (default, combines `layout` detector + `ocr_backend`), `heron-onnx+rapidocr-onnx`, `heron-onnx+rapidocr-torch`, `mineru-pipeline`.
   - `grouper`: `v1_anchor` (default, `source="v1_group"`), `raw_picture` (`source="layout_picture"`).
-- **Image pipeline (`figures.py`, `grouping.py`, `pdf/layout/`):** renders pages via PyMuPDF Pixmap in memory (`150 DPI`), uses `CachedLayoutBackend` / `LayoutCache` keyed by `(backend, revision, dpi, pdf_sha256)`, and runs the layout backend lazily on cache misses (`ImageLayoutBackend` rescales to `96.012 DPI`, runs `postprocess_layout(..., keep_empty_clusters=False)` and `clusters_to_items()`). Applies the selected `FigureGrouper` (`v1_anchor` uses OpenCV/numpy + DSU with `min_area = 0.015`, `footer_frac = 0.88`) and collects `layout_table` boxes (`include_tables=True`). All `figures.py` boxes carry a fixed confidence (`0.95`).
-- **Assembler & IR (`assemble.py`, `hierarchy.py`, `ir.py`):** drops any `table` box overlapped `>= 50%` by a `figure` box; assigns each word whose center lies in a box to the smallest-area enclosing box (`(area, box_index)` tie-break) before running body XY-cut; orders `[body TextBlocks + atomic figures/tables]` via page-level XY-cut; emits `figure` inner words (via local XY-cut) and `table` inner blocks as `level=2` child `text` elements sequentially after their parent (`reading_order` restarts at `0` per page). On `raster` pages, `TextBlock`s inside `table` boxes also nest as `level=2` children. `tag_running_headers_footers()` sets `metadata.role` (`page_header` / `page_footer`) on repeating top/bottom bands (or matching OCR labels), and `apply_structure()` (enabled via `structure=True`, passing `doc.get_toc()` from PyMuPDF) links `caption` elements to `figure`/`table` boxes (`caption_of`, `caption_id`, `caption_text`), detects headings via bookmarks (ignoring slide `Folie`/`Slide`/`Page` bookmarks), numbering, and 5%-tolerance style clustering (`heading_level`, `section_parent_id`), and populates `metadata.outline`.
+  - `table`: `auto` (default, hybrid `pdfplumber` + `tatr-onnx` with TATR header refinement and borderless/raster fallback), `tatr-onnx` (`Xenova/table-transformer-structure-recognition-v1.1-all`), `pdfplumber` (native bordered tables via `page.find_tables()`).
+- **Image pipeline (`figures.py`, `grouping.py`, `pdf/layout/`):** renders pages via `pypdfium2` (`150 DPI`), uses `CachedLayoutBackend` / `LayoutCache` keyed by `(backend, revision, dpi, pdf_sha256)`, and runs the layout backend lazily on cache misses (`ImageLayoutBackend` rescales to `96.012 DPI`, runs `postprocess_layout(..., keep_empty_clusters=False)` and `clusters_to_items()`). Applies the selected `FigureGrouper` (`v1_anchor` uses OpenCV/numpy + DSU with `min_area = 0.015`, `footer_frac = 0.88`) and collects `layout_table` boxes (`include_tables=True`). All `figures.py` boxes carry a fixed confidence (`0.95`).
+- **Assembler & IR (`assemble.py`, `hierarchy.py`, `ir.py`):** drops any `table` box overlapped `>= 50%` by a `figure` box; assigns each word whose center lies in a box to the smallest-area enclosing box (`(area, box_index)` tie-break) before running body XY-cut; orders `[body TextBlocks + atomic figures/tables]` via page-level XY-cut; emits `figure` inner words (via local XY-cut) and `table` inner blocks as `level=2` child `text` elements sequentially after their parent (`reading_order` restarts at `0` per page). On `raster` pages, `TextBlock`s inside `table` boxes also nest as `level=2` children. When `tables=True`, `extract_tables_on_page()` parses table structure into `ir["tables"]` and links `metadata.table_id`. `tag_running_headers_footers()` sets `metadata.role` (`page_header` / `page_footer`) on repeating top/bottom bands (or matching OCR labels), and `apply_structure()` (enabled via `structure=True`, passing ToC bookmarks via `pypdfium2`) links `caption` elements to `figure`/`table` boxes (`caption_of`, `caption_id`, `caption_text`), detects headings via bookmarks (ignoring slide `Folie`/`Slide`/`Page` bookmarks), numbering, and 5%-tolerance style clustering (`heading_level`, `section_parent_id`), and populates `metadata.outline`.
 - **Raster & hybrid OCR fallback (`raster.py`, `pdf/backends/reader_composed.py`):** when `ocr=True`, `raster` pages and `hybrid` pages with `suspect_ocr_layer=True` route through `PageReader` (`ComposedReader` runs `LayoutDetector` + `postprocess_layout(..., keep_empty_clusters=True)` and `TextRecognizer`, assigns OCR lines to non-picture clusters preserving `metadata.layout_label`, keeps orphan lines outside `picture` boxes, and orders blocks via XY-cut; `MinerUReader` maps `middle_json`). When `ocr=False`, `raster` pages are listed in `metadata.unreadable_pages` and `hybrid` `suspect_ocr_layer` pages stay on `text_layer` with a `metadata.warnings` entry.
 
 ## 3. IR differences

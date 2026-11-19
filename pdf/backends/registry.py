@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper")
+VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper", "table")
 Factory = Callable[..., Any]
 
 _FACTORIES: dict[tuple[str, str], Factory] = {}
@@ -35,6 +35,9 @@ def _ensure_builtins() -> None:
     _FACTORIES[("reader", "mineru-pipeline")] = _mineru_reader_factory
     _FACTORIES[("grouper", "v1_anchor")] = _v1_anchor_factory
     _FACTORIES[("grouper", "raw_picture")] = _raw_picture_factory
+    _FACTORIES[("table", "tatr-onnx")] = _tatr_onnx_factory
+    _FACTORIES[("table", "pdfplumber")] = _pdfplumber_table_factory
+    _FACTORIES[("table", "auto")] = _auto_table_factory
 
 
 def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
@@ -136,6 +139,24 @@ def _raw_picture_factory(**_extra: Any) -> Any:
     from ..grouping import RawPictureGrouper
 
     return RawPictureGrouper()
+
+
+def _tatr_onnx_factory(*, device: str = "auto", **_extra: Any) -> Any:
+    from .tatr_onnx import TatrOnnxTableExtractor
+
+    return TatrOnnxTableExtractor(device=device)
+
+
+def _pdfplumber_table_factory(**_extra: Any) -> Any:
+    from .table_pdfplumber import PdfPlumberTableExtractor
+
+    return PdfPlumberTableExtractor()
+
+
+def _auto_table_factory(*, device: str = "auto", **_extra: Any) -> Any:
+    from .table_auto import AutoTableExtractor
+
+    return AutoTableExtractor(device=device)
 
 
 def register(kind: str, name: str, factory: Factory) -> None:

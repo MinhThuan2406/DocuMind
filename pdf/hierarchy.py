@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-import pymupdf
+from ._pdf_io import extract_toc
 
 _IGNORED_ROLES = frozenset({"page_header", "page_footer"})
 _NON_HEADING_LABELS = frozenset(
@@ -72,12 +72,7 @@ def _filter_meaningful_toc(toc: Sequence[tuple[int, str, int]]) -> list[tuple[in
 
 
 def _load_pdf_toc(pdf_path: str | Path) -> list[tuple[int, str, int]]:
-    doc = pymupdf.open(str(pdf_path))
-    try:
-        raw = doc.get_toc()
-    finally:
-        doc.close()
-    return _filter_meaningful_toc(raw)
+    return _filter_meaningful_toc(extract_toc(pdf_path))
 
 
 def _match_toc_entries(

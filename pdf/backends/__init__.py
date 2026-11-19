@@ -5,6 +5,7 @@ from .base import (
     PageLayout,
     PageReader,
     RunStats,
+    TableExtractor,
     TextRecognizer,
 )
 from .layout_cache import CachedLayoutBackend, LayoutCache, file_sha256
@@ -23,6 +24,7 @@ __all__ = [
     "PageLayout",
     "PageReader",
     "RunStats",
+    "TableExtractor",
     "TextRecognizer",
     "file_sha256",
     "get",

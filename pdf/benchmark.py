@@ -11,20 +11,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import pymupdf  # noqa: E402
+import pypdfium2 as pdfium  # noqa: E402
 
 from pdf.backends.rss import peak_rss_mb as _peak_rss_mb  # noqa: E402
 from pdf.eval.gt import OMNIDOC_SAMPLE_PAGES, build_raster_pdf  # noqa: E402
 
 
 def _make_subset_pdf(src: Path, dst: Path, pages: list[int]) -> None:
-    doc = pymupdf.open(str(src))
-    out = pymupdf.open()
-    for pno in pages:
-        out.insert_pdf(doc, from_page=pno - 1, to_page=pno - 1)
-    out.save(str(dst))
-    out.close()
-    doc.close()
+    doc = pdfium.PdfDocument(str(src))
+    out = pdfium.PdfDocument.new()
+    try:
+        out.import_pages(doc, pages=[pno - 1 for pno in pages])
+        out.save(str(dst))
+    finally:
+        out.close()
+        doc.close()
 
 
 def _run_isolated_bench(

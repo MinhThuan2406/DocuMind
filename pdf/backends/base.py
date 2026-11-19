@@ -8,7 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from ..layout.types import LayoutItem
-from ..models import BBox, RasterPage
+from ..models import BBox, ExtractedTable, RasterPage
 from ..ocr.types import OcrLine
 
 
@@ -60,3 +60,16 @@ class FigureGrouper(Protocol):
     name: str
 
     def group(self, bgr: Any, layout: PageLayout, min_area: float) -> list[list[float]]: ...
+
+
+@runtime_checkable
+class TableExtractor(Protocol):
+    name: str
+    last_stats: RunStats | None
+
+    def extract(
+        self,
+        image: Image.Image,
+        table_bbox_pt: BBox,
+        tokens: Sequence[tuple[str, BBox]] = (),
+    ) -> ExtractedTable: ...

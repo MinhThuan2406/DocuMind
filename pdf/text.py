@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TypeVar
+from typing import Any, TypeVar
 
-import pymupdf
-
+from ._pdf_io import clip_box, extract_words_raw, page_bbox
 from .models import BBox, TextBlock, TextSource, Word
 
 _SCALE = 72.0 / 150.0
@@ -17,71 +16,30 @@ _Y_BUCKET = 12.0 * _SCALE
 T = TypeVar("T")
 
 
-def _clip_word_box(box: tuple[float, float, float, float], rect: pymupdf.Rect) -> BBox | None:
-    x0 = max(float(box[0]), float(rect.x0))
-    y0 = max(float(box[1]), float(rect.y0))
-    x1 = min(float(box[2]), float(rect.x1))
-    y1 = min(float(box[3]), float(rect.y1))
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return (x0, y0, x1, y1)
+def _is_bold_font(fontname: str) -> bool:
+    lower = fontname.lower()
+    return any(tok in lower for tok in ("bold", "black", "heavy", "semibold", "demi"))
 
 
-def _extract_spans(page: pymupdf.Page) -> list[tuple[BBox, float, bool]]:
-    spans: list[tuple[BBox, float, bool]] = []
-    info = page.get_text("dict", flags=0)
-    for block in info.get("blocks", ()):
-        if block.get("type") != 0:
-            continue
-        for line in block.get("lines", ()):
-            for span in line.get("spans", ()):
-                bbox = span.get("bbox")
-                if not bbox or len(bbox) != 4:
-                    continue
-                size = float(span.get("size", 0.0))
-                flags = int(span.get("flags", 0))
-                font_name = str(span.get("font", "")).lower()
-                is_bold = bool(flags & 16) or ("bold" in font_name)
-                spans.append(((float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])), size, is_bold))
-    return spans
-
-
-def _match_span(word_box: BBox, spans: list[tuple[BBox, float, bool]]) -> tuple[float, bool]:
-    wx0, wy0, wx1, wy1 = word_box
-    cx = (wx0 + wx1) * 0.5
-    cy = (wy0 + wy1) * 0.5
-    best_overlap = -1.0
-    best_style = (0.0, False)
-    for sb, size, is_bold in spans:
-        if sb[3] < wy0 - 1.0 or sb[1] > wy1 + 1.0:
-            continue
-        ix = min(wx1, sb[2]) - max(wx0, sb[0])
-        iy = min(wy1, sb[3]) - max(wy0, sb[1])
-        if ix > 0 and iy > 0:
-            overlap = ix * iy
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_style = (size, is_bold)
-        elif best_overlap < 0 and sb[0] <= cx <= sb[2] and sb[1] <= cy <= sb[3]:
-            best_style = (size, is_bold)
-    return best_style
-
-
-def extract_words(page: pymupdf.Page, *, min_font_size: float = 0.0) -> list[Word]:
-    rect = page.rect
-    raw_words = page.get_text("words")
-    if not raw_words:
+def extract_words(
+    page: Any,
+    *,
+    min_font_size: float = 0.0,
+    raw_words: list[dict[str, Any]] | None = None,
+) -> list[Word]:
+    bounds = page_bbox(page)
+    items = extract_words_raw(page, with_style=True) if raw_words is None else raw_words
+    if not items:
         return []
-    spans = _extract_spans(page)
     words: list[Word] = []
-    for item in raw_words:
-        box = _clip_word_box((item[0], item[1], item[2], item[3]), rect)
-        if box is None:
-            box = (float(item[0]), float(item[1]), float(item[2]), float(item[3]))
-        font_size, bold = _match_span(box, spans)
+    for item in items:
+        raw_box = (float(item["x0"]), float(item["top"]), float(item["x1"]), float(item["bottom"]))
+        box = clip_box(raw_box, bounds) or raw_box
+        font_size = float(item.get("size", 0.0))
+        bold = _is_bold_font(str(item.get("fontname", "")))
         if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
             continue
-        words.append(Word(text=str(item[4]), bbox=box, font_size=round(font_size, 2), bold=bold))
+        words.append(Word(text=str(item["text"]), bbox=box, font_size=round(font_size, 2), bold=bold))
     return words
 
 
@@ -287,7 +245,7 @@ def xy_cut_order(items: Sequence[T], get_bbox: Callable[[T], BBox]) -> list[T]:
 
 def order_blocks(
     words: Sequence[Word],
-    page_rect: BBox | pymupdf.Rect | None = None,
+    page_rect: BBox | None = None,
     *,
     source: TextSource = "text_layer",
     confidence: float = 1.0,
@@ -298,6 +256,6 @@ def order_blocks(
     return xy_cut_order(blocks, lambda b: b.bbox)
 
 
-def extract_text(page: pymupdf.Page, *, min_font_size: float = 0.0) -> list[TextBlock]:
+def extract_text(page: Any, *, min_font_size: float = 0.0) -> list[TextBlock]:
     words = extract_words(page, min_font_size=min_font_size)
-    return order_blocks(words, page.rect)
+    return order_blocks(words, page_bbox(page))

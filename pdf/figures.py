@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import pymupdf
+import pypdfium2 as pdfium
 
 from .backends import CachedLayoutBackend, FigureGrouper, LayoutBackend, get as get_backend
 from .backends.layout_image import render_bgr
@@ -16,10 +16,11 @@ LAYOUT_BOX_CONFIDENCE = 0.95
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_rect: pymupdf.Rect) -> BBox:
+def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_size_pt: tuple[float, float]) -> BBox:
     iw, ih = img_size
-    sx = float(page_rect.width) / iw
-    sy = float(page_rect.height) / ih
+    pw, ph = page_size_pt
+    sx = float(pw) / iw
+    sy = float(ph) / ih
     return (
         round(box_px[0] * sx, 3),
         round(box_px[1] * sy, 3),
@@ -71,7 +72,7 @@ def detect_figures(
     fig_grouper = get_backend("grouper", grouper) if isinstance(grouper, str) else grouper
     fig_source: FigureSource = getattr(fig_grouper, "source", "v1_group")
 
-    doc = pymupdf.open(str(path))
+    doc = pdfium.PdfDocument(str(path))
     results: dict[int, list[FigureBox]] = {}
     try:
         target_pages = list(range(1, len(doc) + 1)) if pages is None else sorted(set(pages))
@@ -85,6 +86,7 @@ def detect_figures(
 
         for pno in target_pages:
             page = doc[pno - 1]
+            page_size_pt = tuple(float(v) for v in page.get_size())
             bgr, img_size = render_bgr(page, dpi)
             page_layout = layouts[pno]
 
@@ -97,7 +99,7 @@ def detect_figures(
 
             page_boxes: list[FigureBox] = [
                 FigureBox(
-                    bbox=_to_pt_box(b, img_size, page.rect),
+                    bbox=_to_pt_box(b, img_size, page_size_pt),
                     kind="figure",
                     source=fig_source,
                     confidence=LAYOUT_BOX_CONFIDENCE,
@@ -109,7 +111,7 @@ def detect_figures(
                 raw_tables.sort(key=lambda b: (b[1], b[0]))
                 page_boxes.extend(
                     FigureBox(
-                        bbox=_to_pt_box(b, img_size, page.rect),
+                        bbox=_to_pt_box(b, img_size, page_size_pt),
                         kind="table",
                         source="layout_table",
                         confidence=LAYOUT_BOX_CONFIDENCE,

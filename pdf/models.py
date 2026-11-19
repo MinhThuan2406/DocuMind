@@ -57,3 +57,24 @@ class RasterPage:
     blocks: tuple[TextBlock, ...]
     figures: tuple[FigureBox, ...]
     reading_order: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class TableCell:
+    row: int
+    col: int
+    rowspan: int
+    colspan: int
+    text: str
+    bbox: BBox | None
+    is_header: bool = False
+
+
+@dataclass(frozen=True)
+class ExtractedTable:
+    bbox: BBox
+    num_rows: int
+    num_cols: int
+    cells: tuple[TableCell, ...]
+    source: str
+    confidence: float
