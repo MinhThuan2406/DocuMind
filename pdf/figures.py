@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import pypdfium2 as pdfium
 
+from ._pdf_io import pdfium_box_to_page_box, pdfium_page_box, round_bbox
 from .backends import CachedLayoutBackend, FigureGrouper, LayoutBackend, get as get_backend
 from .backends.base import RunStats
 from .backends.layout_cache import file_sha256
@@ -35,6 +36,11 @@ def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_size_pt:
     )
 
 
+def _to_page_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_box: BBox) -> BBox:
+    page_size_pt = (max(0.0, page_box[2] - page_box[0]), max(0.0, page_box[3] - page_box[1]))
+    return round_bbox(pdfium_box_to_page_box(_to_pt_box(box_px, img_size, page_size_pt), page_box))
+
+
 def _table_boxes_px(
     items: list[dict[str, Any]],
     img_size: tuple[int, int],
@@ -61,7 +67,7 @@ def _semantic_regions_pt(
     items: list[dict[str, Any]],
     img_size: tuple[int, int],
     page_size: tuple[float, float],
-    page_size_pt: tuple[float, float],
+    page_box: BBox,
 ) -> list[SemanticRegion]:
     iw, ih = img_size
     dw, dh = page_size
@@ -79,7 +85,7 @@ def _semantic_regions_pt(
         by1 = max(0.0, min(float(ih), float(bbox[3]) * sy))
         if bx1 <= bx0 or by1 <= by0:
             continue
-        pt_box = _to_pt_box((bx0, by0, bx1, by1), img_size, page_size_pt)
+        pt_box = _to_page_pt_box((bx0, by0, bx1, by1), img_size, page_box)
         if pt_box[2] <= pt_box[0] or pt_box[3] <= pt_box[1]:
             continue
         raw_score = it.get("score")
@@ -105,6 +111,7 @@ def detect_figures(
     pdf_hash: str | None = None,
     warnings_out: list[dict[str, Any]] | None = None,
     semantic_regions_out: dict[int, list[SemanticRegion]] | None = None,
+    page_boxes: Mapping[int, BBox] | None = None,
 ) -> dict[int, list[FigureBox]]:
     path = Path(pdf_path)
     cache_root = (
@@ -152,7 +159,11 @@ def detect_figures(
 
                 for pno in batch:
                     page = doc[pno - 1]
-                    page_size_pt = tuple(float(v) for v in page.get_size())
+                    page_box = (
+                        page_boxes[pno]
+                        if (page_boxes is not None and pno in page_boxes)
+                        else pdfium_page_box(page)
+                    )
                     bgr = rendered_cache.pop(pno, None) if can_reuse_bgr else None
                     if bgr is not None:
                         ih, iw = bgr.shape[:2]
@@ -163,7 +174,7 @@ def detect_figures(
                     page_layout = layouts[pno]
                     if semantic_regions_out is not None:
                         semantic_regions_out[pno] = _semantic_regions_pt(
-                            page_layout.items, img_size, page_layout.frame, page_size_pt
+                            page_layout.items, img_size, page_layout.frame, page_box
                         )
 
                     raw_figs = fig_grouper.group(bgr, page_layout, min_area)
@@ -175,9 +186,9 @@ def detect_figures(
                     ]
                     kept_figs.sort(key=lambda g: (g.bbox[1], g.bbox[0]))
 
-                    page_boxes: list[FigureBox] = [
+                    detected_boxes: list[FigureBox] = [
                         FigureBox(
-                            bbox=_to_pt_box(g.bbox, img_size, page_size_pt),
+                            bbox=_to_page_pt_box(g.bbox, img_size, page_box),
                             kind="figure",
                             source=g.source,
                             confidence=round(float(g.score), 4),
@@ -187,16 +198,16 @@ def detect_figures(
                     if include_tables:
                         raw_tables = _table_boxes_px(page_layout.items, img_size, page_layout.frame, footer_frac)
                         raw_tables.sort(key=lambda item: (item[0][1], item[0][0]))
-                        page_boxes.extend(
+                        detected_boxes.extend(
                             FigureBox(
-                                bbox=_to_pt_box(box, img_size, page_size_pt),
+                                bbox=_to_page_pt_box(box, img_size, page_box),
                                 kind="table",
                                 source="layout_table",
                                 confidence=score,
                             )
                             for box, score in raw_tables
                         )
-                    results[pno] = page_boxes
+                    results[pno] = detected_boxes
 
         if hasattr(backend, "last_stats"):
             if len(batch_stats) == 0:

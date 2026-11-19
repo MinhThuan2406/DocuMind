@@ -15,7 +15,7 @@ from pdf import extract_ir  # noqa: E402
 from pdf._pdf_io import extract_words_raw  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.models import Word  # noqa: E402
-from pdf.text import order_blocks, xy_cut_order  # noqa: E402
+from pdf.text import extract_words, order_blocks, xy_cut_order  # noqa: E402
 
 
 def _make_two_column_pdf(path: Path) -> None:
@@ -86,9 +86,14 @@ def test_word_parity_and_speed_on_layered_pdf():
             ir_words_by_page.setdefault(elem["page"], Counter()).update(elem["text"].split())
 
         for page_idx, page in enumerate(doc.pages, start=1):
-            expected = Counter(w["text"] for w in extract_words_raw(page, with_style=True))
+            expected = Counter(w.text for w in extract_words(page))
             actual = ir_words_by_page.get(page_idx, Counter())
             assert actual == expected, (page_idx, expected - actual, actual - expected)
+            raw_chars = Counter(ch for w in extract_words_raw(page, with_style=True) for ch in w["text"])
+            actual_chars = Counter(ch for w_text, n in actual.items() for ch in w_text * n)
+            assert actual_chars == raw_chars, (page_idx, raw_chars - actual_chars, actual_chars - raw_chars)
+        p9_texts = [e["text"] for e in ir["elements"] if e["page"] == 9]
+        assert "page id: toc01" in p9_texts, p9_texts
 
 
 def test_two_column_mid_page_spanning_banner():
@@ -162,9 +167,7 @@ def test_vertical_90_270_text_no_horizontal_interleaving():
         p._ops.append(b"BT /F1 11.00 Tf 0 -1 1 0 505.00 650.00 Tm (ColRightVert) Tj ET")
         b.save(pdf_path)
 
-        with pdfplumber.open(str(pdf_path)) as doc:
-            raw = extract_words_raw(doc.pages[0], with_style=True)
-        expected = Counter(w["text"] for w in raw)
+        expected = Counter(["HorizontalBodyLine", "AlphaNinety", "ColLeftVert", "ColRightVert"])
 
         ir = extract_ir(pdf_path, figures=False, ocr=False)
         actual = Counter()
@@ -249,6 +252,67 @@ def test_scale_free_tolerances_and_overlapping_stress():
     ]
     scaled_blocks = order_blocks(scaled_words, page_rect=(0.0, 0.0, 1190.0, 1684.0))
     assert [b.text for b in scaled_blocks] == ["UL", "UR"]
+
+
+def test_rotated_words_upright_column_digits_multiline_vert_and_xy_cut_top_overlap():
+    # Bug #7: 90 CCW (btt) and 270 CW (ttb) multi-word labels + /Rotate 90/270 pages.
+    with tempfile.TemporaryDirectory() as tmp:
+        b = TestPdfBuilder()
+        p = b.new_page(width=595, height=842)
+        p._ops.append(b"BT /F1 8.00 Tf 0 1 -1 0 60.00 500.00 Tm (data required) Tj ET")
+        p._ops.append(b"BT /F1 8.00 Tf 0 -1 1 0 490.00 650.00 Tm (Complex Drivers) Tj ET")
+        pdf_path = Path(tmp) / "rot_words.pdf"
+        b.save(pdf_path)
+        ir = extract_ir(pdf_path, figures=False, ocr=False)
+        texts = [e["text"] for e in ir["elements"]]
+        assert "data required" in texts, texts
+        assert "Complex Drivers" in texts, texts
+
+        for rot, expected_txt in ((90, "RotatedPage90"), (270, "RotatedPage270")):
+            b_rot = TestPdfBuilder()
+            pr = b_rot.new_page(width=600, height=800)
+            pr.insert_text((100, 150), expected_txt, fontsize=11)
+            raw = b_rot.to_bytes().replace(
+                b"/MediaBox [0 0 600.00 800.00]",
+                f"/MediaBox [0 0 600.00 800.00] /Rotate {rot}".encode("ascii"),
+            )
+            rot_path = Path(tmp) / f"page_rot_{rot}.pdf"
+            rot_path.write_bytes(raw)
+            ir_rot = extract_ir(rot_path, figures=False, ocr=False)
+            assert [e["text"] for e in ir_rot["elements"]] == [expected_txt]
+
+    # Bug #8: upright stacked column digits stay horizontal; adjacent vertical rotated lines stay vertical.
+    stacked_words = [
+        Word("1", (50.0, 100.0, 55.0, 110.0), 10.0, False, upright=True),
+        Word("Alpha", (73.0, 100.0, 110.0, 110.0), 10.0, False, upright=True),
+        Word("2", (50.0, 118.0, 55.0, 128.0), 10.0, False, upright=True),
+        Word("Beta", (73.0, 118.0, 105.0, 128.0), 10.0, False, upright=True),
+        Word("3", (50.0, 136.0, 55.0, 146.0), 10.0, False, upright=True),
+        Word("Gamma", (73.0, 136.0, 115.0, 146.0), 10.0, False, upright=True),
+    ]
+    stacked_blocks = order_blocks(stacked_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in stacked_blocks] == ["1 Alpha\n2 Beta\n3 Gamma"]
+
+    vert_adj = [
+        Word("Layered", (50.0, 100.0, 60.0, 160.0), 10.0, False, upright=False),
+        Word("Software", (64.0, 100.0, 74.0, 170.0), 10.0, False, upright=False),
+    ]
+    vert_blocks = order_blocks(vert_adj, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in vert_blocks] == ["Layered", "Software"]
+
+    # Bug #9: wide top block overlapping parallel column must not split the column.
+    xy_items = [
+        ("LeftCol", (50.0, 105.0, 180.0, 300.0)),
+        ("RightTop", (200.0, 100.0, 500.0, 140.0)),
+        ("RightBot", (200.0, 160.0, 500.0, 300.0)),
+        ("BotBanner", (50.0, 320.0, 500.0, 350.0)),
+    ]
+    assert [n for n, _ in xy_cut_order(xy_items, lambda it: it[1])] == [
+        "LeftCol",
+        "RightTop",
+        "RightBot",
+        "BotBanner",
+    ]
 
 
 def main():

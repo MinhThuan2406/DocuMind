@@ -36,6 +36,7 @@ class Word:
     font_size: float
     bold: bool
     upright: bool = True
+    direction: str = "ltr"
 
 
 @dataclass(frozen=True)

@@ -33,14 +33,19 @@ def read_raster_pages(
     device: str = "auto",
     dpi: int = DEFAULT_RASTER_DPI,
     pdfium_doc: Any = None,
+    page_boxes: Mapping[int, BBox] | None = None,
 ) -> dict[int, RasterPage]:
     page_list = list(pages)
     if not page_list:
         return {}
     page_reader = _resolve_reader(reader, layout=layout, ocr_backend=ocr_backend, device=device, dpi=dpi)
-    if pdfium_doc is not None and "pdfium_doc" in inspect.signature(page_reader.read).parameters:
-        return page_reader.read(pdf_path, page_list, pdfium_doc=pdfium_doc)
-    return page_reader.read(pdf_path, page_list)
+    params = inspect.signature(page_reader.read).parameters
+    kwargs: dict[str, Any] = {}
+    if pdfium_doc is not None and "pdfium_doc" in params:
+        kwargs["pdfium_doc"] = pdfium_doc
+    if page_boxes is not None and "page_boxes" in params:
+        kwargs["page_boxes"] = page_boxes
+    return page_reader.read(pdf_path, page_list, **kwargs)
 
 
 def read_raster_page(
@@ -53,6 +58,7 @@ def read_raster_page(
     device: str = "auto",
     dpi: int = DEFAULT_RASTER_DPI,
     pdfium_doc: Any = None,
+    page_box: BBox | None = None,
 ) -> RasterPage:
     return read_raster_pages(
         pdf_path,
@@ -63,6 +69,7 @@ def read_raster_page(
         device=device,
         dpi=dpi,
         pdfium_doc=pdfium_doc,
+        page_boxes={page: page_box} if page_box is not None else None,
     )[page]
 
 
@@ -76,6 +83,7 @@ def read_raster_regions(
     device: str = "auto",
     dpi: int = DEFAULT_HIGH_DPI,
     pdfium_doc: Any = None,
+    page_boxes: Mapping[int, BBox] | None = None,
 ) -> dict[int, list[TextBlock]]:
     if not regions_by_page:
         return {}
@@ -91,4 +99,6 @@ def read_raster_regions(
         kwargs["dpi"] = dpi
     if pdfium_doc is not None and "pdfium_doc" in params:
         kwargs["pdfium_doc"] = pdfium_doc
+    if page_boxes is not None and "page_boxes" in params:
+        kwargs["page_boxes"] = page_boxes
     return fn(pdf_path, regions_by_page, **kwargs)

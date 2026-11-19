@@ -62,7 +62,32 @@ class PdfContext:
         self.close()
 
 
-def page_bbox(page: Any) -> BBox:
+def bbox_area(box: Sequence[float]) -> float:
+    return max(0.0, float(box[2]) - float(box[0])) * max(0.0, float(box[3]) - float(box[1]))
+
+
+def bbox_inter_area(a: Sequence[float], b: Sequence[float]) -> float:
+    ix = max(0.0, min(float(a[2]), float(b[2])) - max(float(a[0]), float(b[0])))
+    iy = max(0.0, min(float(a[3]), float(b[3])) - max(float(a[1]), float(b[1])))
+    return ix * iy
+
+
+def bbox_iou(a: Sequence[float], b: Sequence[float]) -> float:
+    inter = bbox_inter_area(a, b)
+    union = bbox_area(a) + bbox_area(b) - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def round_bbox(box: Sequence[float], ndigits: int = 3) -> BBox:
+    return (
+        round(float(box[0]), ndigits),
+        round(float(box[1]), ndigits),
+        round(float(box[2]), ndigits),
+        round(float(box[3]), ndigits),
+    )
+
+
+def _raw_page_bbox(page: Any) -> BBox:
     b = getattr(page, "bbox", None)
     if b is not None and len(b) == 4:
         return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
@@ -83,21 +108,17 @@ def page_rotation(page: Any) -> int:
     return norm if norm in (0, 90, 180, 270) else 0
 
 
-def _cropbox_in_page_space(page: Any) -> BBox:
-    if hasattr(page, "get_size"):
-        w, h = page.get_size()
-        return (0.0, 0.0, float(w), float(h))
-    po = getattr(page, "page_obj", None)
-    root = getattr(page, "root_page", page)
-    if po is None or root is not page or not hasattr(po, "mediabox") or not hasattr(po, "cropbox"):
-        return page_bbox(page)
-    mx0, my0, mx1, my1 = (float(v) for v in po.mediabox)
-    cx0, cy0, cx1, cy1 = (float(v) for v in po.cropbox)
+def _boxes_to_page_cropbox(
+    mediabox: Sequence[float],
+    cropbox: Sequence[float],
+    rot: int,
+) -> BBox:
+    mx0, my0, mx1, my1 = (float(v) for v in mediabox)
+    cx0, cy0, cx1, cy1 = (float(v) for v in cropbox)
     mx0, mx1 = min(mx0, mx1), max(mx0, mx1)
     my0, my1 = min(my0, my1), max(my0, my1)
-    cx0, cx1 = min(cx0, cx1), max(cx0, cx1)
-    cy0, cy1 = min(cy0, cy1), max(cy0, cy1)
-    rot = page_rotation(page)
+    cx0, cx1 = max(mx0, min(cx0, cx1)), min(mx1, max(cx0, cx1))
+    cy0, cy1 = max(my0, min(cy0, cy1)), min(my1, max(cy0, cy1))
     wm, hm = mx1 - mx0, my1 - my0
     if rot == 0:
         return (cx0, hm - cy1, cx1, hm - cy0)
@@ -106,6 +127,40 @@ def _cropbox_in_page_space(page: Any) -> BBox:
     if rot == 180:
         return (mx1 + mx0 - cx1, cy0 - 2.0 * my0, mx1 + mx0 - cx0, cy1 - 2.0 * my0)
     return (my1 + my0 - cy1, wm - cx1, my1 + my0 - cy0, wm - cx0)
+
+
+def _cropbox_in_page_space(page: Any) -> BBox:
+    if hasattr(page, "get_size"):
+        w, h = page.get_size()
+        return (0.0, 0.0, float(w), float(h))
+    po = getattr(page, "page_obj", None)
+    root = getattr(page, "root_page", page)
+    if po is None or root is not page or not hasattr(po, "mediabox") or not hasattr(po, "cropbox"):
+        return _raw_page_bbox(page)
+    return _boxes_to_page_cropbox(po.mediabox, po.cropbox, page_rotation(page))
+
+
+def page_bbox(page: Any) -> BBox:
+    return _cropbox_in_page_space(page)
+
+
+def pdfium_page_box(pdf_page: Any) -> BBox:
+    cb = pdf_page.get_bbox()
+    mb = pdf_page.get_mediabox(fallback_ok=False)
+    if mb is None:
+        w, h = pdf_page.get_size()
+        return (0.0, 0.0, float(w), float(h))
+    return _boxes_to_page_cropbox(mb, cb, page_rotation(pdf_page))
+
+
+def pdfium_box_to_page_box(box: Sequence[float], page_box: BBox) -> BBox:
+    ox, oy = float(page_box[0]), float(page_box[1])
+    return (float(box[0]) + ox, float(box[1]) + oy, float(box[2]) + ox, float(box[3]) + oy)
+
+
+def page_box_to_pdfium_box(box: Sequence[float], page_box: BBox) -> BBox:
+    ox, oy = float(page_box[0]), float(page_box[1])
+    return (float(box[0]) - ox, float(box[1]) - oy, float(box[2]) - ox, float(box[3]) - oy)
 
 
 def normalize_page_bbox(page: Any) -> BBox:
@@ -202,11 +257,48 @@ def clip_box(box: Sequence[float], bounds: BBox) -> BBox | None:
     return (x0, y0, x1, y1)
 
 
+def _char_orientation(char: dict[str, Any]) -> tuple[bool, str] | None:
+    mat = char.get("matrix")
+    if not mat or len(mat) < 4:
+        return None
+    a, b = float(mat[0]), float(mat[1])
+    if abs(b) > abs(a):
+        return False, ("btt" if b > 0.0 else "ttb")
+    if a < 0.0:
+        return False, "rtl"
+    return None
+
+
 def extract_words_raw(page: Any, *, with_style: bool = False) -> list[dict[str, Any]]:
     kwargs: dict[str, Any] = {"x_tolerance_ratio": WORD_X_TOLERANCE_RATIO}
     if with_style:
         kwargs["extra_attrs"] = ["fontname", "size", "upright"]
-    return list(page.extract_words(**kwargs))
+    words = list(page.extract_words(**kwargs))
+    if not with_style or not words:
+        return words
+    chars = getattr(page, "chars", None)
+    if not chars:
+        return words
+    rotated = [
+        (
+            0.5 * (float(c["x0"]) + float(c["x1"])),
+            0.5 * (float(c["top"]) + float(c["bottom"])),
+            orient[0],
+            orient[1],
+        )
+        for c in chars
+        if (orient := _char_orientation(c)) is not None
+    ]
+    if not rotated:
+        return words
+    for w in words:
+        wx0, wy0, wx1, wy1 = float(w["x0"]) - 0.5, float(w["top"]) - 0.5, float(w["x1"]) + 0.5, float(w["bottom"]) + 0.5
+        for cx, cy, up, direction in rotated:
+            if wx0 <= cx <= wx1 and wy0 <= cy <= wy1:
+                w["upright"] = up
+                w["direction"] = direction
+                break
+    return words
 
 
 def extract_toc(pdf_path: str | Path, *, pdfium_doc: Any = None) -> list[tuple[int, str, int]]:

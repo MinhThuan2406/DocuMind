@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any
 
+from ._pdf_io import bbox_area, bbox_inter_area, bbox_iou
 from .models import BBox, FigureBox, PageProfile, RasterPage, TextBlock, Word
 from .text import order_blocks, xy_cut_order
 
@@ -17,6 +18,10 @@ _MIN_REPEAT_FRAC = 0.5
 _GROUPER_SOURCES = frozenset({"v1_group", "v2_vector_vision"})
 _ROMAN_NUMERAL_RE = re.compile(
     r"(?<![A-Za-z])(?:(?=[IVXLCD]+(?![A-Za-z]))D?C{0,3}(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_ROMAN_LABEL_PREFIX_RE = re.compile(
+    r"(?:appendix|section|table|figure|annex|part|chapter|exhibit)\s+$",
     re.IGNORECASE,
 )
 
@@ -35,22 +40,6 @@ class AssembledItem:
     label: str | None = None
 
 
-def _area(box: BBox) -> float:
-    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
-
-
-def _inter_area(a: BBox, b: BBox) -> float:
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    return ix * iy
-
-
-def _iou(a: BBox, b: BBox) -> float:
-    inter = _inter_area(a, b)
-    union = _area(a) + _area(b) - inter
-    return inter / union if union > 0.0 else 0.0
-
-
 def _clip_figure_against_table(fig_bbox: BBox, tbl_bbox: BBox) -> BBox | None:
     fx0, fy0, fx1, fy1 = fig_bbox
     tx0, ty0, tx1, ty1 = tbl_bbox
@@ -65,8 +54,8 @@ def _clip_figure_against_table(fig_bbox: BBox, tbl_bbox: BBox) -> BBox | None:
         cands.append((fx0, fy0, fx1, ty0))
     if ty1 < fy1:
         cands.append((fx0, ty1, fx1, fy1))
-    best = max(cands, key=_area, default=None)
-    return best if best is not None and _area(best) > 0.0 else None
+    best = max(cands, key=bbox_area, default=None)
+    return best if best is not None and bbox_area(best) > 0.0 else None
 
 
 def filter_overlapping_figures(figures: Sequence[FigureBox]) -> list[FigureBox]:
@@ -77,13 +66,13 @@ def filter_overlapping_figures(figures: Sequence[FigureBox]) -> list[FigureBox]:
     for ti, box in enumerate(figures):
         if box.kind != "table":
             continue
-        t_area = _area(box.bbox)
+        t_area = bbox_area(box.bbox)
         if t_area <= 0.0:
             continue
         overlapping_figs = [
-            (fi, _inter_area(box.bbox, updated[fi].bbox) / t_area)  # type: ignore[union-attr]
+            (fi, bbox_inter_area(box.bbox, updated[fi].bbox) / t_area)  # type: ignore[union-attr]
             for fi in fig_indices
-            if updated[fi] is not None and _inter_area(box.bbox, updated[fi].bbox) / t_area >= 0.50  # type: ignore[union-attr]
+            if updated[fi] is not None and bbox_inter_area(box.bbox, updated[fi].bbox) / t_area >= 0.50  # type: ignore[union-attr]
         ]
         if not overlapping_figs:
             continue
@@ -96,8 +85,8 @@ def filter_overlapping_figures(figures: Sequence[FigureBox]) -> list[FigureBox]:
                 drop_table = True
                 break
             clipped = _clip_figure_against_table(fig_box.bbox, box.bbox)
-            fig_area = _area(fig_box.bbox)
-            if clipped is None or (fig_area > 0.0 and _area(clipped) < 0.15 * fig_area):
+            fig_area = bbox_area(fig_box.bbox)
+            if clipped is None or (fig_area > 0.0 and bbox_area(clipped) < 0.15 * fig_area):
                 drop_table = True
                 break
             pending_clips.append((fi, clipped))
@@ -117,10 +106,10 @@ def _assign_words_to_boxes(
 ) -> tuple[list[Word], dict[int, list[Word]]]:
     body_words: list[Word] = []
     box_words: dict[int, list[Word]] = {i: [] for i in range(len(boxes))}
-    indexed = [(_area(box.bbox), idx, box) for idx, box in enumerate(boxes)]
+    indexed = [(bbox_area(box.bbox), idx, box) for idx, box in enumerate(boxes)]
 
     for word in words:
-        w_area = _area(word.bbox)
+        w_area = bbox_area(word.bbox)
         best_idx: int | None = None
         best_key: tuple[float, float, int] | None = None
         if w_area <= 0.0:
@@ -135,7 +124,7 @@ def _assign_words_to_boxes(
                         best_idx = idx
         else:
             for area, idx, box in indexed:
-                ioa = _inter_area(word.bbox, box.bbox) / w_area
+                ioa = bbox_inter_area(word.bbox, box.bbox) / w_area
                 if ioa >= 0.50:
                     key = (area, -ioa, idx)
                     if best_key is None or key < best_key:
@@ -169,14 +158,14 @@ def merge_hybrid_region_ocr(
     kept_ocr: list[TextBlock] = []
     for blk in ocr_blocks:
         is_dup = any(
-            _iou(blk.bbox, nb.bbox) >= 0.50 and _norm_text_sim(blk.text, nb.text) >= 0.60
+            bbox_iou(blk.bbox, nb.bbox) >= 0.50 and _norm_text_sim(blk.text, nb.text) >= 0.60
             for nb in native_blocks
         )
         if not is_dup:
             overlapping: list[Word] = []
             for w in native_words:
-                wa = _area(w.bbox)
-                if wa > 0.0 and _inter_area(w.bbox, blk.bbox) / wa >= 0.50:
+                wa = bbox_area(w.bbox)
+                if wa > 0.0 and bbox_inter_area(w.bbox, blk.bbox) / wa >= 0.50:
                     overlapping.append(w)
             if overlapping:
                 u_box: BBox = (
@@ -187,7 +176,7 @@ def merge_hybrid_region_ocr(
                 )
                 overlapping.sort(key=lambda w: (round(w.bbox[1], 1), w.bbox[0]))
                 joined = " ".join(w.text for w in overlapping)
-                if _iou(blk.bbox, u_box) >= 0.50 and _norm_text_sim(blk.text, joined) >= 0.60:
+                if bbox_iou(blk.bbox, u_box) >= 0.50 and _norm_text_sim(blk.text, joined) >= 0.60:
                     is_dup = True
         if not is_dup:
             kept_ocr.append(blk)
@@ -227,14 +216,14 @@ def _assign_blocks_to_tables(
         for idx in table_indices:
             box = figures[idx].bbox
             if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
-                key = (_area(box), idx)
+                key = (bbox_area(box), idx)
                 if best_key is None or key < best_key:
                     best_key = key
                     best_idx = idx
         if best_idx is None and blk.label == "table":
             best_overlap = 0.0
             for idx in table_indices:
-                overlap = _inter_area(blk.bbox, figures[idx].bbox)
+                overlap = bbox_inter_area(blk.bbox, figures[idx].bbox)
                 if overlap > best_overlap:
                     best_overlap = overlap
                     best_idx = idx
@@ -354,8 +343,21 @@ def assemble_page(
     return items
 
 
+def _mask_roman_numeral(text: str) -> str:
+    def _repl(match: re.Match[str]) -> str:
+        tok = match.group(0)
+        if len(tok) == 1:
+            if tok.upper() in ("C", "D", "L"):
+                return tok
+            if tok.isupper() and _ROMAN_LABEL_PREFIX_RE.search(text[: match.start()]):
+                return tok
+        return "#"
+
+    return _ROMAN_NUMERAL_RE.sub(_repl, text)
+
+
 def _normalize_band_text(text: str) -> str:
-    masked = _ROMAN_NUMERAL_RE.sub("#", re.sub(r"\d+", "#", text))
+    masked = _mask_roman_numeral(re.sub(r"\d+", "#", text))
     return re.sub(r"\s+", " ", masked).strip().lower()
 
 

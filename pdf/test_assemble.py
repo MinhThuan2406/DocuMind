@@ -526,6 +526,20 @@ def test_extract_ir_hybrid_partial_raster_regions_and_table_continuations_e2e():
     assert ir["tables"][1]["id"] == "tbl_0002" and ir["tables"][1]["continuation_of"] == "tbl_0001"
 
 
+def test_tag_running_headers_footers_preserves_appendix_letters():
+    page_heights = {p: 800.0 for p in range(1, 7)}
+    elems = [
+        {"type": "text", "page": 1, "level": 1, "bbox": [50, 30, 200, 45], "text": "Appendix C", "metadata": {}},
+        {"type": "text", "page": 2, "level": 1, "bbox": [50, 30, 200, 45], "text": "Appendix C", "metadata": {}},
+        {"type": "text", "page": 3, "level": 1, "bbox": [50, 30, 200, 45], "text": "Appendix D", "metadata": {}},
+        {"type": "text", "page": 4, "level": 1, "bbox": [50, 30, 200, 45], "text": "Appendix D", "metadata": {}},
+        {"type": "text", "page": 5, "level": 1, "bbox": [50, 30, 200, 45], "text": "Section I", "metadata": {}},
+        {"type": "text", "page": 6, "level": 1, "bbox": [50, 30, 200, 45], "text": "Table V", "metadata": {}},
+    ]
+    tag_running_headers_footers(elems, page_heights)
+    assert all("role" not in e["metadata"] for e in elems), elems
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

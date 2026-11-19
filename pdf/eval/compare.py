@@ -175,7 +175,7 @@ def _eval_raster_worker(
     total_pred = 0
     for idx, (_, _, gt_chars) in enumerate(selected, start=1):
         ocr_elems = [e for e in by_page[idx] if e["type"] == "text"]
-        assert all(e["source"] == "ocr" and isinstance(e["confidence"], float) for e in ocr_elems)
+        assert all(e["source"] in ("ocr", "ocr_high_dpi") and isinstance(e["confidence"], float) for e in ocr_elems)
         pred_raw = "".join(str(e["text"]) for e in ocr_elems)
         pred_chars = char_counts(strip_markup(pred_raw))
         matched = sum((gt_chars & pred_chars).values())

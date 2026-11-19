@@ -6,7 +6,7 @@ from typing import Any
 
 from PIL import Image
 
-from .._pdf_io import clip_box, page_bbox
+from .._pdf_io import bbox_iou, clip_box, page_bbox, round_bbox
 from ..models import BBox, ExtractedTable, TableCell
 from .base import RunStats
 from .rss import peak_rss_mb
@@ -15,19 +15,12 @@ _CROP_EXPAND_PT = 2.0
 _STRICT_SETTINGS = {"vertical_strategy": "lines_strict", "horizontal_strategy": "lines_strict"}
 
 
-def _inter_area(a: BBox, b: BBox) -> float:
-    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-
-
 def _best_iou_table(tables: Sequence[Any], clip_bbox: BBox) -> Any | None:
     best = None
     best_iou = 0.0
-    clip_area = max(1.0, (clip_bbox[2] - clip_bbox[0]) * (clip_bbox[3] - clip_bbox[1]))
     for tbl in tables:
         tb = tuple(float(v) for v in tbl.bbox)
-        inter = _inter_area((tb[0], tb[1], tb[2], tb[3]), clip_bbox)
-        tb_area = max(1.0, (tb[2] - tb[0]) * (tb[3] - tb[1]))
-        iou = inter / (clip_area + tb_area - inter)
+        iou = bbox_iou((tb[0], tb[1], tb[2], tb[3]), clip_bbox)
         if iou > best_iou:
             best_iou = iou
             best = tbl
@@ -132,7 +125,7 @@ def _convert_pdfplumber_table(tbl: Any, fallback_bbox: BBox) -> ExtractedTable:
 
     tb = tbl.bbox
     return ExtractedTable(
-        bbox=(round(float(tb[0]), 3), round(float(tb[1]), 3), round(float(tb[2]), 3), round(float(tb[3]), 3)),
+        bbox=round_bbox(tb),
         num_rows=num_rows,
         num_cols=num_cols,
         cells=tuple(cells),

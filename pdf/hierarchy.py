@@ -26,12 +26,12 @@ _NON_HEADING_LABELS = frozenset(
 _HEADING_LABELS = frozenset({"title", "section_header"})
 
 _CAPTION_PREFIX_RE = re.compile(
-    r"^(?P<kind>figure|fig\.?|diagram|diag\.?|chart|listing|abb\.?|abbildung|grafik|graph|plate|exhibit|"
-    r"table|tab\.?|tbl\.?|tabelle)"
+    r"^(?P<kind>(?i:figure|fig\.?|diagram|diag\.?|chart|listing|abb\.?|abbildung|grafik|graph|plate|exhibit|"
+    r"table|tab\.?|tbl\.?|tabelle))"
     r"(?:(?<=\.)\s*|\s+)"
-    r"(?P<num>[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*)"
-    r"(?:\s*(?P<sep>[:.\-\u2013\u2014])\s*(?P<rest>.*)|\s+(?P<bare>.*))?$",
-    re.IGNORECASE,
+    r"(?P<num>(?=[A-Za-z0-9.\-]*\d)[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*|"
+    r"(?:[IVXLCDM]+|[A-Z])(?=\s*[:.\-\u2013\u2014]))"
+    r"(?:\s*(?P<sep>[:.\-\u2013\u2014])\s*(?P<rest>.*)|\s+(?P<bare>.*))?$"
 )
 _TABLE_CAPTION_KINDS = frozenset({"table", "tab", "tbl", "tabelle"})
 _CAPTION_PROSE_START_RE = re.compile(
@@ -305,10 +305,6 @@ def _bbox_metrics(a: Sequence[float], b: Sequence[float]) -> tuple[float, float]
     return dy, h_overlap
 
 
-def _horizontal_gap(a: Sequence[float], b: Sequence[float]) -> float:
-    return max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
-
-
 def _merge_two_elements(primary: dict[str, Any], secondary: dict[str, Any]) -> None:
     primary["text"] = _join_wrapped_text(primary.get("text", ""), secondary.get("text", ""))
     b1 = primary.get("bbox")
@@ -319,6 +315,24 @@ def _merge_two_elements(primary: dict[str, Any], secondary: dict[str, Any]) -> N
         src_ref = primary.get("source_ref")
         if isinstance(src_ref, dict) and "bbox" in src_ref:
             src_ref["bbox"] = list(merged_box)
+
+
+def _drop_merged_elements(
+    elements: list[dict[str, Any]],
+    ordered: list[tuple[int, dict[str, Any]]],
+    dropped_ids: set[str],
+) -> list[tuple[int, dict[str, Any]]]:
+    if not dropped_ids:
+        return ordered
+    elements[:] = [e for e in elements if e.get("id") not in dropped_ids]
+    remaining = [pair for pair in ordered if pair[1].get("id") not in dropped_ids]
+    page_ro: dict[Any, int] = {}
+    for _, elem in remaining:
+        page = elem.get("page", 0)
+        ro = page_ro.get(page, 0)
+        elem["reading_order"] = ro
+        page_ro[page] = ro + 1
+    return remaining
 
 
 def _vertically_adjacent(
@@ -459,10 +473,7 @@ def _merge_multiline_captions(
         dropped_ids.add(c2["id"])
         i += 2
 
-    if not dropped_ids:
-        return ordered
-    elements[:] = [e for e in elements if e.get("id") not in dropped_ids]
-    return [pair for pair in ordered if pair[1].get("id") not in dropped_ids]
+    return _drop_merged_elements(elements, ordered, dropped_ids)
 
 
 def _link_captions(
@@ -599,15 +610,11 @@ def _match_caption_pool(
             if not tb or len(tb) != 4:
                 continue
             dy, h_ov = _bbox_metrics(cb, tb)
-            if dy > max_gap:
+            if dy > max_gap or h_ov <= 0.0:
                 continue
-            h_gap = _horizontal_gap(cb, tb)
-            if h_ov <= 0.0 and (max_gap <= 24.0 or h_gap > 24.0):
-                continue
-            overlap_penalty = 1000.0 if h_ov <= 0.0 else 0.0
             min_w = max(1.0, min(cb[2] - cb[0], tb[2] - tb[0]))
             dx_center = abs(cb_cx - (tb[0] + tb[2]) * 0.5)
-            cost = overlap_penalty + dy + h_gap + 0.1 * dx_center - 5.0 * (h_ov / min_w)
+            cost = dy + 0.1 * dx_center - 5.0 * (h_ov / min_w)
             edges.append((i, j, cost))
 
     for i, j in _min_cost_bipartite_match(len(captions), len(targets), edges):
@@ -700,7 +707,7 @@ def _parse_numbered_heading(
         num_str, dot, rest = m_num.groups()
         parts = num_str.split(".")
         first = int(parts[0])
-        if first < 1 or first > 99 or len(parts) > 6:
+        if first > 99 or (first == 0 and len(parts) < 2) or len(parts) > 6:
             return None
         allow_camel = len(parts) >= 2 and (styled or explicit_label)
         if not _has_alpha(rest) or not _title_starts_well(rest, allow_camel=allow_camel):
@@ -954,53 +961,86 @@ def _merge_multiline_headings(
         dropped_ids.add(e2["id"])
         i += 2
 
-    if not dropped_ids:
-        return ordered
-    elements[:] = [e for e in elements if e.get("id") not in dropped_ids]
-    return [pair for pair in ordered if pair[1].get("id") not in dropped_ids]
+    return _drop_merged_elements(elements, ordered, dropped_ids)
+
+
+def _has_clear_heading_style(
+    elem: dict[str, Any],
+    body_font: float | None,
+    min_top_fs: float | None,
+) -> bool:
+    meta = elem.get("metadata") or {}
+    fs = meta.get("font_size")
+    has_fs = isinstance(fs, (int, float)) and fs > 0
+    if body_font is not None:
+        if not has_fs or float(fs) < body_font + 1.5:
+            return False
+        if min_top_fs is not None and float(fs) < min_top_fs - 0.5:
+            return False
+        return True
+    return bool(meta.get("bold"))
 
 
 def _validate_heading_sequence(
     headings: list[tuple[dict[str, Any], int | None]],
     toc_matches: dict[str, int],
     slide_titles: set[str],
+    body_font: float | None = None,
 ) -> list[tuple[dict[str, Any], int | None]]:
     parsed: list[tuple[dict[str, Any], int | None, tuple[int, ...] | None, bool, bool]] = []
     top_counts: dict[int, int] = {}
     for elem, explicit_depth in headings:
         eid = elem["id"]
         has_toc = eid in toc_matches
-        is_title = (elem.get("metadata") or {}).get("layout_label") == "title" or eid in slide_titles
+        label = (elem.get("metadata") or {}).get("layout_label")
+        is_labeled = label in _HEADING_LABELS or eid in slide_titles
         m = _LEADING_NUMBER_RE.match(_clean_text(elem.get("text", "")))
         parts: tuple[int, ...] | None = None
         if m:
             raw_parts = m.group(1).split(".")
             if len(raw_parts) <= 6:
                 parts = tuple(int(p) for p in raw_parts)
-                if 1 <= parts[0] <= 99:
+                if (1 <= parts[0] <= 99) or (parts[0] == 0 and len(parts) >= 2):
                     top_counts[parts[0]] = top_counts.get(parts[0], 0) + 1
-        parsed.append((elem, explicit_depth, parts, has_toc, is_title))
+        parsed.append((elem, explicit_depth, parts, has_toc, is_labeled))
 
     validated: list[tuple[dict[str, Any], int | None]] = []
     prev_top = 0
-    for elem, explicit_depth, parts, has_toc, is_title in parsed:
-        if parts is None or has_toc or is_title:
-            if parts is not None and has_toc and 1 <= parts[0] <= 99:
+    max_top_fs: float | None = None
+    for elem, explicit_depth, parts, has_toc, is_labeled in parsed:
+        if parts is None or has_toc or is_labeled:
+            if parts is not None and (has_toc or is_labeled) and 1 <= parts[0] <= 99:
                 prev_top = max(prev_top, parts[0])
             validated.append((elem, explicit_depth))
             continue
 
         first = parts[0]
-        if first < 1 or first > 99:
+        is_preface = first == 0 and len(parts) >= 2
+        if not is_preface and (first < 1 or first > 999):
             continue
         has_seq_support = top_counts.get(first, 0) >= 2 or (first + 1) in top_counts
-        if prev_top == 0:
-            ok = first <= 3 or (len(parts) >= 2 and first <= 20 and explicit_depth is not None) or has_seq_support
+        if is_preface:
+            ok = True
+        elif first <= 99:
+            if prev_top == 0:
+                ok = first <= 3 or (len(parts) >= 2 and first <= 20 and explicit_depth is not None) or has_seq_support
+            else:
+                ok = first <= prev_top + 3 or (first <= prev_top + 10 and has_seq_support)
         else:
-            ok = first <= prev_top + 3 or (first <= prev_top + 10 and has_seq_support)
+            ok = False
+
         if not ok:
-            continue
-        prev_top = max(prev_top, first)
+            if len(parts) == 1 and 1 <= first <= 999 and _has_clear_heading_style(elem, body_font, max_top_fs):
+                ok = True
+            else:
+                continue
+
+        if 1 <= first <= 99:
+            prev_top = max(prev_top, first)
+        if len(parts) == 1:
+            fs = (elem.get("metadata") or {}).get("font_size")
+            if isinstance(fs, (int, float)) and fs > 0:
+                max_top_fs = float(fs) if max_top_fs is None else max(max_top_fs, float(fs))
         validated.append((elem, explicit_depth))
     return validated
 
@@ -1177,7 +1217,7 @@ def apply_structure(
     _propagate_captions_to_ir(out, elements)
     raw_candidates = collect_headings()
     raw_slide_titles = _slide_title_ids(raw_candidates, landscape_heights)
-    heading_candidates = _validate_heading_sequence(raw_candidates, toc_matches, raw_slide_titles)
+    heading_candidates = _validate_heading_sequence(raw_candidates, toc_matches, raw_slide_titles, body_font)
     heading_levels = _assign_heading_levels(
         heading_candidates,
         _slide_title_ids(heading_candidates, landscape_heights),

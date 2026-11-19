@@ -15,6 +15,10 @@ from pdf._pdf_io import (  # noqa: E402
     extract_words_raw,
     normalize_page_bbox,
     normalize_point_or_box,
+    page_bbox,
+    page_box_to_pdfium_box,
+    pdfium_box_to_page_box,
+    pdfium_page_box,
     pt_to_px,
     px_to_pt,
     render_bgr,
@@ -323,6 +327,12 @@ def test_rotate_and_cropbox_coordinate_roundtrip():
             fpage = fdoc[0]
             fw, fh = fpage.get_size()
             assert max(abs(norm_bounds[2] - fw), abs(norm_bounds[3] - fh)) <= 0.01
+            pbox_pl = page_bbox(page)
+            pbox_fi = pdfium_page_box(fpage)
+            assert max(abs(a - b) for a, b in zip(pbox_pl, pbox_fi)) <= 0.01, (rot, pbox_pl, pbox_fi)
+            fi_rect = page_box_to_pdfium_box(rect_pl, pbox_pl)
+            assert max(abs(a - b) for a, b in zip(fi_rect, norm_rect)) <= 0.01
+            assert max(abs(a - b) for a, b in zip(pdfium_box_to_page_box(fi_rect, pbox_fi), rect_pl)) <= 0.01
             bgr, img_size = render_bgr(fpage, dpi=150)
         finally:
             fdoc.close()
@@ -345,6 +355,28 @@ def test_rotate_and_cropbox_coordinate_roundtrip():
             px_pt = tuple(float(round(v)) for v in pt_to_px(norm_pt, norm_bounds, img_size))
             rt_pt = normalize_point_or_box(px_to_pt(px_pt, norm_bounds, img_size), doc.pages[0], inverse=True)
             assert max(abs(a - b) for a, b in zip(rt_pt, pt_sample)) <= 0.5
+
+
+def test_watermark_diagram_micro_labels_and_corner_logo():
+    b = TestPdfBuilder()
+    diag_page = b.new_page(width=595, height=842)
+    diag_page.insert_text((72, 72), "Main body paragraph above a vector diagram.\n" * 2, fontsize=12.0)
+    for idx in range(5):
+        diag_page.insert_text((100 + idx * 50, 300), "a", fontsize=3.0)
+        diag_page.insert_text((100 + idx * 50, 320), "uppermultiplicity", fontsize=3.5)
+
+    logo_page = b.new_page(width=595, height=842)
+    logo_page.insert_text((72, 160), "Native specification page with a small header banner.\n" * 4, fontsize=12.0)
+    logo_page.insert_image((40, 20, 440, 95), stream=_png_bytes(400, 75))  # ~6% area in top header band
+
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        prof_diag = classify_page(doc.pages[0])
+        assert prof_diag.watermark_word_count == 0
+        assert prof_diag.word_count >= 18
+
+        prof_logo = classify_page(doc.pages[1])
+        assert prof_logo.partial_raster_regions == ()
+        assert prof_logo.kind == "native"
 
 
 def test_no_heavy_ml_imports():

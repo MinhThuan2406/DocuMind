@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 
-from ._pdf_io import clip_box, extract_words_raw, page_bbox
+from ._pdf_io import bbox_area, clip_box, extract_words_raw, page_bbox
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, PageKind, PageProfile
 
 FULL_PAGE_IMAGE_RATIO = 0.96
@@ -21,10 +22,6 @@ PARTIAL_RASTER_MAX_TEXT_DENSITY = 0.005
 
 _CID_RE = re.compile(r"\(cid:\d+\)")
 _SYMBOL_FONT_TOKENS = ("wingding", "webding", "zapfdingbat", "symbol")
-
-
-def _box_area(box: BBox) -> float:
-    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
 
 def _union_area(boxes: list[BBox]) -> float:
@@ -68,9 +65,20 @@ def _cid_or_pua_glyph_counts(word: dict[str, Any]) -> tuple[int, int]:
     return cid_glyphs + pua_glyphs, total_glyphs
 
 
-def _is_watermark_word(word: dict[str, Any], max_image_cover: float) -> bool:
+def _is_watermark_word(
+    word: dict[str, Any],
+    max_image_cover: float,
+    small_counts: Counter[str],
+) -> bool:
     size = float(word.get("size") or 0.0)
-    return 0.0 < size <= WATERMARK_MAX_FONT_SIZE and max_image_cover < SUSPECT_IMAGE_RATIO
+    if not (0.0 < size <= WATERMARK_MAX_FONT_SIZE and max_image_cover < SUSPECT_IMAGE_RATIO):
+        return False
+    text = str(word.get("text", "")).strip()
+    if len(text) < 4 or _CID_RE.search(text):
+        return False
+    if small_counts.get(text.lower(), 0) < 3:
+        return False
+    return text.isupper() or not bool(word.get("upright", True))
 
 
 def _is_figure_candidate(page: Any, bounds: BBox, image_boxes: list[BBox]) -> bool:
@@ -79,7 +87,7 @@ def _is_figure_candidate(page: Any, bounds: BBox, image_boxes: list[BBox]) -> bo
     page_area = page_w * page_h
     footer_y = bounds[1] + FIGURE_FOOTER_FRAC * page_h
     if any(
-        FIGURE_MIN_AREA * page_area <= _box_area(b) < FULL_PAGE_IMAGE_RATIO * page_area and b[1] < footer_y
+        FIGURE_MIN_AREA * page_area <= bbox_area(b) < FULL_PAGE_IMAGE_RATIO * page_area and b[1] < footer_y
         for b in image_boxes
     ):
         return True
@@ -113,16 +121,22 @@ def classify_page(
     image_boxes = [
         b for im in page.images if (b := clip_box((im["x0"], im["top"], im["x1"], im["bottom"]), bounds)) is not None
     ]
-    max_image_cover = max((_box_area(b) / page_area for b in image_boxes), default=0.0)
+    max_image_cover = max((bbox_area(b) / page_area for b in image_boxes), default=0.0)
     image_area_ratio = min(1.0, _union_area(image_boxes) / page_area)
 
-    words = [w for w in raw if not _is_watermark_word(w, max_image_cover)]
+    small_counts = Counter(
+        t.lower()
+        for w in raw
+        if 0.0 < float(w.get("size") or 0.0) <= WATERMARK_MAX_FONT_SIZE
+        and len((t := str(w.get("text", "")).strip())) >= 4
+    )
+    words = [w for w in raw if not _is_watermark_word(w, max_image_cover, small_counts)]
     watermark_word_count = len(raw) - len(words)
     word_count = len(words)
     word_boxes = [
         b for w in words if (b := clip_box((w["x0"], w["top"], w["x1"], w["bottom"]), bounds)) is not None
     ]
-    text_area_ratio = min(1.0, sum(_box_area(b) for b in word_boxes) / page_area)
+    text_area_ratio = min(1.0, sum(bbox_area(b) for b in word_boxes) / page_area)
 
     total_chars = sum(len(w["text"]) for w in words)
     invalid_chars = sum(1 for w in words for ch in w["text"] if _is_invalid_char(ch))
@@ -145,16 +159,20 @@ def classify_page(
     suspect_reasons = tuple(reasons)
     suspect_ocr_layer = bool(suspect_reasons)
 
+    header_y = bounds[1] + 0.12 * page_h
+    footer_y = bounds[1] + FIGURE_FOOTER_FRAC * page_h
     partial_raster: list[BBox] = []
     for img_box in image_boxes:
-        img_area = _box_area(img_box)
+        img_area = bbox_area(img_box)
         if not (PARTIAL_RASTER_MIN_AREA_RATIO * page_area <= img_area < FULL_PAGE_IMAGE_RATIO * page_area):
+            continue
+        if img_area < 0.10 * page_area and (img_box[3] <= header_y or img_box[1] >= footer_y):
             continue
         local_text_area = 0.0
         for wb in word_boxes:
             inter = clip_box(wb, img_box)
             if inter is not None:
-                local_text_area += _box_area(inter)
+                local_text_area += bbox_area(inter)
         if (local_text_area / img_area) < PARTIAL_RASTER_MAX_TEXT_DENSITY:
             partial_raster.append(img_box)
     partial_raster_regions = tuple(partial_raster)

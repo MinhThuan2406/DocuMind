@@ -301,6 +301,29 @@ def test_compare_raster_test_split_refused():
     assert compare.main(["--task", "raster", "--split", "test"]) == 2
 
 
+def test_eval_raster_worker_accepts_ocr_high_dpi():
+    from collections import Counter
+    from unittest.mock import patch
+    from pdf.eval import compare
+
+    fake_selected = [("p1.png", Path("p1.png"), Counter("hello"))]
+    fake_ir = {
+        "elements": [
+            {"type": "text", "page": 1, "source": "ocr", "confidence": 0.9, "text": "hel"},
+            {"type": "text", "page": 1, "source": "ocr_high_dpi", "confidence": 0.95, "text": "lo"},
+        ]
+    }
+    with (
+        patch.object(compare, "load_omnidoc_gt", return_value=fake_selected),
+        patch.object(compare, "get_backend", return_value=object()),
+        patch.object(compare, "build_raster_pdf"),
+        patch("pdf.extract_ir", return_value=fake_ir),
+    ):
+        res = compare._eval_raster_worker("composed", "heron-onnx", "rapidocr-onnx", "cpu", 1)
+    assert res["pooled_recall"] == 1.0
+    assert res["pooled_precision"] == 1.0
+
+
 def test_synthetic_reading_order_fixtures():
     res = bench_synthetic_reading_order()
     assert res["pages"] == 3

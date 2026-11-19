@@ -97,14 +97,16 @@ class CachedLayoutBackend:
         backend: LayoutBackend,
         root_dir: Path,
         *,
-        postprocess_version: str = DEFAULT_POSTPROCESS_VERSION,
+        postprocess_version: str | None = None,
     ) -> None:
         self.backend = backend
         self.root_dir = Path(root_dir)
         self.name = backend.name
         self.revision = backend.revision
         self.cache_dpi = getattr(backend, "cache_dpi", 150)
-        self.postprocess_version = postprocess_version
+        self.postprocess_version = postprocess_version or getattr(
+            backend, "postprocess_version", DEFAULT_POSTPROCESS_VERSION
+        )
 
     @property
     def last_stats(self) -> RunStats | None:

@@ -7,17 +7,13 @@ from typing import Any
 
 import pdfplumber
 
-from ._pdf_io import PdfContext, extract_toc, extract_words_raw, page_bbox
+from ._pdf_io import PdfContext, bbox_area, bbox_inter_area, extract_toc, extract_words_raw, page_bbox, round_bbox
 from .assemble import AssembledItem, assemble_page, merge_hybrid_region_ocr, tag_running_headers_footers
 from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
 from .router import classify_page
 from .text import extract_words, xy_cut_order
-
-
-def _round_bbox(bbox: BBox) -> list[float]:
-    return [round(v, 3) + 0.0 for v in bbox]
 
 
 def _element_dict(
@@ -28,7 +24,7 @@ def _element_dict(
     item: AssembledItem,
     parent_id: str | None,
 ) -> dict[str, Any]:
-    bbox = _round_bbox(item.bbox)
+    bbox = [v + 0.0 for v in round_bbox(item.bbox)]
     meta: dict[str, Any] = {}
     if item.font_size is not None:
         meta["font_size"] = item.font_size
@@ -63,16 +59,6 @@ def _collect_stats_warnings(backend: Any, prev_stats: Any, warnings: list[dict[s
             warnings.append(dict(w))
 
 
-def _box_area(box: BBox) -> float:
-    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
-
-
-def _inter_area(a: BBox, b: BBox) -> float:
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    return ix * iy
-
-
 def _merge_assembled_with_region_ocr(
     assembled: list[AssembledItem],
     ocr_blocks: Sequence[TextBlock],
@@ -90,14 +76,14 @@ def _merge_assembled_with_region_ocr(
             groups[index_to_group[item.parent_index]][1].append(item)
 
     box_groups = [
-        (_box_area(top.bbox), g_idx, top.bbox)
+        (bbox_area(top.bbox), g_idx, top.bbox)
         for g_idx, (top, _) in enumerate(groups)
         if top.kind in ("figure", "table")
     ]
     dirty_groups: set[int] = set()
 
     for blk in ocr_blocks:
-        b_area = _box_area(blk.bbox)
+        b_area = bbox_area(blk.bbox)
         best_g_idx: int | None = None
         best_key: tuple[float, float, int] | None = None
         if b_area <= 0.0:
@@ -111,7 +97,7 @@ def _merge_assembled_with_region_ocr(
                         best_g_idx = g_idx
         else:
             for area, g_idx, box in box_groups:
-                ioa = _inter_area(blk.bbox, box) / b_area
+                ioa = bbox_inter_area(blk.bbox, box) / b_area
                 if ioa >= 0.50:
                     key = (area, -ioa, g_idx)
                     if best_key is None or key < best_key:
@@ -184,8 +170,7 @@ def _link_diagram_text_elements(
     for node in nodes:
         nb = node.get("bbox")
         if nb and len(nb) == 4:
-            area = max(0.0, nb[2] - nb[0]) * max(0.0, nb[3] - nb[1])
-            node_boxes.append((area, node))
+            node_boxes.append((bbox_area(nb), node))
     if not node_boxes:
         return
     for child in children:
@@ -232,11 +217,13 @@ def extract_ir(
         toc = extract_toc(pdf_path, pdfium_doc=ctx.pdfium) if (structure and doc.pages) else ()
         profiles: list[PageProfile] = []
         raw_words_by_page: dict[int, list[dict[str, Any]]] = {}
+        page_boxes: dict[int, BBox] = {}
         page_sizes: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
         unreadable_pages: list[dict[str, Any]] = []
 
         for idx, page in enumerate(doc.pages, start=1):
+            page_boxes[idx] = page_bbox(page)
             raw_words = extract_words_raw(page, with_style=True)
             raw_words_by_page[idx] = raw_words
             prof = classify_page(page, page_number=idx, raw_words=raw_words)
@@ -278,6 +265,7 @@ def extract_ir(
                 pdf_hash=ctx.pdf_hash,
                 warnings_out=warnings,
                 semantic_regions_out=semantic_regions if structure else None,
+                page_boxes={p: page_boxes[p] for p in candidate_pages},
             )
 
         raster_by_page: dict[int, RasterPage] = {}
@@ -314,6 +302,7 @@ def extract_ir(
                         ocr_backend=ocr_backend,
                         device=device,
                         pdfium_doc=ctx.pdfium,
+                        page_boxes={p: page_boxes[p] for p in raster_pages},
                     )
                     _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
                 if partial_regions_by_page:
@@ -329,6 +318,7 @@ def extract_ir(
                             ocr_backend=ocr_backend,
                             device=device,
                             pdfium_doc=ctx.pdfium,
+                            page_boxes={p: page_boxes[p] for p in partial_regions_by_page},
                         )
                         _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
                     except NotImplementedError:
@@ -358,7 +348,7 @@ def extract_ir(
             assembled = assemble_page(
                 prof,
                 words,
-                page_bbox(page),
+                page_boxes[prof.page],
                 figures_by_page.get(prof.page, ()),
                 raster_by_page.get(prof.page),
             )

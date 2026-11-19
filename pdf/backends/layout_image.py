@@ -23,6 +23,8 @@ _PNG_DEFAULT_DPI = 96.012
 def run_layout_items(
     detector: LayoutDetector,
     bgr: np.ndarray,
+    *,
+    keep_empty_clusters: bool = True,
 ) -> tuple[list[dict[str, Any]], tuple[float, float]]:
     ih, iw = bgr.shape[:2]
     pil_rgb = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
@@ -39,7 +41,7 @@ def run_layout_items(
         (float(target_wh[0]), float(target_wh[1])),
         page_size,
     )
-    clusters = postprocess_layout(scaled, page_size, keep_empty_clusters=False)
+    clusters = postprocess_layout(scaled, page_size, keep_empty_clusters=keep_empty_clusters)
     return clusters_to_items(clusters), page_size
 
 
@@ -51,11 +53,14 @@ class ImageLayoutBackend:
         name: str,
         revision: str,
         dpi: int = 150,
+        keep_empty_clusters: bool = True,
     ) -> None:
         self.detector = detector
         self.name = name
         self.revision = revision
         self.cache_dpi = dpi
+        self.keep_empty_clusters = keep_empty_clusters
+        self.postprocess_version = "v3" if keep_empty_clusters else "v2"
         self.last_stats: RunStats | None = None
         self.last_rendered: dict[int, np.ndarray] = {}
         self._shared_pdfium_doc: tuple[Path, Any] | None = None
@@ -103,7 +108,9 @@ class ImageLayoutBackend:
                     raise ValueError(f"page {pno} out of range 1..{len(doc)}")
                 bgr, _ = render_bgr(doc[pno - 1], self.cache_dpi)
                 self.last_rendered[pno] = bgr
-                items, frame = run_layout_items(self.detector, bgr)
+                items, frame = run_layout_items(
+                    self.detector, bgr, keep_empty_clusters=self.keep_empty_clusters
+                )
                 out[pno] = PageLayout(items=items, frame=frame)
         finally:
             if owns_doc:

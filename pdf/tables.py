@@ -5,7 +5,7 @@ from typing import Any
 
 from PIL import Image
 
-from ._pdf_io import crop_page_rgb_with_bbox
+from ._pdf_io import crop_page_rgb_with_bbox, round_bbox
 from .backends import TableExtractor, get as get_backend
 from .backends.tatr_onnx import table_to_html
 from .models import BBox, ExtractedTable, Word
@@ -15,7 +15,7 @@ _CROP_PAD_PT = 4.0
 
 
 def _round_bbox(bbox: BBox) -> list[float]:
-    return [round(v, 3) + 0.0 for v in bbox]
+    return [v + 0.0 for v in round_bbox(bbox)]
 
 
 def crop_page_region(page: Any, bbox_pt: BBox, dpi: int = DEFAULT_TABLE_DPI) -> tuple[Image.Image, BBox]:
@@ -108,7 +108,12 @@ def _is_heading_element(elem: dict[str, Any]) -> bool:
         return True
     meta = elem.get("metadata") or {}
     lbl = str(meta.get("layout_label", "")).lower()
-    return lbl in ("title", "section_header") or bool(meta.get("is_heading"))
+    return (
+        lbl in ("title", "section_header")
+        or str(meta.get("role", "")).lower() == "heading"
+        or meta.get("heading_level") is not None
+        or bool(meta.get("is_heading"))
+    )
 
 
 def _header_signature(tbl: dict[str, Any]) -> list[str] | None:

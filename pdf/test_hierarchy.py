@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pdf.hierarchy import apply_structure, build_section_tree  # noqa: E402
+from pdf.hierarchy import _parse_caption_prefix, apply_structure, build_section_tree  # noqa: E402
 from pdf.models import SemanticRegion  # noqa: E402
 
 
@@ -696,6 +696,115 @@ def test_caption_propagation_to_tables_and_diagrams():
             assert tgt["metadata"]["caption_id"] == elem["id"]
             assert tgt["metadata"]["caption_text"] == elem["text"]
     assert apply_structure(out) == out
+
+
+def test_caption_prefix_rejects_prose_and_merges_wrapped_prose_line():
+    for bad in (
+        "diagram of modules",
+        "figure in section 2",
+        "table with values",
+        "Table of Contents",
+        "Figure 4 illustrates the state machine",
+        "Diagram 2. shows the bus",
+    ):
+        assert _parse_caption_prefix(bad) == (False, None), bad
+
+    assert _parse_caption_prefix("Figure A: Alpha") == (True, "figure")
+    assert _parse_caption_prefix("Table IV: Summary") == (True, "table")
+    assert _parse_caption_prefix("Figure A.1: Appendix") == (True, "figure")
+    assert _parse_caption_prefix("Fig. 1a: Left") == (True, "figure")
+
+    elements = [
+        _elem("fig1", kind="figure", page=1, bbox=[50.0, 50.0, 320.0, 180.0], reading_order=0, font_size=None, bold=None),
+        _elem("c1a", page=1, bbox=[50.0, 186.0, 320.0, 200.0], reading_order=1, text="Figure 1: Layered", font_size=10.0, bold=True),
+        _elem("c1b", page=1, bbox=[50.0, 203.0, 260.0, 217.0], reading_order=2, text="diagram of modules", font_size=10.0, bold=True),
+        _elem("tbl1", kind="table", page=1, bbox=[50.0, 250.0, 320.0, 360.0], reading_order=3, font_size=None, bold=None),
+        _elem("c2a", page=1, bbox=[50.0, 366.0, 320.0, 380.0], reading_order=4, text="Table 1: Configuration", font_size=10.0, bold=True),
+        _elem("c2b", page=1, bbox=[50.0, 383.0, 260.0, 397.0], reading_order=5, text="table with values", font_size=10.0, bold=True),
+        _elem("fig2", kind="figure", page=2, bbox=[50.0, 50.0, 320.0, 180.0], reading_order=0, font_size=None, bold=None),
+        _elem("c3a", page=2, bbox=[50.0, 186.0, 320.0, 200.0], reading_order=1, text="Figure 2: Reference", font_size=10.0, bold=True),
+        _elem("c3b", page=2, bbox=[50.0, 203.0, 260.0, 217.0], reading_order=2, text="figure in section 2", font_size=10.0, bold=True),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert "c1b" not in by_id and "c2b" not in by_id and "c3b" not in by_id
+    assert by_id["c1a"]["text"] == "Figure 1: Layered diagram of modules"
+    assert by_id["c1a"]["metadata"]["caption_of"] == "fig1"
+    assert by_id["c2a"]["text"] == "Table 1: Configuration table with values"
+    assert by_id["c2a"]["metadata"]["caption_of"] == "tbl1"
+    assert by_id["c3a"]["text"] == "Figure 2: Reference figure in section 2"
+    assert by_id["c3a"]["metadata"]["caption_of"] == "fig2"
+
+
+def test_validate_heading_sequence_preserves_preface_labeled_and_styled_jumps():
+    body = "Regular body paragraph repeated to anchor median font size accurately. " * 4
+    labeled = [
+        _elem("b0", page=1, reading_order=0, text=body, font_size=11.0, bold=False),
+        _elem("p0", page=1, reading_order=1, text="0.1 Preface", font_size=16.0, bold=True, layout_label="section_header"),
+        _elem("p1", page=1, reading_order=2, text="1 Introduction", font_size=16.0, bold=True, layout_label="section_header"),
+        _elem("p10", page=1, reading_order=3, text="10 Conclusion", font_size=16.0, bold=True, layout_label="section_header"),
+        _elem("p100", page=1, reading_order=4, text="100 Appendix Summary", font_size=16.0, bold=True, layout_label="section_header"),
+    ]
+    out_lbl = apply_structure(_ir(labeled))
+    assert [o["title"] for o in out_lbl["metadata"]["outline"]] == [
+        "0.1 Preface",
+        "1 Introduction",
+        "10 Conclusion",
+        "100 Appendix Summary",
+    ]
+
+    styled_unlabeled = [
+        _elem("b0", page=1, reading_order=0, text=body, font_size=11.0, bold=False),
+        _elem("p0", page=1, reading_order=1, text="0.1 Preface", font_size=16.0, bold=True),
+        _elem("p1", page=1, reading_order=2, text="1 Introduction", font_size=16.0, bold=True),
+        _elem("p10", page=1, reading_order=3, text="10 Conclusion", font_size=16.0, bold=True),
+        _elem("p100", page=1, reading_order=4, text="100 Appendix Summary", font_size=16.0, bold=True),
+        _elem("plain_10", page=1, reading_order=5, text="10. apples on table", font_size=11.0, bold=False),
+        _elem("plain_yr", page=1, reading_order=6, text="2025 results", font_size=11.0, bold=False),
+        _elem("plain_100", page=1, reading_order=7, text="100. items sold", font_size=11.0, bold=False),
+    ]
+    out_sty = apply_structure(_ir(styled_unlabeled))
+    assert [o["title"] for o in out_sty["metadata"]["outline"]] == [
+        "0.1 Preface",
+        "1 Introduction",
+        "10 Conclusion",
+        "100 Appendix Summary",
+    ]
+
+
+def test_multiline_merge_renumbers_reading_order_contiguously_per_page():
+    elements = [
+        _elem("h1a", page=1, bbox=[50.0, 50.0, 350.0, 70.0], reading_order=0, text="1.1 System", font_size=14.0, bold=True),
+        _elem("h1b", page=1, bbox=[50.0, 74.0, 300.0, 94.0], reading_order=1, text="Architecture", font_size=14.0, bold=True),
+        _elem("b1", page=1, bbox=[50.0, 110.0, 480.0, 140.0], reading_order=2, text="Body paragraph explaining the architecture cleanly.", font_size=11.0, bold=False),
+        _elem("fig1", kind="figure", page=1, bbox=[50.0, 160.0, 320.0, 260.0], reading_order=3, font_size=None, bold=None),
+        _elem("c1a", page=1, bbox=[50.0, 266.0, 320.0, 280.0], reading_order=4, text="Figure 1: Pipeline", font_size=10.0, bold=True),
+        _elem("c1b", page=1, bbox=[50.0, 283.0, 260.0, 297.0], reading_order=5, text="diagram of modules", font_size=10.0, bold=True),
+        _elem("b2", page=1, bbox=[50.0, 320.0, 480.0, 350.0], reading_order=6, text="Closing body text on page one.", font_size=11.0, bold=False),
+        _elem("fig2", kind="figure", page=2, bbox=[50.0, 60.0, 320.0, 160.0], reading_order=0, font_size=None, bold=None),
+        _elem("c2a", page=2, bbox=[50.0, 166.0, 320.0, 180.0], reading_order=1, text="Figure 2: Data", font_size=10.0, bold=True),
+        _elem("c2b", page=2, bbox=[50.0, 183.0, 260.0, 197.0], reading_order=2, text="flow overview", font_size=10.0, bold=True),
+        _elem("b3", page=2, bbox=[50.0, 220.0, 480.0, 250.0], reading_order=3, text="Trailing text on page two.", font_size=11.0, bold=False),
+    ]
+    out = apply_structure(_ir(elements))
+    p1_ro = [e["reading_order"] for e in out["elements"] if e["page"] == 1]
+    p2_ro = [e["reading_order"] for e in out["elements"] if e["page"] == 2]
+    assert p1_ro == list(range(len(p1_ro))) == [0, 1, 2, 3, 4]
+    assert p2_ro == list(range(len(p2_ro))) == [0, 1, 2]
+
+
+def test_narrow_gutter_does_not_cross_match_orphan_caption():
+    elements = [
+        _elem("fig1", kind="figure", page=1, bbox=[50.0, 100.0, 240.0, 200.0], reading_order=0, font_size=None, bold=None),
+        _elem("cap1", page=1, bbox=[50.0, 206.0, 240.0, 222.0], reading_order=1, text="Figure 1: Col 1 Figure", bold=True),
+        _elem("cap_orphan", page=1, bbox=[50.0, 260.0, 240.0, 276.0], reading_order=2, text="Figure 3: Col 1 Orphan", bold=True),
+        _elem("fig2", kind="figure", page=1, bbox=[258.0, 100.0, 480.0, 280.0], reading_order=3, font_size=None, bold=None),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert by_id["cap1"]["metadata"]["caption_of"] == "fig1"
+    assert "caption_of" not in by_id["cap_orphan"]["metadata"]
+    assert "caption_id" not in by_id["fig2"]["metadata"]
 
 
 def main():

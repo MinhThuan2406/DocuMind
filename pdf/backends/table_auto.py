@@ -7,6 +7,7 @@ from typing import Any
 
 from PIL import Image
 
+from .._pdf_io import bbox_iou
 from ..models import BBox, ExtractedTable, Word
 from ..tables import DEFAULT_TABLE_DPI, crop_page_region, ocr_crop_tokens, tokens_in_box
 from . import get as get_backend
@@ -40,31 +41,70 @@ def _has_valid_grid(table: ExtractedTable) -> bool:
     return len(occupied) == table.num_rows * table.num_cols
 
 
+def _matches_overlapping_cells(norm_tok: str, cells: Sequence[str]) -> bool:
+    if any(norm_tok in ctext for ctext in cells):
+        return True
+    if len(cells) < 2:
+        return False
+    matched_pos = {0}
+    tok_len = len(norm_tok)
+    for ctext in cells:
+        next_pos = set(matched_pos)
+        for pos in matched_pos:
+            for end in range(pos + 1, tok_len + 1):
+                if norm_tok[pos:end] in ctext:
+                    next_pos.add(end)
+                else:
+                    break
+        if tok_len in next_pos:
+            return True
+        matched_pos = next_pos
+    return False
+
+
 def _token_coverage(table: ExtractedTable, tokens: Sequence[tuple[str, BBox]]) -> float:
     non_empty = [(txt.strip(), tb) for txt, tb in tokens if txt.strip()]
     if not non_empty:
         return 1.0
     if not table.cells:
         return 0.0
-    norm_cells = [(c.bbox, "".join(c.text.split()).lower()) for c in table.cells]
+    sorted_cells = sorted(table.cells, key=lambda c: (c.row, c.col))
+    norm_cells = [(c.bbox, "".join(c.text.split()).lower()) for c in sorted_cells]
     has_bboxes = any(cb is not None for cb, _ in norm_cells)
     all_text = "".join(t for _, t in norm_cells)
     covered = 0
     for txt, tb in non_empty:
         norm_tok = "".join(txt.split()).lower()
+        if not norm_tok:
+            covered += 1
+            continue
         if not has_bboxes:
             if norm_tok in all_text:
                 covered += 1
             continue
         tcx = (tb[0] + tb[2]) * 0.5
         tcy = (tb[1] + tb[3]) * 0.5
+        th = max(1.0, tb[3] - tb[1])
         if any(
             cb is not None
-            and (cb[0] - 1.5 <= tcx <= cb[2] + 1.5 and cb[1] - 1.5 <= tcy <= cb[3] + 1.5)
+            and cb[0] - 1.5 <= tcx <= cb[2] + 1.5
+            and cb[1] - 1.5 <= tcy <= cb[3] + 1.5
             and bool(ctext)
             and norm_tok in ctext
             for cb, ctext in norm_cells
         ):
+            covered += 1
+            continue
+        overlapping_texts = [
+            ctext
+            for cb, ctext in norm_cells
+            if cb is not None
+            and ctext
+            and cb[0] - 1.5 <= tb[2]
+            and tb[0] <= cb[2] + 1.5
+            and ((cb[1] - 1.5 <= tcy <= cb[3] + 1.5) or (min(tb[3], cb[3]) - max(tb[1], cb[1]) >= 0.3 * th))
+        ]
+        if overlapping_texts and _matches_overlapping_cells(norm_tok, overlapping_texts):
             covered += 1
     return covered / len(non_empty)
 
@@ -248,13 +288,15 @@ class AutoTableExtractor:
                     out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
                 elif pl_tbl.num_rows == 1 and pl_tbl.num_cols == 1:
                     crop, crop_box = crop_page_region(page, box, dpi)
-                    box_tokens = tokens_in_box(get_native_tokens(), crop_box)
-                    tatr_tbl = tatr.extract(crop, crop_box, box_tokens)
+                    crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                    tatr_tbl = tatr.extract(crop, crop_box, crop_tokens)
                     if tatr_tbl.num_rows * tatr_tbl.num_cols >= 2:
                         out.append(replace(tatr_tbl, source="auto_tatr"))
-                    elif _has_valid_grid(pl_tbl) and _token_coverage(
-                        pl_tbl, tokens_in_box(get_native_tokens(), pl_tbl.bbox)
-                    ) >= _MIN_TOKEN_COVERAGE:
+                    elif (
+                        _has_valid_grid(pl_tbl)
+                        and bbox_iou(pl_tbl.bbox, box) >= 0.50
+                        and _token_coverage(pl_tbl, tokens_in_box(get_native_tokens(), box)) >= _MIN_TOKEN_COVERAGE
+                    ):
                         callout_cells = tuple(replace(c, is_header=False) for c in pl_tbl.cells)
                         out.append(
                             replace(
@@ -268,16 +310,20 @@ class AutoTableExtractor:
                         callout_cells = tuple(replace(c, is_header=False) for c in tatr_tbl.cells)
                         out.append(replace(tatr_tbl, cells=callout_cells, source="auto_tatr"))
                 else:
-                    pl_tokens = tokens_in_box(get_native_tokens(), pl_tbl.bbox)
-                    if not _has_valid_grid(pl_tbl) or _token_coverage(pl_tbl, pl_tokens) < _MIN_TOKEN_COVERAGE:
+                    box_tokens = tokens_in_box(get_native_tokens(), box)
+                    if (
+                        not _has_valid_grid(pl_tbl)
+                        or bbox_iou(pl_tbl.bbox, box) < 0.50
+                        or _token_coverage(pl_tbl, box_tokens) < _MIN_TOKEN_COVERAGE
+                    ):
                         crop, crop_box = crop_page_region(page, box, dpi)
-                        box_tokens = tokens_in_box(get_native_tokens(), crop_box)
-                        out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
+                        crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                        out.append(replace(tatr.extract(crop, crop_box, crop_tokens), source="auto_tatr"))
                     elif pl_tbl.num_cols == 1 and pl_tbl.num_rows >= 2:
                         crop, crop_box = crop_page_region(page, box, dpi)
-                        box_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                        crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
                         objects = tatr.detect_objects(crop)
-                        tatr_tbl = objects_to_table(objects, crop.size, crop_box, box_tokens)
+                        tatr_tbl = objects_to_table(objects, crop.size, crop_box, crop_tokens)
                         if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
                             out.append(replace(tatr_tbl, source="auto_tatr"))
                         else:

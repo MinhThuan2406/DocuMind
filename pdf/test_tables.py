@@ -989,6 +989,232 @@ def test_link_table_continuations_positive_and_negative():
     t_p3 = _mk_tbl("tbl_0002", "e2", 3, (40, 40, 500, 260), 2, ["Param", "Value"], True)
     assert link_table_continuations([t1, t_p3], elems_pos)[1]["continuation_of"] is None
 
+    # Negative 5: apply_structure() heading (type="text" with metadata role="heading" / heading_level).
+    elems_role_heading = [
+        {"id": "e1", "page": 1, "type": "table", "bbox": [40, 500, 500, 740]},
+        {"id": "hd_role", "page": 1, "type": "text", "bbox": [300, 100, 520, 125], "metadata": {"role": "heading"}},
+        {"id": "e2", "page": 2, "type": "table", "bbox": [40, 40, 500, 260]},
+    ]
+    assert link_table_continuations([t1, t2], elems_role_heading)[1]["continuation_of"] is None
+
+    elems_level_heading = [
+        {"id": "e1", "page": 1, "type": "table", "bbox": [40, 500, 500, 740]},
+        {"id": "hd_lvl", "page": 1, "type": "text", "bbox": [300, 100, 520, 125], "metadata": {"heading_level": 2}},
+        {"id": "e2", "page": 2, "type": "table", "bbox": [40, 40, 500, 260]},
+    ]
+    assert link_table_continuations([t1, t2], elems_level_heading)[1]["continuation_of"] is None
+
+
+def test_table_to_html_never_splits_rowspan_across_thead_tbody():
+    # Header cell spanning into a body row must not be split across <thead>/<tbody>.
+    tbl_split = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 60.0),
+        num_rows=2,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 2, 1, "Metric", (0.0, 0.0, 50.0, 60.0), is_header=True),
+            TableCell(0, 1, 1, 1, "Values", (50.0, 0.0, 100.0, 30.0), is_header=True),
+            TableCell(1, 1, 1, 1, "10", (50.0, 30.0, 100.0, 60.0), is_header=False),
+        ),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    html_split = table_to_html(tbl_split)
+    assert "<thead>" not in html_split and "<tbody>" not in html_split
+    assert html_split == '<table><tr><th rowspan="2">Metric</th><th>Values</th></tr><tr><td>10</td></tr></table>'
+    assert teds_score(html_split, '<table><tr><td rowspan="2">Metric</td><td>Values</td></tr><tr><td>10</td></tr></table>') == 1.0
+
+    # Row 0 stays in <thead> while row 1 rowspan=2 moves with row 2 into <tbody>.
+    tbl_partial = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "H0", (0.0, 0.0, 50.0, 30.0), is_header=True),
+            TableCell(0, 1, 1, 1, "H1", (50.0, 0.0, 100.0, 30.0), is_header=True),
+            TableCell(1, 0, 2, 1, "Sub", (0.0, 30.0, 50.0, 90.0), is_header=True),
+            TableCell(1, 1, 1, 1, "S1", (50.0, 30.0, 100.0, 60.0), is_header=True),
+            TableCell(2, 1, 1, 1, "10", (50.0, 60.0, 100.0, 90.0), is_header=False),
+        ),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    html_partial = table_to_html(tbl_partial)
+    assert html_partial == (
+        "<table><thead><tr><th>H0</th><th>H1</th></tr></thead>"
+        '<tbody><tr><th rowspan="2">Sub</th><th>S1</th></tr><tr><td>10</td></tr></tbody></table>'
+    )
+
+    # All-header multi-row group stays inside <thead> cleanly.
+    tbl_hdr2 = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 2, 1, "Metric", (0.0, 0.0, 50.0, 60.0), is_header=True),
+            TableCell(0, 1, 1, 1, "Group", (50.0, 0.0, 100.0, 30.0), is_header=True),
+            TableCell(1, 1, 1, 1, "Sub", (50.0, 30.0, 100.0, 60.0), is_header=True),
+            TableCell(2, 0, 1, 1, "A", (0.0, 60.0, 50.0, 90.0), is_header=False),
+            TableCell(2, 1, 1, 1, "1", (50.0, 60.0, 100.0, 90.0), is_header=False),
+        ),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    assert table_to_html(tbl_hdr2) == (
+        '<table><thead><tr><th rowspan="2">Metric</th><th>Group</th></tr><tr><th>Sub</th></tr></thead>'
+        "<tbody><tr><td>A</td><td>1</td></tr></tbody></table>"
+    )
+
+
+def test_auto_rejects_partial_pdfplumber_table_against_layout_box():
+    import pdfplumber
+
+    class _FourRowTatr:
+        def __init__(self):
+            self.extract_calls = 0
+
+        def _objs(self, cw: float, ch: float):
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.94),
+                ("table row", (0.0, 0.0, cw, ch * 0.25), 0.92),
+                ("table row", (0.0, ch * 0.25, cw, ch * 0.50), 0.91),
+                ("table row", (0.0, ch * 0.50, cw, ch * 0.75), 0.90),
+                ("table row", (0.0, ch * 0.75, cw, ch), 0.89),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.93),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.93),
+                ("table column header", (0.0, 0.0, cw, ch * 0.25), 0.92),
+            ]
+
+        def detect_objects(self, crop: Image.Image):
+            return self._objs(float(crop.width), float(crop.height))
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            self.extract_calls += 1
+            return objects_to_table(self._objs(float(image.width), float(image.height)), image.size, table_bbox_pt, tokens)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "partial_ruled.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        # Only top 2 of 4 rows are ruled (IoU = 0.50); bottom 2 rows are unruled.
+        for x in (40, 160, 280):
+            p.draw_line((x, 40), (x, 120), width=0.5)
+        for y in (40, 80, 120):
+            p.draw_line((40, y), (280, y), width=0.5)
+        p.insert_text((55, 64), "H1", fontsize=10)
+        p.insert_text((175, 64), "H2", fontsize=10)
+        p.insert_text((55, 104), "R1", fontsize=10)
+        p.insert_text((175, 104), "V1", fontsize=10)
+        p.insert_text((55, 144), "R2", fontsize=10)
+        p.insert_text((175, 144), "V2", fontsize=10)
+        p.insert_text((55, 184), "R3", fontsize=10)
+        p.insert_text((175, 184), "V3", fontsize=10)
+        b.save(pdf_path)
+
+        tatr = _FourRowTatr()
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tbl = extract_tables_on_page(
+                doc.pages[0],
+                [(40.0, 40.0, 280.0, 200.0)],
+                extractor=AutoTableExtractor(tatr_extractor=tatr),
+            )[0]
+
+    assert tatr.extract_calls == 1
+    assert tbl.source == "auto_tatr"
+    assert tbl.num_rows == 4 and tbl.num_cols == 2
+    assert [c.text for c in tbl.cells] == ["H1", "H2", "R1", "V1", "R2", "V2", "R3", "V3"]
+
+
+def test_auto_token_coverage_handles_tight_border_merged_words():
+    import pdfplumber
+    from pdf.backends.table_auto import _token_coverage
+
+    class _NoFallbackTatr:
+        def detect_objects(self, crop: Image.Image):
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.95),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.92),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.92),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.92),
+            ]
+
+        def extract(self, *_args, **_kwargs):
+            raise AssertionError("TATR extract() fallback must not be called for tight-border words")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "tight_border.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=300, height=200)
+        for x in (40, 100, 180):
+            p.draw_line((x, 40), (x, 120), width=0.5)
+        for y in (40, 80, 120):
+            p.draw_line((40, y), (180, y), width=0.5)
+        # Gap across x=100 is < 2pt so extract_words merges ColA+ColB, while pdfplumber splits them.
+        p.insert_text((77, 64), "ColA", fontsize=10)
+        p.insert_text((100.7, 64), "ColB", fontsize=10)
+        p.insert_text((55, 104), "Val1", fontsize=10)
+        p.insert_text((115, 104), "Val2", fontsize=10)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tbl = extract_tables_on_page(
+                doc.pages[0],
+                [(38.0, 38.0, 182.0, 122.0)],
+                extractor=AutoTableExtractor(tatr_extractor=_NoFallbackTatr()),
+            )[0]
+
+    assert tbl.source == "auto_refined"
+    assert [c.text for c in tbl.cells] == ["ColA", "ColB", "Val1", "Val2"]
+
+    # Multi-line cells where top line tokens fused across vertical cell border also reach 1.0 coverage.
+    multi_tbl = ExtractedTable(
+        bbox=(40.0, 40.0, 180.0, 120.0),
+        num_rows=1,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "ColA foo", (40.0, 40.0, 100.0, 120.0), True),
+            TableCell(0, 1, 1, 1, "ColB bar", (100.0, 40.0, 180.0, 120.0), True),
+        ),
+        source="pdfplumber",
+        confidence=1.0,
+    )
+    assert _token_coverage(
+        multi_tbl,
+        [("ColAColB", (77.0, 50.0, 123.0, 62.0)), ("foo", (77.0, 75.0, 95.0, 87.0)), ("bar", (105.0, 75.0, 125.0, 87.0))],
+    ) == 1.0
+
+
+def test_tatr_1d_clustering_and_snap_intervals_boundaries():
+    from pdf.backends.tatr_onnx import _cluster_1d_tokens, _snap_intervals
+
+    clustered = _cluster_1d_tokens(
+        [
+            (-10.0, -2.0, 5.0, 10.0),
+            (105.0, 10.0, 120.0, 20.0),
+            (-3.0, 15.0, 20.0, 25.0),
+            (40.0, 30.0, 40.0, 40.0),
+            (85.0, 50.0, 110.0, 60.0),
+        ],
+        axis=0,
+        limit=100.0,
+    )
+    assert clustered == [(0.0, 20.0, 0.6), (85.0, 100.0, 0.6)]
+
+    for raw, lim in [
+        ([(0.0, 100.0, 0.9), (105.0, 120.0, 0.8)], 100.0),
+        ([(0.0, 99.5, 0.9), (99.8, 100.0, 0.9)], 100.0),
+        ([(0.0, 60.0, 0.9), (40.0, 100.0, 0.9)], 100.0),
+        ([(0.0, 1.0, 0.9), (1.0, 2.0, 0.9), (2.0, 3.0, 0.9)], 1.5),
+    ]:
+        snapped = _snap_intervals(raw, lim)
+        assert snapped
+        assert snapped[0][0] == 0.0 and snapped[-1][1] == lim
+        for idx, (lo, hi) in enumerate(snapped):
+            assert 0.0 <= lo < hi <= lim
+            if idx > 0:
+                assert snapped[idx - 1][1] <= lo
+
 
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]

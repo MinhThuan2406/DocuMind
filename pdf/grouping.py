@@ -6,6 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from ._pdf_io import bbox_area, bbox_inter_area, bbox_iou
 from .backends.base import FigureGrouper, PageLayout
 from .models import FIGURE_MIN_AREA, FigureSource, GroupedFigure
 
@@ -16,6 +17,9 @@ _CANONICAL_LONG_PT = 800.0
 _TABLE_BARRIER_GAP_PT = 4.0
 _SEPARATOR_LABELS = frozenset(
     {"caption", "section_header", "title", "list_item", "page_header", "page_footer"}
+)
+_V1_SKIP_LABELS = frozenset(
+    {"text", "page_header", "page_footer", "footnote", "list_item", "section_header", "title", "code"}
 )
 
 
@@ -48,21 +52,10 @@ class _DisjointSetUnion:
             self.rank[ri] += 1
 
 
-def _compute_iou(box1: Sequence[float], box2: Sequence[float]) -> float:
-    ix = max(0.0, min(box1[2], box2[2]) - max(box1[0], box2[0]))
-    iy = max(0.0, min(box1[3], box2[3]) - max(box1[1], box2[1]))
-    inter = ix * iy
-    a1 = max(0.0, box1[2] - box1[0]) * max(0.0, box1[3] - box1[1])
-    a2 = max(0.0, box2[2] - box2[0]) * max(0.0, box2[3] - box2[1])
-    union = a1 + a2 - inter
-    return inter / union if union > 0 else 0.0
-
-
 def _box_inside(inner: Sequence[float], outer: Sequence[float], tolerance: float = 0.15) -> bool:
-    ix = max(0.0, min(inner[2], outer[2]) - max(inner[0], outer[0]))
-    iy = max(0.0, min(inner[3], outer[3]) - max(inner[1], outer[1]))
-    inner_area = max(1.0, (inner[2] - inner[0]) * (inner[3] - inner[1]))
-    return (ix * iy / inner_area) >= (1.0 - tolerance)
+    inter = bbox_inter_area(inner, outer)
+    inner_area = max(1.0, bbox_area(inner))
+    return (inter / inner_area) >= (1.0 - tolerance)
 
 
 def _boxes_close(b1: Sequence[float], b2: Sequence[float], pad_x: float, pad_y: float) -> bool:
@@ -74,37 +67,50 @@ def _boxes_close(b1: Sequence[float], b2: Sequence[float], pad_x: float, pad_y: 
     )
 
 
-def _detect_visual_containers(bgr: np.ndarray) -> list[list[float]]:
-    h, w = bgr.shape[:2]
+def _detect_visual_containers(
+    bgr: np.ndarray,
+    *,
+    scale: float = 1.0,
+    min_morph_len: int = 20,
+    box_kernel: tuple[int, int] = (25, 10),
+    min_w: float = 120.0,
+    min_h: float = 60.0,
+) -> list[list[float]]:
+    ih, iw = bgr.shape[:2]
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 20, 80)
 
-    h_len = max(20, int(w * 0.015))
-    v_len = max(20, int(h * 0.015))
+    h_len = max(min_morph_len, int(iw * 0.015) if scale == 1.0 else round(iw * 0.015))
+    v_len = max(min_morph_len, int(ih * 0.015) if scale == 1.0 else round(ih * 0.015))
     h_k = cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 3))
     v_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, v_len))
     combined = cv2.bitwise_or(
         cv2.morphologyEx(edges, cv2.MORPH_CLOSE, h_k),
         cv2.morphologyEx(edges, cv2.MORPH_CLOSE, v_k),
     )
-    box_k = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 10))
+    box_k = cv2.getStructuringElement(cv2.MORPH_RECT, box_kernel)
     closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, box_k)
 
     contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    min_area = w * h * 0.008
-    max_area = w * h * 0.85
+    min_area = iw * ih * 0.008
+    max_area = iw * ih * 0.85
 
     containers: list[list[float]] = []
     for cnt in contours:
         x, y, cw, ch = cv2.boundingRect(cnt)
         area = cw * ch
-        if min_area <= area <= max_area and cw >= 120 and ch >= 60:
-            containers.append([float(x), float(y), float(x + cw), float(y + ch)])
+        if min_area <= area <= max_area and cw * scale >= min_w and ch * scale >= min_h:
+            containers.append([
+                float(x) * scale,
+                float(y) * scale,
+                float(x + cw) * scale,
+                float(y + ch) * scale,
+            ])
 
-    containers.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
+    containers.sort(key=bbox_area, reverse=True)
     filtered: list[list[float]] = []
     for b in containers:
-        if not any(_compute_iou(b, fb) > 0.85 for fb in filtered):
+        if not any(bbox_iou(b, fb) > 0.85 for fb in filtered):
             filtered.append(b)
     return filtered
 
@@ -121,7 +127,11 @@ def _v1_group_boxes(
     sx = img_w / dw if dw > 0 else 1.0
     sy = img_h / dh if dh > 0 else 1.0
 
-    src = [it for it in items if it.get("bbox") and len(it["bbox"]) == 4]
+    src = [
+        it
+        for it in items
+        if it.get("bbox") and len(it["bbox"]) == 4 and str(it.get("label", "")).lower() not in _V1_SKIP_LABELS
+    ]
     pixel_items = [
         {
             "orig_item": it,
@@ -228,7 +238,7 @@ def _v1_group_boxes(
         u_area = max(1.0, (u_box[2] - u_box[0]) * (u_box[3] - u_box[1]))
         for vc in visual_containers:
             vc_area = max(1.0, (vc[2] - vc[0]) * (vc[3] - vc[1]))
-            if _compute_iou(u_box, vc) > 0.6 or (
+            if bbox_iou(u_box, vc) > 0.6 or (
                 _box_inside(u_box, vc, tolerance=0.1) and vc_area < 1.35 * u_area
             ):
                 u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
@@ -339,48 +349,6 @@ def _has_bordered_grid(bgr: np.ndarray, box_px: Sequence[float], px_to_canon: fl
     return n_h >= 3 and n_v >= 3
 
 
-def _detect_visual_containers_canon(bgr: np.ndarray, px_to_canon: float) -> list[list[float]]:
-    ih, iw = bgr.shape[:2]
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 20, 80)
-
-    h_len = max(5, round(iw * 0.015))
-    v_len = max(5, round(ih * 0.015))
-    h_k = cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 3))
-    v_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, v_len))
-    combined = cv2.bitwise_or(
-        cv2.morphologyEx(edges, cv2.MORPH_CLOSE, h_k),
-        cv2.morphologyEx(edges, cv2.MORPH_CLOSE, v_k),
-    )
-    box_kw = max(5, round(12.0 / px_to_canon))
-    box_kh = max(3, round(5.0 / px_to_canon))
-    box_k = cv2.getStructuringElement(cv2.MORPH_RECT, (box_kw, box_kh))
-    closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, box_k)
-
-    contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    min_area = iw * ih * 0.008
-    max_area = iw * ih * 0.85
-
-    containers: list[list[float]] = []
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        area = cw * ch
-        if min_area <= area <= max_area and cw * px_to_canon >= 55.0 and ch * px_to_canon >= 28.0:
-            containers.append([
-                float(x) * px_to_canon,
-                float(y) * px_to_canon,
-                float(x + cw) * px_to_canon,
-                float(y + ch) * px_to_canon,
-            ])
-
-    containers.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
-    filtered: list[list[float]] = []
-    for b in containers:
-        if not any(_compute_iou(b, fb) > 0.85 for fb in filtered):
-            filtered.append(b)
-    return filtered
-
-
 class V2VectorVisionGrouper:
     name = "v2_vector_vision"
     source: FigureSource = "v2_vector_vision"
@@ -422,7 +390,14 @@ class V2VectorVisionGrouper:
         if n_items == 0:
             return []
 
-        visual_containers = _detect_visual_containers_canon(bgr, px_to_canon)
+        visual_containers = _detect_visual_containers(
+            bgr,
+            scale=px_to_canon,
+            min_morph_len=5,
+            box_kernel=(max(5, round(12.0 / px_to_canon)), max(3, round(5.0 / px_to_canon))),
+            min_w=55.0,
+            min_h=28.0,
+        )
         pic_indices = [i for i, it in enumerate(canon_items) if it["label"] in ("picture", "figure")]
         if not pic_indices:
             return []
@@ -489,7 +464,7 @@ class V2VectorVisionGrouper:
         item_vcs: dict[int, list[list[float]]] = {}
 
         for vc in visual_containers:
-            vc_area = (vc[2] - vc[0]) * (vc[3] - vc[1])
+            vc_area = bbox_area(vc)
             if vc_area > 0.35 * canon_w * canon_h or (vc[2] - vc[0]) >= 0.95 * canon_w or vc[1] >= 0.88 * canon_h:
                 continue
             n_headers = sum(
@@ -501,7 +476,7 @@ class V2VectorVisionGrouper:
                 continue
             if any(
                 not _box_inside(canon_items[ti]["bbox"], vc, tolerance=0.15)
-                and _inter_area_2d(canon_items[ti]["bbox"], vc) / max(1.0, _box_area_2d(canon_items[ti]["bbox"])) >= 0.30
+                and bbox_inter_area(canon_items[ti]["bbox"], vc) / max(1.0, bbox_area(canon_items[ti]["bbox"])) >= 0.30
                 for ti in standalone_tables
             ):
                 continue
@@ -515,9 +490,9 @@ class V2VectorVisionGrouper:
             overlapping_pics = [
                 pi
                 for pi in pic_indices
-                if _inter_area_2d(canon_items[pi]["bbox"], vc) > 0.0
+                if bbox_inter_area(canon_items[pi]["bbox"], vc) > 0.0
                 and pi not in contained
-                and _inter_area_2d(canon_items[pi]["bbox"], vc) / max(1.0, _box_area_2d(canon_items[pi]["bbox"])) >= 0.04
+                and bbox_inter_area(canon_items[pi]["bbox"], vc) / max(1.0, bbox_area(canon_items[pi]["bbox"])) >= 0.04
             ]
             members = contained + (overlapping_pics if contained else [])
             if len(members) >= 2:
@@ -563,7 +538,7 @@ class V2VectorVisionGrouper:
         for idx_list in clusters.values():
             if not any(
                 canon_items[idx]["label"] in ("picture", "figure")
-                and _box_area_2d(canon_items[idx]["bbox"]) >= min_area * page_area_canon
+                and bbox_area(canon_items[idx]["bbox"]) >= min_area * page_area_canon
                 for idx in idx_list
             ):
                 continue
@@ -571,7 +546,7 @@ class V2VectorVisionGrouper:
             xs = [v for idx in idx_list for v in (canon_items[idx]["bbox"][0], canon_items[idx]["bbox"][2])]
             ys = [v for idx in idx_list for v in (canon_items[idx]["bbox"][1], canon_items[idx]["bbox"][3])]
             u_box = [min(xs), min(ys), max(xs), max(ys)]
-            u_area = max(1.0, _box_area_2d(u_box))
+            u_area = max(1.0, bbox_area(u_box))
 
             expanded_vcs: list[list[float]] = []
             for idx in idx_list:
@@ -581,12 +556,12 @@ class V2VectorVisionGrouper:
                     u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
 
             for vc in visual_containers:
-                vc_area = max(1.0, _box_area_2d(vc))
-                if _compute_iou(u_box, vc) > 0.6 or (
+                vc_area = max(1.0, bbox_area(vc))
+                if bbox_iou(u_box, vc) > 0.6 or (
                     _box_inside(u_box, vc, tolerance=0.1) and vc_area < 1.35 * u_area
                 ):
                     if not any(
-                        _inter_area_2d(canon_items[ti]["bbox"], vc) / max(1.0, _box_area_2d(canon_items[ti]["bbox"])) >= 0.30
+                        bbox_inter_area(canon_items[ti]["bbox"], vc) / max(1.0, bbox_area(canon_items[ti]["bbox"])) >= 0.30
                         for ti in standalone_tables
                     ):
                         u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
@@ -595,7 +570,7 @@ class V2VectorVisionGrouper:
             total_w = 0.0
             weighted = 0.0
             for idx in idx_list:
-                area = max(1.0, _box_area_2d(canon_items[idx]["bbox"]))
+                area = max(1.0, bbox_area(canon_items[idx]["bbox"]))
                 weighted += area * canon_items[idx]["score"]
                 total_w += area
             score = round(weighted / total_w, 4) if total_w > 0 else _LEGACY_DEFAULT_SCORE
@@ -613,11 +588,3 @@ class V2VectorVisionGrouper:
                 )
             )
         return boxes_px
-
-
-def _box_area_2d(b: Sequence[float]) -> float:
-    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-
-
-def _inter_area_2d(a: Sequence[float], b: Sequence[float]) -> float:
-    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))

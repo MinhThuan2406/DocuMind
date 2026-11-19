@@ -395,7 +395,8 @@ def test_pass2_high_dpi_refinement_accept_rollback_and_font_size():
     assert len(ocr.calls) == 4
     assert [b.text for b in rp.blocks] == ["Pass2 improved", "Pass1 rollback", "Pass2 recovered"]
     assert [b.confidence for b in rp.blocks] == [0.91, 0.70, 0.84]
-    assert all(b.source == "ocr" and b.font_size > 0.0 for b in rp.blocks)
+    assert [b.source for b in rp.blocks] == ["ocr_high_dpi", "ocr", "ocr_high_dpi"]
+    assert all(b.font_size > 0.0 for b in rp.blocks)
     assert abs(rp.blocks[1].font_size - round(20.0 * 0.85, 2)) <= 0.1
     assert reader.last_stats is not None and reader.last_stats.warnings == ()
 
@@ -461,7 +462,7 @@ def test_read_raster_regions_alignment_sorting_and_handle_cleanup():
         assert len(res[1]) == 1
         blk = res[1][0]
         assert blk.text == "Line A Line B"
-        assert blk.source == "ocr"
+        assert blk.source == "ocr_high_dpi"
         assert blk.font_size > 0.0
         exp_box = (120.0, 60.0, 260.0, 105.0)
         for got, exp in zip(blk.bbox, exp_box):
@@ -472,9 +473,72 @@ def test_read_raster_regions_alignment_sorting_and_handle_cleanup():
             raise AssertionError("expected ValueError for out-of-range page")
         except ValueError:
             pass
+        res_150 = read_raster_regions(pdf_path, {1: [region]}, reader=reader, dpi=150)
+        assert len(res_150[1]) == 1 and res_150[1][0].source == "ocr"
         assert reader.read_raster_regions(pdf_path, {}) == {}
         assert reader.read_raster_regions(pdf_path, {1: []}) == {1: []}
         pdf_path.unlink()
+
+
+def test_read_raster_regions_cropbox_and_rotate_alignment():
+    import pdfplumber
+    from pdf._pdf_io import page_bbox
+    from pdf.raster import read_raster_regions
+
+    class _Det:
+        def detect(self, image):
+            del image
+            return []
+
+    class _CropVerifyOcr:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            return [OcrLine("CROPPED REGION", (0.0, 0.0, w, h), 0.95)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for rot in (0, 90, 180, 270):
+            b = TestPdfBuilder()
+            pg = b.new_page(width=600, height=800)
+            pg.insert_text((100, 150), "Anchor", fontsize=11)
+            raw = b.to_bytes().replace(
+                b"/MediaBox [0 0 600.00 800.00]",
+                f"/MediaBox [0 0 600.00 800.00] /CropBox [40 60 540 760] /Rotate {rot}".encode("ascii"),
+            )
+            pdf_path = Path(tmp) / f"crop_{rot}.pdf"
+            pdf_path.write_bytes(raw)
+            with pdfplumber.open(str(pdf_path)) as doc:
+                pb = page_bbox(doc.pages[0])
+            region = (pb[0] + 60.0, pb[1] + 80.0, pb[0] + 260.0, pb[1] + 220.0)
+            reader = ComposedReader(_Det(), _CropVerifyOcr())
+            for pboxes in (None, {1: pb}):
+                res = read_raster_regions(pdf_path, {1: [region]}, reader=reader, dpi=275, page_boxes=pboxes)
+                assert len(res[1]) == 1
+                blk = res[1][0]
+                assert blk.source == "ocr_high_dpi"
+                for got, exp in zip(blk.bbox, region):
+                    assert abs(got - exp) <= 0.5, (rot, pboxes, blk.bbox, region)
+
+
+def test_orphan_merge_blocks_headings_lists_and_narrow_gutters():
+    from pdf.backends.reader_composed import _cluster_orphan_lines
+
+    orphans = [
+        OcrLine("1.2 Section Heading", (40.0, 50.0, 220.0, 64.0), 0.95),
+        OcrLine("Body paragraph line.", (40.0, 70.0, 240.0, 81.5), 0.94),
+        OcrLine("Second body line.", (40.0, 85.0, 230.0, 96.5), 0.94),
+        OcrLine("- Bullet item one", (40.0, 100.0, 190.0, 111.5), 0.93),
+        OcrLine("Left Col", (40.0, 140.0, 120.0, 152.0), 0.95),
+        OcrLine("Right Col", (136.0, 140.0, 220.0, 152.0), 0.95),
+    ]
+    blocks = _cluster_orphan_lines(orphans, 1.0, 1.0)
+    assert [b.text for b in blocks] == [
+        "1.2 Section Heading",
+        "Body paragraph line. Second body line.",
+        "- Bullet item one",
+        "Left Col",
+        "Right Col",
+    ], [b.text for b in blocks]
 
 
 def main():

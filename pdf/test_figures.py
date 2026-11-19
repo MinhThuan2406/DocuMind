@@ -676,6 +676,157 @@ def test_detect_figures_exports_semantic_regions_out():
         assert title_reg.confidence == 0.92
 
 
+def test_detect_figures_cropbox_and_rotate_coordinates():
+    import io
+
+    import pdfplumber
+    from pdf._pdf_io import page_bbox, page_box_to_pdfium_box
+
+    crop = (40, 60, 540, 760)
+    for rot in (0, 90, 180, 270):
+        # Build a 600x800 MediaBox PDF with CropBox [40, 60, 540, 760] and a large 120x120 rect inside CropBox.
+        stream = b"q 1 w 0 0 0 RG 0 0 0 rg 140 300 120 120 re B Q"
+        objs = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] "
+                f"/CropBox [{crop[0]} {crop[1]} {crop[2]} {crop[3]}] /Rotate {rot} "
+                f"/Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>"
+            ).encode("ascii"),
+            f"<< /Length {len(stream)} >>\nstream\n".encode("ascii") + stream + b"\nendstream",
+        ]
+        buf = bytearray(b"%PDF-1.4\n")
+        offs = [0]
+        for idx, body in enumerate(objs, start=1):
+            offs.append(len(buf))
+            buf.extend(f"{idx} 0 obj\n".encode("ascii") + body + b"\nendobj\n")
+        xref = len(buf)
+        buf.extend(f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode("ascii"))
+        for off in offs[1:]:
+            buf.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+        buf.extend(f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
+        pdf_bytes = bytes(buf)
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as doc:
+            pl_page = doc.pages[0]
+            pbox = page_bbox(pl_page)
+            r = pl_page.rects[0]
+            rect_pl = (float(r["x0"]), float(r["top"]), float(r["x1"]), float(r["bottom"]))
+        rect_fi = page_box_to_pdfium_box(rect_pl, pbox)
+        pw = pbox[2] - pbox[0]
+        ph = pbox[3] - pbox[1]
+
+        class _CropBackend:
+            name = f"crop_mock_{rot}"
+            revision = "c1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def analyze(self, _pdf_path, pages):
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                items = [
+                    {"order": 0, "label": "picture", "bbox": list(rect_fi), "text": "", "score": 0.91},
+                    {
+                        "order": 1,
+                        "label": "caption",
+                        "bbox": [rect_fi[0], rect_fi[3] + 5.0, rect_fi[2], rect_fi[3] + 20.0],
+                        "text": "",
+                        "score": 0.88,
+                    },
+                ]
+                return {p: PageLayout(items=items, frame=(pw, ph)) for p in pages}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / f"rot_{rot}.pdf"
+            pdf_path.write_bytes(pdf_bytes)
+            backend = _CropBackend()
+            sem_auto: dict[int, list[SemanticRegion]] = {}
+            figs_auto = detect_figures(
+                pdf_path, [1], layout=backend, grouper="raw_picture", cache_dir=Path(tmp) / "c1", semantic_regions_out=sem_auto
+            )
+            sem_pass: dict[int, list[SemanticRegion]] = {}
+            figs_pass = detect_figures(
+                pdf_path,
+                [1],
+                layout=backend,
+                grouper="raw_picture",
+                cache_dir=Path(tmp) / "c2",
+                semantic_regions_out=sem_pass,
+                page_boxes={1: pbox},
+            )
+            for figs, sem in ((figs_auto, sem_auto), (figs_pass, sem_pass)):
+                fig_err = max(abs(a - b) for a, b in zip(figs[1][0].bbox, rect_pl))
+                assert fig_err <= 0.5, (rot, fig_err, figs[1][0].bbox, rect_pl)
+                cap_expected = (rect_pl[0], rect_pl[3] + 5.0, rect_pl[2], rect_pl[3] + 20.0)
+                cap_err = max(abs(a - b) for a, b in zip(sem[1][0].bbox, cap_expected))
+                assert cap_err <= 0.5, (rot, cap_err, sem[1][0].bbox, cap_expected)
+
+
+def test_image_layout_backend_keep_empty_clusters_semantic_regions_and_cache_version():
+    from pdf.backends import ImageLayoutBackend
+    from pdf.layout.types import LayoutItem
+
+    class _Det:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def detect(self, image):
+            self.calls += 1
+            w, h = float(image.width), float(image.height)
+            return [
+                LayoutItem("title", (0.05 * w, 0.04 * h, 0.50 * w, 0.10 * h), 0.92),
+                LayoutItem("section_header", (0.05 * w, 0.12 * h, 0.45 * w, 0.18 * h), 0.88),
+                LayoutItem("picture", (0.05 * w, 0.22 * h, 0.50 * w, 0.52 * h), 0.95),
+                LayoutItem("caption", (0.05 * w, 0.54 * h, 0.42 * w, 0.60 * h), 0.85),
+                LayoutItem("list_item", (0.05 * w, 0.64 * h, 0.50 * w, 0.70 * h), 0.81),
+                LayoutItem("formula", (0.55 * w, 0.22 * h, 0.90 * w, 0.30 * h), 0.87),
+                LayoutItem("code", (0.55 * w, 0.35 * h, 0.90 * w, 0.48 * h), 0.83),
+                LayoutItem("footnote", (0.05 * w, 0.90 * h, 0.55 * w, 0.95 * h), 0.78),
+                LayoutItem("text", (0.55 * w, 0.55 * h, 0.90 * w, 0.70 * h), 0.90),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "real_sem.pdf"
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400)
+        b.save(pdf_path)
+
+        det = _Det()
+        backend = ImageLayoutBackend(det, name="real_sem_img", revision="r1", dpi=150)
+        assert backend.keep_empty_clusters is True
+        assert backend.postprocess_version == "v3"
+
+        sem_miss: dict[int, list[SemanticRegion]] = {}
+        figs_miss = detect_figures(
+            pdf_path,
+            [1],
+            layout=backend,
+            grouper="v2_vector_vision",
+            cache_dir=tmp_path / "cache",
+            semantic_regions_out=sem_miss,
+        )
+        assert det.calls == 1
+        assert len(figs_miss[1]) == 1
+        labels_miss = {r.label for r in sem_miss[1]}
+        assert {"section_header", "caption", "list_item", "formula", "code", "footnote"} <= labels_miss
+
+        sem_hit: dict[int, list[SemanticRegion]] = {}
+        figs_hit = detect_figures(
+            pdf_path,
+            [1],
+            layout=backend,
+            grouper="v2_vector_vision",
+            cache_dir=tmp_path / "cache",
+            semantic_regions_out=sem_hit,
+        )
+        assert det.calls == 1
+        assert figs_hit == figs_miss
+        assert sem_hit == sem_miss
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

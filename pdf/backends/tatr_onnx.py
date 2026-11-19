@@ -71,7 +71,13 @@ def _cluster_1d_tokens(
     axis: int,
     limit: float,
 ) -> list[tuple[float, float, float]]:
-    items = sorted((b[axis], b[axis + 2]) for b in tok_px if b[axis + 2] > b[axis])
+    if limit <= 0.0:
+        return []
+    items = sorted(
+        (max(0.0, float(b[axis])), min(float(limit), float(b[axis + 2])))
+        for b in tok_px
+        if min(float(limit), float(b[axis + 2])) > max(0.0, float(b[axis]))
+    )
     clusters: list[list[float]] = []
     for a0, a1 in items:
         if not clusters:
@@ -84,7 +90,7 @@ def _cluster_1d_tokens(
             clusters[-1][1] = max(c1, a1)
         else:
             clusters.append([a0, a1])
-    return [(max(0.0, c[0]), min(limit, c[1]), 0.6) for c in clusters]
+    return [(c[0], c[1], 0.6) for c in clusters if c[1] > c[0]]
 
 
 def _snap_intervals(
@@ -92,16 +98,28 @@ def _snap_intervals(
     limit: float,
     tok_spans: Sequence[tuple[float, float]] = (),
 ) -> list[tuple[float, float]]:
-    if not intervals:
+    if not intervals or limit <= 0.0:
         return []
+    cleaned = sorted(
+        (max(0.0, float(a0)), min(float(limit), float(a1)))
+        for a0, a1, _ in intervals
+        if min(float(limit), float(a1)) > max(0.0, float(a0))
+    )
+    if not cleaned:
+        return []
+    n = len(cleaned)
+    min_step = min(1.0, float(limit) / (2.0 * n))
     bounds = [0.0]
-    for idx in range(len(intervals) - 1):
-        mid = (intervals[idx][1] + intervals[idx + 1][0]) * 0.5
+    for idx in range(n - 1):
+        rem = n - 1 - idx
+        min_b = bounds[-1] + min_step
+        max_b = float(limit) - rem * min_step
+        mid = max(min_b, min(max_b, (cleaned[idx][1] + cleaned[idx + 1][0]) * 0.5))
         if tok_spans and any(t0 + 1.0 < mid < t1 - 1.0 for t0, t1 in tok_spans):
-            w_prev = max(1.0, intervals[idx][1] - intervals[idx][0])
-            w_next = max(1.0, intervals[idx + 1][1] - intervals[idx + 1][0])
-            lo_win = max(bounds[-1] + 1.0, intervals[idx][1] - 0.35 * w_prev, mid - 0.45 * min(w_prev, w_next))
-            hi_win = min(limit - 1.0, intervals[idx + 1][0] + 0.35 * w_next, mid + 0.45 * min(w_prev, w_next))
+            w_prev = max(1.0, cleaned[idx][1] - cleaned[idx][0])
+            w_next = max(1.0, cleaned[idx + 1][1] - cleaned[idx + 1][0])
+            lo_win = max(min_b, cleaned[idx][1] - 0.35 * w_prev, mid - 0.45 * min(w_prev, w_next))
+            hi_win = min(max_b, cleaned[idx + 1][0] + 0.35 * w_next, mid + 0.45 * min(w_prev, w_next))
             if hi_win > lo_win:
                 pts = sorted(
                     {mid, lo_win, hi_win}
@@ -116,16 +134,10 @@ def _snap_intervals(
                     if key < best_key:
                         best_key = key
                         best_x = x
-                mid = best_x
+                mid = max(min_b, min(max_b, best_x))
         bounds.append(mid)
-    bounds.append(limit)
-    out: list[tuple[float, float]] = []
-    for idx in range(len(intervals)):
-        lo = bounds[idx]
-        hi = max(lo + 1.0, bounds[idx + 1])
-        out.append((lo, min(limit, hi) if limit > lo + 1.0 else hi))
-    out[-1] = (out[-1][0], limit)
-    return out
+    bounds.append(float(limit))
+    return [(bounds[idx], bounds[idx + 1]) for idx in range(n)]
 
 
 def _overlap_indices(
@@ -237,8 +249,8 @@ def objects_to_table(
 
     raw_rows = [(b, s) for lbl, b, s in objects if lbl == "table row"]
     raw_cols = [(b, s) for lbl, b, s in objects if lbl == "table column"]
-    row_kept = _dedupe_1d_intervals(raw_rows, axis=1)
-    col_kept = _dedupe_1d_intervals(raw_cols, axis=0)
+    row_kept = [(max(0.0, a0), min(ch, a1), s) for a0, a1, s in _dedupe_1d_intervals(raw_rows, axis=1) if min(ch, a1) > max(0.0, a0)]
+    col_kept = [(max(0.0, a0), min(cw, a1), s) for a0, a1, s in _dedupe_1d_intervals(raw_cols, axis=0) if min(cw, a1) > max(0.0, a0)]
     if tok_px:
         y_clusters = _cluster_1d_tokens(tok_px, axis=1, limit=ch)
         if not row_kept or (len(row_kept) == 1 and len(y_clusters) >= 3):
@@ -402,6 +414,12 @@ def table_to_html(table: ExtractedTable) -> str:
             hdr_end += 1
         else:
             break
+
+    while hdr_end > 0:
+        crossing = [c for c in table.cells if c.row < hdr_end < min(table.num_rows, c.row + c.rowspan)]
+        if not crossing:
+            break
+        hdr_end = min(c.row for c in crossing)
 
     def _append_rows(out: list[str], r_start: int, r_stop: int) -> None:
         for r in range(r_start, r_stop):

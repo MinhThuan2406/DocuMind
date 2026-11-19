@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pypdfium2 as pdfium
 from PIL import Image
 
+from .._pdf_io import (
+    bbox_area,
+    bbox_inter_area,
+    page_box_to_pdfium_box,
+    pdfium_box_to_page_box,
+    pdfium_page_box,
+    round_bbox,
+)
 from ..layout import Cluster, postprocess_layout
-from ..models import BBox, FigureBox, RasterPage, TextBlock
+from ..models import BBox, FigureBox, RasterPage, TextBlock, TextSource
 from ..ocr.types import OcrLine
-from ..text import xy_cut_order
+from ..text import cluster_by_overlap, xy_cut_order
 from .base import LayoutDetector, RunStats, TextRecognizer
 from .rss import peak_rss_mb
 
@@ -20,50 +30,30 @@ DEFAULT_RASTER_DPI = 150
 DEFAULT_HIGH_DPI = 275
 _PASS2_CONF_THRESHOLD = 0.75
 _PASS2_PAD_PT = 4.0
-
-
-def _area(b: BBox) -> float:
-    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-
-
-def _inter_area(a: BBox, b: BBox) -> float:
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    return ix * iy
-
-
-def _union_bbox(a: BBox, b: BBox) -> BBox:
-    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+_LIST_OR_HEADING_RE = re.compile(
+    r"^(?:[•●○◦▪▫‣⁃]|[-–—*+]\s|\(\d{1,3}\)\s|\d{1,3}(?:\.\d+)*[.)]?\s+\S|[a-zA-Z]\)\s|\[[A-Za-z0-9_.:-]{1,40}\]\s|"
+    r"(?:chapter|section|appendix|part)\s+(?:\d+|[A-Z]|[IVXLCDM]+)\b)",
+    re.IGNORECASE,
+)
+_SECTION_HEADING_RE = re.compile(
+    r"^(?:\d{1,3}(?:\.\d+)+\.?\s+\S|(?:chapter|section|appendix|part)\s+(?:\d+|[A-Z]|[IVXLCDM]+)\b)",
+    re.IGNORECASE,
+)
 
 
 def _scale_box(box: BBox, sx: float, sy: float) -> BBox:
-    return (
-        round(box[0] * sx, 3),
-        round(box[1] * sy, 3),
-        round(box[2] * sx, 3),
-        round(box[3] * sy, 3),
-    )
+    return round_bbox((box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy))
 
 
 def _join_ocr_lines(lines: Sequence[OcrLine]) -> str:
     non_empty = [ln for ln in lines if ln.text and ln.text.strip()]
     if not non_empty:
         return ""
-    y_sorted = sorted(non_empty, key=lambda ln: (ln.bbox[1], ln.bbox[0]))
-    rows: list[list[OcrLine]] = []
-    for ln in y_sorted:
-        lh = max(1.0, ln.bbox[3] - ln.bbox[1])
-        placed = False
-        for row in reversed(rows):
-            ry0 = min(r.bbox[1] for r in row)
-            ry1 = max(r.bbox[3] for r in row)
-            rh = max(1.0, ry1 - ry0)
-            if min(ln.bbox[3], ry1) - max(ln.bbox[1], ry0) >= 0.45 * min(lh, rh):
-                row.append(ln)
-                placed = True
-                break
-        if not placed:
-            rows.append([ln])
+    rows = cluster_by_overlap(
+        non_empty,
+        lambda ln: (ln.bbox[1], ln.bbox[3]),
+        lambda ln: ln.bbox[0],
+    )
     ordered: list[OcrLine] = []
     for row in sorted(rows, key=lambda r: min(item.bbox[1] for item in r)):
         row.sort(key=lambda item: item.bbox[0])
@@ -86,6 +76,7 @@ def _lines_to_block(
     sy: float,
     *,
     label: str,
+    source: TextSource = "ocr",
 ) -> TextBlock | None:
     if not lines:
         return None
@@ -102,32 +93,45 @@ def _lines_to_block(
         bbox=_scale_box((ux0, uy0, ux1, uy1), sx, sy),
         font_size=_estimate_font_size(lines, sy),
         bold=False,
-        source="ocr",
+        source=source,
         confidence=mean_conf,
         words=(),
         label=label,
     )
 
 
+def _is_heading_or_list_line(text: str) -> bool:
+    return bool(_LIST_OR_HEADING_RE.match(text.strip()))
+
+
 def _can_merge_orphan(
     group: list[tuple[OcrLine, BBox]],
     grp_box: BBox,
+    cur_line: OcrLine,
     cur_box: BBox,
     excluded_boxes_pt: Sequence[BBox],
 ) -> bool:
-    last_box = group[-1][1]
+    last_line, last_box = group[-1]
     lh = max(1.0, cur_box[3] - cur_box[1])
     last_lh = max(1.0, last_box[3] - last_box[1])
-    if max(lh, last_lh) / min(lh, last_lh) > 1.45:
+    if max(lh, last_lh) / min(lh, last_lh) > 1.25:
+        return False
+    if _is_heading_or_list_line(cur_line.text):
         return False
 
     y_overlap = min(cur_box[3], last_box[3]) - max(cur_box[1], last_box[1])
     if y_overlap >= 0.45 * min(lh, last_lh):
         if cur_box[0] < last_box[0] - 0.5 * lh:
             return False
-        if cur_box[0] - last_box[2] > max(2.0 * max(lh, last_lh), 18.0):
+        if cur_box[0] - last_box[2] > min(1.2 * min(lh, last_lh), 12.0):
             return False
     else:
+        last_text = last_line.text.strip()
+        cur_text = cur_line.text.strip()
+        if _SECTION_HEADING_RE.match(last_text) and (last_lh > lh * 1.1 or cur_text.endswith((".", "!", "?"))):
+            return False
+        if len(group) == 1 and last_lh > lh * 1.15 and not last_text.endswith((",", ";", "-")):
+            return False
         gap_y = cur_box[1] - grp_box[3]
         max_gap = max(0.95 * max(lh, last_lh), 6.0)
         if not (-0.35 * min(lh, last_lh) <= gap_y <= max_gap):
@@ -136,11 +140,16 @@ def _can_merge_orphan(
             return False
 
     if excluded_boxes_pt:
-        cand_box = _union_bbox(grp_box, cur_box)
-        cand_area = _area(cand_box)
+        cand_box = (
+            min(grp_box[0], cur_box[0]),
+            min(grp_box[1], cur_box[1]),
+            max(grp_box[2], cur_box[2]),
+            max(grp_box[3], cur_box[3]),
+        )
+        cand_area = bbox_area(cand_box)
         for ex in excluded_boxes_pt:
-            ex_area = _area(ex)
-            if ex_area > 0.0 and _inter_area(cand_box, ex) > 0.25 * min(ex_area, cand_area):
+            ex_area = bbox_area(ex)
+            if ex_area > 0.0 and bbox_inter_area(cand_box, ex) > 0.25 * min(ex_area, cand_area):
                 return False
     return True
 
@@ -151,6 +160,7 @@ def _cluster_orphan_lines(
     sy: float,
     *,
     excluded_boxes_pt: Sequence[BBox] = (),
+    source: TextSource = "ocr",
 ) -> list[TextBlock]:
     items = [(ln, _scale_box(ln.bbox, sx, sy)) for ln in orphans if ln.text and ln.text.strip()]
     if not items:
@@ -159,16 +169,18 @@ def _cluster_orphan_lines(
     groups: list[list[tuple[OcrLine, BBox]]] = []
     group_boxes: list[BBox] = []
     for item in ordered:
-        if groups and _can_merge_orphan(groups[-1], group_boxes[-1], item[1], excluded_boxes_pt):
+        if groups and _can_merge_orphan(groups[-1], group_boxes[-1], item[0], item[1], excluded_boxes_pt):
             groups[-1].append(item)
-            group_boxes[-1] = _union_bbox(group_boxes[-1], item[1])
+            gb = group_boxes[-1]
+            ib = item[1]
+            group_boxes[-1] = (min(gb[0], ib[0]), min(gb[1], ib[1]), max(gb[2], ib[2]), max(gb[3], ib[3]))
         else:
             groups.append([item])
             group_boxes.append(item[1])
 
     blocks: list[TextBlock] = []
     for grp in groups:
-        blk = _lines_to_block([ln for ln, _ in grp], sx, sy, label="text")
+        blk = _lines_to_block([ln for ln, _ in grp], sx, sy, label="text", source=source)
         if blk is not None:
             blocks.append(blk)
     return blocks
@@ -184,12 +196,12 @@ def _assign_lines_to_clusters(
     orphans: list[OcrLine] = []
 
     for line in lines:
-        l_area = _area(line.bbox)
+        l_area = bbox_area(line.bbox)
         best_cid: int | None = None
         best_frac = 0.2
         if l_area > 0:
             for c in text_targets:
-                frac = _inter_area(line.bbox, c.bbox) / l_area
+                frac = bbox_inter_area(line.bbox, c.bbox) / l_area
                 if frac > best_frac:
                     best_frac = frac
                     best_cid = c.id
@@ -207,8 +219,8 @@ def _assign_lines_to_clusters(
 
 
 def _line_matches_cluster_pt(line_pt: BBox, cluster_pt: BBox) -> bool:
-    l_area = _area(line_pt)
-    if l_area > 0.0 and _inter_area(line_pt, cluster_pt) / l_area > 0.2:
+    l_area = bbox_area(line_pt)
+    if l_area > 0.0 and bbox_inter_area(line_pt, cluster_pt) / l_area > 0.2:
         return True
     cx = (line_pt[0] + line_pt[2]) * 0.5
     cy = (line_pt[1] + line_pt[3]) * 0.5
@@ -303,7 +315,13 @@ class ComposedReader:
             return pass2_lines_pt
         return None
 
-    def _read_single_page(self, pdf_page: pdfium.PdfPage, pno: int = 1) -> tuple[RasterPage, list[dict[str, Any]]]:
+    def _read_single_page(
+        self,
+        pdf_page: pdfium.PdfPage,
+        pno: int = 1,
+        page_box: BBox | None = None,
+    ) -> tuple[RasterPage, list[dict[str, Any]]]:
+        target_box = page_box if page_box is not None else pdfium_page_box(pdf_page)
         page_w_pt, page_h_pt = pdf_page.get_size()
         page_w_pt, page_h_pt = float(page_w_pt), float(page_h_pt)
         zoom = self.dpi / 72.0
@@ -353,18 +371,22 @@ class ComposedReader:
                     pdf_page, hi_state, cluster_pt, cluster_lines, pass1_text, pass1_conf, page_w_pt, page_h_pt
                 )
                 if refined is not None:
-                    blk = _lines_to_block(refined, 1.0, 1.0, label=c.label)
+                    blk = _lines_to_block(refined, 1.0, 1.0, label=c.label, source="ocr_high_dpi")
                     if blk is not None:
                         blocks.append(blk)
                     used_pass2 = True
 
             if not used_pass2 and cluster_lines:
-                blk = _lines_to_block(cluster_lines, sx, sy, label=c.label)
+                blk = _lines_to_block(cluster_lines, sx, sy, label=c.label, source="ocr")
                 if blk is not None:
                     blocks.append(blk)
 
         excluded_boxes_pt = [_scale_box(c.bbox, sx, sy) for c in clusters if c.label in ("picture", "table")]
-        blocks.extend(_cluster_orphan_lines(orphans, sx, sy, excluded_boxes_pt=excluded_boxes_pt))
+        blocks.extend(_cluster_orphan_lines(orphans, sx, sy, excluded_boxes_pt=excluded_boxes_pt, source="ocr"))
+
+        if target_box[0] != 0.0 or target_box[1] != 0.0:
+            blocks = [replace(b, bbox=round_bbox(pdfium_box_to_page_box(b.bbox, target_box))) for b in blocks]
+            figures = [replace(f, bbox=round_bbox(pdfium_box_to_page_box(f.bbox, target_box))) for f in figures]
 
         page_warnings: list[dict[str, Any]] = []
         if not blocks and any(c.label not in ("picture", "table") for c in clusters):
@@ -386,7 +408,14 @@ class ComposedReader:
             page_warnings,
         )
 
-    def read(self, pdf_path: str | Path, pages: Sequence[int], *, pdfium_doc: Any = None) -> dict[int, RasterPage]:
+    def read(
+        self,
+        pdf_path: str | Path,
+        pages: Sequence[int],
+        *,
+        pdfium_doc: Any = None,
+        page_boxes: Mapping[int, BBox] | None = None,
+    ) -> dict[int, RasterPage]:
         page_list = list(pages)
         if not page_list:
             return {}
@@ -407,7 +436,11 @@ class ComposedReader:
             for pno in page_list:
                 if not (1 <= pno <= len(doc_pdf)):
                     raise ValueError(f"page {pno} out of range 1..{len(doc_pdf)}")
-                rp, page_warns = self._read_single_page(doc_pdf[pno - 1], pno=pno)
+                rp, page_warns = self._read_single_page(
+                    doc_pdf[pno - 1],
+                    pno=pno,
+                    page_box=page_boxes.get(pno) if page_boxes else None,
+                )
                 out[pno] = rp
                 warnings.extend(page_warns)
         finally:
@@ -430,6 +463,7 @@ class ComposedReader:
         *,
         pdfium_doc: Any = None,
         dpi: int = DEFAULT_HIGH_DPI,
+        page_boxes: Mapping[int, BBox] | None = None,
     ) -> dict[int, list[TextBlock]]:
         if not regions_by_page:
             return {}
@@ -445,6 +479,7 @@ class ComposedReader:
         doc_pdf = pdfium.PdfDocument(str(pdf_path)) if owns_doc else pdfium_doc
         out: dict[int, list[TextBlock]] = {}
         zoom = dpi / 72.0
+        region_source: TextSource = "ocr_high_dpi" if dpi > DEFAULT_RASTER_DPI else "ocr"
         try:
             for pno, regions in regions_by_page.items():
                 if not (1 <= pno <= len(doc_pdf)):
@@ -455,6 +490,7 @@ class ComposedReader:
                     continue
 
                 pdf_page = doc_pdf[pno - 1]
+                target_box = page_boxes[pno] if (page_boxes and pno in page_boxes) else pdfium_page_box(pdf_page)
                 page_w_pt, page_h_pt = pdf_page.get_size()
                 page_w_pt, page_h_pt = float(page_w_pt), float(page_h_pt)
                 image = pdf_page.render(scale=zoom).to_pil().convert("RGB")
@@ -464,10 +500,11 @@ class ComposedReader:
 
                 page_blocks: list[TextBlock] = []
                 for region in region_list:
-                    rx0 = max(0.0, min(page_w_pt, float(region[0])))
-                    ry0 = max(0.0, min(page_h_pt, float(region[1])))
-                    rx1 = max(0.0, min(page_w_pt, float(region[2])))
-                    ry1 = max(0.0, min(page_h_pt, float(region[3])))
+                    fx0, fy0, fx1, fy1 = page_box_to_pdfium_box(region, target_box)
+                    rx0 = max(0.0, min(page_w_pt, fx0))
+                    ry0 = max(0.0, min(page_h_pt, fy0))
+                    rx1 = max(0.0, min(page_w_pt, fx1))
+                    ry1 = max(0.0, min(page_h_pt, fy1))
                     if rx1 <= rx0 or ry1 <= ry0:
                         continue
                     hx0 = max(0, min(iw, int(round(rx0 / sx))))
@@ -482,18 +519,23 @@ class ComposedReader:
                     pt_lines = [
                         OcrLine(
                             ln.text,
-                            (
-                                round((ln.bbox[0] + hx0) * sx, 3),
-                                round((ln.bbox[1] + hy0) * sy, 3),
-                                round((ln.bbox[2] + hx0) * sx, 3),
-                                round((ln.bbox[3] + hy0) * sy, 3),
+                            round_bbox(
+                                pdfium_box_to_page_box(
+                                    (
+                                        (ln.bbox[0] + hx0) * sx,
+                                        (ln.bbox[1] + hy0) * sy,
+                                        (ln.bbox[2] + hx0) * sx,
+                                        (ln.bbox[3] + hy0) * sy,
+                                    ),
+                                    target_box,
+                                )
                             ),
                             ln.confidence,
                         )
                         for ln in crop_lines
                         if ln.text and ln.text.strip()
                     ]
-                    page_blocks.extend(_cluster_orphan_lines(pt_lines, 1.0, 1.0))
+                    page_blocks.extend(_cluster_orphan_lines(pt_lines, 1.0, 1.0, source=region_source))
 
                 out[pno] = list(xy_cut_order(page_blocks, lambda b: b.bbox))
         finally:

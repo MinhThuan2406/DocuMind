@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left, bisect_right
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeVar
 
-from ._pdf_io import clip_box, extract_words_raw, page_bbox
+from ._pdf_io import WORD_X_TOLERANCE_RATIO, clip_box, extract_words_raw, page_bbox
 from .models import BBox, TextBlock, TextSource, Word
 
 T = TypeVar("T")
@@ -14,11 +14,128 @@ _MAX_XY_DEPTH = 64
 _UNICODE_BULLETS = frozenset("•●○◦▪▫‣⁃")
 _ASCII_BULLETS = frozenset(("-", "–", "—", "*", "+"))
 _LIST_MARKER_RE = re.compile(r"^(?:\d{1,3}[.)]|\(\d{1,3}\)|[a-zA-Z]\)|\[[A-Za-z0-9_.:-]{1,40}\])$")
+_ROT_CHAR_GAP_RATIO = 0.35
 
 
 def _is_bold_font(fontname: str) -> bool:
     lower = fontname.lower()
     return any(tok in lower for tok in ("bold", "black", "heavy", "semibold", "demi"))
+
+
+def _is_vert_matrix_char(char: Mapping[str, Any]) -> bool:
+    m = char.get("matrix")
+    return (
+        isinstance(m, (tuple, list))
+        and len(m) >= 4
+        and abs(float(m[1])) > abs(float(m[0]))
+        and abs(float(m[2])) > abs(float(m[3]))
+    )
+
+
+def _word_direction(word: Word) -> str:
+    return getattr(word, "direction", "ltr")
+
+
+def cluster_by_overlap(
+    items: Sequence[T],
+    get_span: Callable[[T], tuple[float, float]],
+    get_cross: Callable[[T], float],
+    *,
+    min_overlap: float = 0.45,
+) -> list[list[T]]:
+    if not items:
+        return []
+    ordered = sorted(items, key=lambda it: ((get_span(it)[0] + get_span(it)[1]) * 0.5, get_cross(it)))
+    groups: list[list[T]] = []
+    for item in ordered:
+        s0, s1 = get_span(item)
+        sw = max(1.0, s1 - s0)
+        placed = False
+        for group in reversed(groups):
+            g0 = min(get_span(x)[0] for x in group)
+            g1 = max(get_span(x)[1] for x in group)
+            gw = max(1.0, g1 - g0)
+            if min(s1, g1) - max(s0, g0) >= min_overlap * min(sw, gw):
+                group.append(item)
+                placed = True
+                break
+        if not placed:
+            groups.append([item])
+    return groups
+
+
+def _rot_chars_to_words(
+    rot_chars: Sequence[Mapping[str, Any]],
+    bounds: BBox,
+    *,
+    min_font_size: float = 0.0,
+) -> list[Word]:
+    words: list[Word] = []
+    for is_btt in (True, False):
+        group = [c for c in rot_chars if (float(c["matrix"][1]) > 0.0) == is_btt]
+        if not group:
+            continue
+        cols = cluster_by_overlap(
+            group,
+            lambda c: (float(c["x0"]), float(c["x1"])),
+            lambda c: float(c["top"]),
+        )
+        direction = "btt" if is_btt else "ttb"
+        for col in cols:
+            col.sort(key=(lambda c: -float(c["bottom"])) if is_btt else (lambda c: float(c["top"])))
+            cur: list[Mapping[str, Any]] = []
+
+            def _flush() -> None:
+                if not cur:
+                    return
+                text = "".join(str(c["text"]) for c in cur)
+                if not text:
+                    return
+                widths = sorted(max(0.0, float(c["x1"]) - float(c["x0"])) for c in cur)
+                font_size = widths[len(widths) // 2] if widths else 0.0
+                if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
+                    return
+                raw_box = (
+                    min(float(c["x0"]) for c in cur),
+                    min(float(c["top"]) for c in cur),
+                    max(float(c["x1"]) for c in cur),
+                    max(float(c["bottom"]) for c in cur),
+                )
+                box = clip_box(raw_box, bounds) or raw_box
+                bold = any(_is_bold_font(str(c.get("fontname", ""))) for c in cur)
+                words.append(
+                    Word(
+                        text=text,
+                        bbox=box,
+                        font_size=round(font_size, 2),
+                        bold=bold,
+                        upright=False,
+                        direction=direction,
+                    )
+                )
+
+            for c in col:
+                ch = str(c.get("text", ""))
+                if not ch or ch.isspace():
+                    _flush()
+                    cur = []
+                    continue
+                if cur:
+                    prev = cur[-1]
+                    gap = (
+                        float(prev["top"]) - float(c["bottom"])
+                        if is_btt
+                        else float(c["top"]) - float(prev["bottom"])
+                    )
+                    ph = max(1.0, float(prev["bottom"]) - float(prev["top"]))
+                    ch_h = max(1.0, float(c["bottom"]) - float(c["top"]))
+                    if gap > _ROT_CHAR_GAP_RATIO * max(ph, ch_h):
+                        _flush()
+                        cur = [c]
+                        continue
+                cur.append(c)
+            _flush()
+    return words
 
 
 def extract_words(
@@ -29,7 +146,24 @@ def extract_words(
 ) -> list[Word]:
     bounds = page_bbox(page)
     items = extract_words_raw(page, with_style=True) if raw_words is None else raw_words
-    if not items:
+    objects = getattr(page, "objects", None)
+    page_chars = objects.get("char") if isinstance(objects, dict) else None
+    rot_words: list[Word] = []
+    if isinstance(page_chars, list) and any(_is_vert_matrix_char(c) for c in page_chars):
+        horiz_chars = [c for c in page_chars if not _is_vert_matrix_char(c)]
+        rot_chars = [c for c in page_chars if _is_vert_matrix_char(c)]
+        if horiz_chars:
+            from pdfplumber.utils.text import WordExtractor
+
+            items = WordExtractor(
+                x_tolerance_ratio=WORD_X_TOLERANCE_RATIO,
+                extra_attrs=["fontname", "size", "upright"],
+            ).extract_words(horiz_chars)
+        else:
+            items = []
+        rot_words = _rot_chars_to_words(rot_chars, bounds, min_font_size=min_font_size)
+
+    if not items and not rot_words:
         return []
     words: list[Word] = []
     for item in items:
@@ -47,8 +181,10 @@ def extract_words(
                 font_size=round(font_size, 2),
                 bold=bold,
                 upright=upright,
+                direction=str(item.get("direction", "ltr")),
             )
         )
+    words.extend(rot_words)
     return words
 
 
@@ -105,7 +241,7 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
     needs_check = [
         i
         for i, w in enumerate(words)
-        if not w.upright or (w.bbox[3] - w.bbox[1]) >= 1.4 * max(0.5, w.bbox[2] - w.bbox[0])
+        if not w.upright or (w.bbox[3] - w.bbox[1]) >= 2.2 * max(0.5, w.bbox[2] - w.bbox[0])
     ]
     if not needs_check:
         return list(words), vert
@@ -113,6 +249,11 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
     by_y0 = sorted(range(len(words)), key=lambda i: words[i].bbox[1])
     y0_vals = [words[i].bbox[1] for i in by_y0]
     max_bh = max(max(0.5, w.bbox[3] - w.bbox[1]) for w in words)
+
+    def _is_vert_box(w: Word) -> bool:
+        bw = max(0.5, w.bbox[2] - w.bbox[0])
+        bh = max(0.5, w.bbox[3] - w.bbox[1])
+        return not w.upright and bh >= 1.35 * bw
 
     def _has_horiz_neighbor(idx: int) -> bool:
         b = words[idx].bbox
@@ -122,10 +263,12 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
         hi = bisect_right(y0_vals, b[3])
         for k in range(lo, hi):
             j = by_y0[k]
-            if j == idx:
+            if j == idx or _is_vert_box(words[j]):
                 continue
             ob = words[j].bbox
             oh = max(0.5, ob[3] - ob[1])
+            if max(bh, oh) > 1.8 * min(bh, oh):
+                continue
             y_ov = min(b[3], ob[3]) - max(b[1], ob[1])
             if y_ov < 0.55 * min(bh, oh):
                 continue
@@ -159,16 +302,13 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
         bw = max(0.5, w.bbox[2] - w.bbox[0])
         bh = max(0.5, w.bbox[3] - w.bbox[1])
         if not w.upright:
-            # Slightly tilted horizontal tables (e.g. -1e-8 skew) have upright=False but chain horizontally.
-            if bh >= 1.35 * bw and not _has_horiz_neighbor(idx):
+            if _word_direction(w) in ("btt", "ttb") or (bh >= 1.35 * bw and not _has_horiz_neighbor(idx)):
                 vert.append(w)
             elif not _has_horiz_neighbor(idx) and _has_vert_neighbor(idx):
                 vert.append(w)
             else:
                 horiz.append(w)
-        elif len(w.text) >= 3 and bh >= 2.2 * bw:
-            vert.append(w)
-        elif bh >= 1.4 * bw and not _has_horiz_neighbor(idx) and _has_vert_neighbor(idx):
+        elif len(w.text) >= 3 and bh >= 2.2 * bw and any(ch.isalpha() for ch in w.text):
             vert.append(w)
         else:
             horiz.append(w)
@@ -183,23 +323,7 @@ def _words_to_line_segments(
     if not words:
         return []
     ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
-    ordered = sorted(words, key=lambda w: ((w.bbox[1] + w.bbox[3]) * 0.5, w.bbox[0]))
-    lines: list[list[Word]] = []
-    for word in ordered:
-        wy0, wy1 = word.bbox[1], word.bbox[3]
-        wh = max(1.0, wy1 - wy0)
-        placed = False
-        for line in reversed(lines):
-            ly0 = min(w.bbox[1] for w in line)
-            ly1 = max(w.bbox[3] for w in line)
-            lh = max(1.0, ly1 - ly0)
-            overlap = min(wy1, ly1) - max(wy0, ly0)
-            if overlap >= 0.45 * min(wh, lh):
-                line.append(word)
-                placed = True
-                break
-        if not placed:
-            lines.append([word])
+    lines = cluster_by_overlap(words, lambda w: (w.bbox[1], w.bbox[3]), lambda w: w.bbox[0])
 
     segments: list[tuple[BBox, list[Word]]] = []
     for line in lines:
@@ -228,38 +352,31 @@ def _vertical_words_to_blocks(
     if not words:
         return []
     ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
-    ordered = sorted(words, key=lambda w: ((w.bbox[0] + w.bbox[2]) * 0.5, w.bbox[1]))
-    cols: list[list[Word]] = []
-    for word in ordered:
-        wx0, wx1 = word.bbox[0], word.bbox[2]
-        ww = max(1.0, wx1 - wx0)
-        placed = False
-        for col in reversed(cols):
-            cx0 = min(w.bbox[0] for w in col)
-            cx1 = max(w.bbox[2] for w in col)
-            cw = max(1.0, cx1 - cx0)
-            overlap = min(wx1, cx1) - max(wx0, cx0)
-            if overlap >= 0.45 * min(ww, cw):
-                col.append(word)
-                placed = True
-                break
-        if not placed:
-            cols.append([word])
+    btt_words = [w for w in words if _word_direction(w) == "btt"]
+    other_words = [w for w in words if _word_direction(w) != "btt"]
 
     blocks: list[TextBlock] = []
-    for col in cols:
-        col.sort(key=lambda w: (w.bbox[1], w.bbox[0]))
-        cur: list[Word] = [col[0]]
-        for word in col[1:]:
-            prev = cur[-1]
-            ref_size = max(prev.font_size, word.font_size, prev.bbox[2] - prev.bbox[0], 0.6 * ref_fs, 1.0)
-            gap_thr = max(1.5 * ref_size, 1.2 * ref_fs)
-            if word.bbox[1] - prev.bbox[3] > gap_thr:
-                blocks.append(_make_text_block([cur], source=source, confidence=confidence))
-                cur = [word]
+    for group, is_btt in ((btt_words, True), (other_words, False)):
+        if not group:
+            continue
+        cols = cluster_by_overlap(group, lambda w: (w.bbox[0], w.bbox[2]), lambda w: w.bbox[1])
+        for col in cols:
+            if is_btt:
+                col.sort(key=lambda w: (-w.bbox[3], w.bbox[0]))
             else:
-                cur.append(word)
-        blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+                col.sort(key=lambda w: (w.bbox[1], w.bbox[0]))
+            cur: list[Word] = [col[0]]
+            for word in col[1:]:
+                prev = cur[-1]
+                ref_size = max(prev.font_size, word.font_size, prev.bbox[2] - prev.bbox[0], 0.6 * ref_fs, 1.0)
+                gap_thr = max(1.5 * ref_size, 1.2 * ref_fs)
+                gap = (prev.bbox[1] - word.bbox[3]) if is_btt else (word.bbox[1] - prev.bbox[3])
+                if gap > gap_thr:
+                    blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+                    cur = [word]
+                else:
+                    cur.append(word)
+            blocks.append(_make_text_block([cur], source=source, confidence=confidence))
     return blocks
 
 
@@ -469,13 +586,13 @@ def xy_cut_order(
             top_item = min(group, key=lambda p: (p[1][1], p[1][0]))
             if (top_item[1][2] - top_item[1][0]) >= 0.55 * group_w:
                 rest = [p for p in group if p is not top_item]
-                if len(rest) < len(group):
+                if len(rest) < len(group) and top_item[1][3] <= min(p[1][1] for p in rest) + y_gap_tol:
                     return [top_item] + _recurse(rest, depth + 1)
 
             bot_item = max(group, key=lambda p: (p[1][3], -p[1][0]))
             if (bot_item[1][2] - bot_item[1][0]) >= 0.55 * group_w:
                 rest = [p for p in group if p is not bot_item]
-                if len(rest) < len(group):
+                if len(rest) < len(group) and bot_item[1][1] >= max(p[1][3] for p in rest) - y_gap_tol:
                     return _recurse(rest, depth + 1) + [bot_item]
 
             mid_split = _find_mid_span(group, group_w)
