@@ -16,6 +16,8 @@ import pypdfium2 as pdfium  # noqa: E402
 from pdf.backends.rss import peak_rss_mb as _peak_rss_mb  # noqa: E402
 from pdf.eval.gt import OMNIDOC_SAMPLE_PAGES, build_raster_pdf  # noqa: E402
 
+_VFB_TABLE_PAGES = [17, 35, 50, 74, 100]
+
 
 def _make_subset_pdf(src: Path, dst: Path, pages: list[int]) -> None:
     doc = pdfium.PdfDocument(str(src))
@@ -26,6 +28,35 @@ def _make_subset_pdf(src: Path, dst: Path, pages: list[int]) -> None:
     finally:
         out.close()
         doc.close()
+
+
+def _make_mixed_pdf(src: Path, native_pages: list[int], raster_imgs: list[Path], dst: Path, tmp_dir: Path) -> None:
+    out = pdfium.PdfDocument.new()
+    doc = pdfium.PdfDocument(str(src))
+    raster_doc = None
+    try:
+        out.import_pages(doc, pages=[pno - 1 for pno in native_pages])
+        if raster_imgs:
+            raster_pdf = tmp_dir / "_raster_part.pdf"
+            build_raster_pdf(raster_imgs, raster_pdf)
+            raster_doc = pdfium.PdfDocument(str(raster_pdf))
+            out.import_pages(raster_doc)
+        out.save(str(dst))
+    finally:
+        if raster_doc is not None:
+            raster_doc.close()
+        doc.close()
+        out.close()
+
+
+def _pick_autosar_pages(src: Path, n_pages: int, *, prefer_tables: bool) -> list[int]:
+    if prefer_tables and src.name == "AUTOSAR_CP_EXP_VFB.pdf":
+        base = list(_VFB_TABLE_PAGES)
+        if n_pages <= len(base):
+            return base[:n_pages]
+        extra = [p for p in range(10, 10 + n_pages * 2) if p not in base]
+        return (base + extra)[:n_pages]
+    return list(range(10, 10 + n_pages))
 
 
 def _run_isolated_bench(
@@ -61,6 +92,7 @@ def _run_isolated_bench(
 
 def _worker(mode: str, device: str, n_pages: int, reader: str = "composed") -> None:
     layered = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf"
+    vfb = ROOT / "datasets" / "AUTOSAR" / "AUTOSAR_CP_EXP_VFB.pdf"
     omni_dir = ROOT / "datasets" / "OmniDocBench" / "images"
 
     t_import0 = time.perf_counter()
@@ -127,6 +159,72 @@ def _worker(mode: str, device: str, n_pages: int, reader: str = "composed") -> N
             }))
             return
 
+        if mode in ("tables_live", "balanced_e2e"):
+            src = vfb if vfb.exists() else layered
+            if not src.exists():
+                print(json.dumps({"mode": mode, "skipped": "AUTOSAR PDF not found"}))
+                return
+            if mode == "tables_live":
+                page_nums = _pick_autosar_pages(src, n_pages, prefer_tables=True)
+                _make_subset_pdf(src, sample_pdf, page_nums)
+                t0 = time.perf_counter()
+                ir = extract_ir(
+                    sample_pdf,
+                    figures=True,
+                    ocr=True,
+                    tables=True,
+                    structure=True,
+                    reader=reader,
+                    device=device,
+                )
+                total_sec = time.perf_counter() - t0
+                print(json.dumps({
+                    "mode": mode,
+                    "pages": len(page_nums),
+                    "tables_extracted": len(ir["tables"]),
+                    "elements": len(ir["elements"]),
+                    "import_sec": round(import_sec, 4),
+                    "total_sec": round(total_sec, 4),
+                    "per_page_sec": round(total_sec / max(1, len(page_nums)), 4),
+                    "peak_rss_mb": _peak_rss_mb(),
+                }))
+                return
+
+            raster_imgs = (
+                [omni_dir / name for name in OMNIDOC_SAMPLE_PAGES[:1] if (omni_dir / name).exists()]
+                if n_pages >= 2 and omni_dir.exists()
+                else []
+            )
+            native_n = max(1, n_pages - len(raster_imgs))
+            native_pages = _pick_autosar_pages(src, native_n, prefer_tables=True)
+            _make_mixed_pdf(src, native_pages, raster_imgs, sample_pdf, tmp_path)
+            total_pages = len(native_pages) + len(raster_imgs)
+            t0 = time.perf_counter()
+            ir = extract_ir(
+                sample_pdf,
+                figures=True,
+                ocr=True,
+                tables=True,
+                structure=True,
+                reader=reader,
+                device=device,
+            )
+            total_sec = time.perf_counter() - t0
+            print(json.dumps({
+                "mode": mode,
+                "pages": total_pages,
+                "native_pages": len(native_pages),
+                "raster_pages": len(raster_imgs),
+                "tables_extracted": len(ir["tables"]),
+                "elements": len(ir["elements"]),
+                "outline_len": len(ir["metadata"].get("outline", ())),
+                "import_sec": round(import_sec, 4),
+                "total_sec": round(total_sec, 4),
+                "per_page_sec": round(total_sec / max(1, total_pages), 4),
+                "peak_rss_mb": _peak_rss_mb(),
+            }))
+            return
+
         if mode == "raster":
             if not omni_dir.exists():
                 print(json.dumps({"mode": mode, "skipped": "OmniDocBench images not found"}))
@@ -186,7 +284,11 @@ def main() -> None:
     from pdf.backends import registered
 
     ap = argparse.ArgumentParser(description="Timing benchmark for the pdf package.")
-    ap.add_argument("--mode", default="all", choices=["native", "figures_live", "figures_cached", "raster", "all"])
+    ap.add_argument(
+        "--mode",
+        default="all",
+        choices=["native", "figures_live", "figures_cached", "raster", "tables_live", "balanced_e2e", "all"],
+    )
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     ap.add_argument("--reader", default="composed", choices=registered("reader"))
     ap.add_argument("--pages", type=int, default=6)
@@ -197,7 +299,11 @@ def main() -> None:
         _worker(args.worker, args.device, args.pages, args.reader)
         return
 
-    modes = ["native", "figures_cached", "figures_live", "raster"] if args.mode == "all" else [args.mode]
+    modes = (
+        ["native", "figures_cached", "figures_live", "raster", "tables_live", "balanced_e2e"]
+        if args.mode == "all"
+        else [args.mode]
+    )
     for mode in modes:
         result = _run_isolated_bench(mode, args.device, args.pages, args.reader)
         print(json.dumps(result))

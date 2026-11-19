@@ -7,20 +7,20 @@ Lightweight multi-page PDF parser for DocuMind Problem 3 with zero `docling` or 
 ```
 pdf/
   __init__.py         public exports (models + extract_ir)
-  _pdf_io.py          shared pdfplumber / pypdfium2 helpers (bbox, word extraction, ToC, page/crop rendering)
-  models.py           frozen dataclasses in PDF points (top-left origin)
+  _pdf_io.py          shared pdfplumber / pypdfium2 helpers (PdfContext session, bbox, word extraction, ToC, page/crop rendering)
+  models.py           frozen dataclasses in PDF points (top-left origin), including GroupedFigure and ExtractedTable
   router.py           classify_page(page) -> PageProfile (includes figure_candidate pre-filter)
   text.py             pdfplumber word extraction (x_tolerance_ratio=0.15) + recursive XY-cut block ordering
-  grouping.py         FigureGrouper implementations: v1_anchor (OpenCV + DSU) and raw_picture
+  grouping.py         FigureGrouper implementations: v1_anchor (OpenCV + DSU) and raw_picture -> GroupedFigure
   figures.py          lazy layout backend + cache + grouper + layout_table boxes
-  tables.py           lazy table extractor dispatch (crop render + native tokens / OCR fallback)
+  tables.py           lazy table extractor dispatch (extract_from_page, crop tokens, table_to_ir_dict)
   raster.py           lazy PageReader dispatch for raster pages
   assemble.py         overlap filter, innermost-box word assignment, atomic XY-cut assembly, running header/footer tagging
   hierarchy.py        heading detection, section tree builder (apply_structure, build_section_tree), caption linking
-  ir.py               extract_ir(path, *, figures=True, ocr=True, tables=False, ..., structure=True) -> dict
-  benchmark.py        isolated timing/RAM benchmark (native, figures_cached, figures_live, raster)
+  ir.py               extract_ir(path, *, figures=True, ocr=True, tables=False, diagrams=False, ..., structure=True) -> dict
+  benchmark.py        isolated timing/RAM benchmark (native, figures_cached, figures_live, raster, tables_live, balanced_e2e)
   backends/
-    base.py           Protocols (LayoutDetector, LayoutBackend, TextRecognizer, PageReader, FigureGrouper, TableExtractor), PageLayout, RunStats
+    base.py           Protocols (LayoutDetector, LayoutBackend, TextRecognizer, PageReader, FigureGrouper, TableExtractor, DiagramExtractor), PageLayout, RunStats
     registry.py       register(), get(kind, name, **opts), registered(), lazy built-in factories
     heron_onnx.py     RT-DETR v2 Heron ONNX detector (default layout/detector backend)
     heron.py          RT-DETR v2 Heron PyTorch/transformers detector
@@ -31,26 +31,28 @@ pdf/
     mineru.py         MinerULayoutBackend and MinerUReader (isolated venv subprocess)
     mineru_child.py   child script run inside the MinerU venv
     layout_image.py   ImageLayoutBackend wrapping per-image LayoutDetector at 96.012 DPI PNG scale
-    layout_cache.py   CachedLayoutBackend & LayoutCache keyed by backend, revision, DPI, and PDF SHA-256
+    layout_cache.py   CachedLayoutBackend & LayoutCache keyed by backend, revision, DPI, postprocess_version, and PDF SHA-256
     reader_composed.py ComposedReader combining a LayoutDetector and TextRecognizer for raster pages
-    runtime.py        shared subprocess runner and venv lookup for isolated backends
+    runtime.py        shared subprocess runner (with timeout_sec) and venv lookup for isolated backends
     rss.py            stdlib-only peak RSS helper shared by backends and benchmark
   layout/
     types.py          LAYOUT_LABELS, LayoutLabel, LayoutItem
     detector.py       clamp_and_rescale()
-    postprocess.py    cluster thresholds, overlap resolution, container filtering, item build
+    postprocess.py    cluster thresholds, overlap resolution, container filtering, item build (preserves score)
     NOTICE            MIT license and source paths from Docling 2.150.0
   ocr/
     types.py          OcrLine
   eval/
-    gt.py             AUTOSAR figure and OmniDocBench character GT loaders
+    gt.py             AUTOSAR figure & OmniDocBench GT loaders, shared split/logging helpers
     metrics.py        strict/lenient figure matching, PRF, character counts, markup stripping
     compare.py        CLI comparing N backends with --split dev|test (--final guard on test)
     compare_hierarchy.py CLI comparing heading hierarchy modes (no_toc vs with_toc) against PDF bookmarks
+    tables.py         table TEDS / merged-cell span F1 evaluator (oracle and e2e modes)
+    reading_order.py  reading order Kendall's tau evaluator (synthetic and OmniDocBench splits)
   fixtures/
     layout_dumps/     12 recorded AUTOSAR pages (raw and post-processed layout clusters, boxes only, captured once from Docling 2.150.0) used by test_layout.py
     mineru_dumps/     stripped MinerU middle_json fixture for unit tests
-  test_*.py           router, text, layout, figures, assemble, raster, eval, and hierarchy test suites
+  test_*.py           router, text, layout, figures, assemble, raster, tables, hierarchy, and eval test suites
 ```
 
 ```python
@@ -81,12 +83,15 @@ Run tests and comparisons from the repository root (PowerShell / cmd):
 .\.venv\Scripts\python -B pdf\test_figures.py
 .\.venv\Scripts\python -B pdf\test_assemble.py
 .\.venv\Scripts\python -B pdf\test_raster.py
+.\.venv\Scripts\python -B pdf\test_tables.py
 .\.venv\Scripts\python -B pdf\test_eval.py
 .\.venv\Scripts\python -B pdf\test_hierarchy.py
 
-# Compare backends on dev split or OmniDocBench raster:
+# Compare backends on dev split or run table/reading-order evaluations:
 .\.venv\Scripts\python -B -m pdf.eval.compare --task figures --backends heron,heron-onnx --split dev --no-cache
 .\.venv\Scripts\python -B -m pdf.eval.compare --task raster --backends heron-onnx+rapidocr-onnx,heron-onnx+rapidocr-torch
+.\.venv\Scripts\python -B -m pdf.eval.tables --task omnidoc --mode e2e --split dev
+.\.venv\Scripts\python -B -m pdf.eval.reading_order --task all --mode e2e --split dev
 ```
 
 Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/OmniDocBench/`) or an isolated MinerU venv print `SKIP` when those files are absent.
@@ -101,14 +106,14 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
   - `reader`: `composed` (default, combines `layout` detector + `ocr_backend`), `heron-onnx+rapidocr-onnx`, `heron-onnx+rapidocr-torch`, `mineru-pipeline`.
   - `grouper`: `v1_anchor` (default, `source="v1_group"`), `raw_picture` (`source="layout_picture"`).
   - `table`: `auto` (default, hybrid `pdfplumber` + `tatr-onnx` with TATR header refinement and borderless/raster fallback), `tatr-onnx` (`Xenova/table-transformer-structure-recognition-v1.1-all`), `pdfplumber` (native bordered tables via `page.find_tables()`).
-- **Image pipeline (`figures.py`, `grouping.py`, `pdf/layout/`):** renders pages via `pypdfium2` (`150 DPI`), uses `CachedLayoutBackend` / `LayoutCache` keyed by `(backend, revision, dpi, pdf_sha256)`, and runs the layout backend lazily on cache misses (`ImageLayoutBackend` rescales to `96.012 DPI`, runs `postprocess_layout(..., keep_empty_clusters=False)` and `clusters_to_items()`). Applies the selected `FigureGrouper` (`v1_anchor` uses OpenCV/numpy + DSU with `min_area = 0.015`, `footer_frac = 0.88`) and collects `layout_table` boxes (`include_tables=True`). All `figures.py` boxes carry a fixed confidence (`0.95`).
-- **Assembler & IR (`assemble.py`, `hierarchy.py`, `ir.py`):** drops any `table` box overlapped `>= 50%` by a `figure` box; assigns each word whose center lies in a box to the smallest-area enclosing box (`(area, box_index)` tie-break) before running body XY-cut; orders `[body TextBlocks + atomic figures/tables]` via page-level XY-cut; emits `figure` inner words (via local XY-cut) and `table` inner blocks as `level=2` child `text` elements sequentially after their parent (`reading_order` restarts at `0` per page). On `raster` pages, `TextBlock`s inside `table` boxes also nest as `level=2` children. When `tables=True`, `extract_tables_on_page()` parses table structure into `ir["tables"]` and links `metadata.table_id`. `tag_running_headers_footers()` sets `metadata.role` (`page_header` / `page_footer`) on repeating top/bottom bands (or matching OCR labels), and `apply_structure()` (enabled via `structure=True`, passing ToC bookmarks via `pypdfium2`) links `caption` elements to `figure`/`table` boxes (`caption_of`, `caption_id`, `caption_text`), detects headings via bookmarks (ignoring slide `Folie`/`Slide`/`Page` bookmarks), numbering, and 5%-tolerance style clustering (`heading_level`, `section_parent_id`), and populates `metadata.outline`.
-- **Raster & hybrid OCR fallback (`raster.py`, `pdf/backends/reader_composed.py`):** when `ocr=True`, `raster` pages and `hybrid` pages with `suspect_ocr_layer=True` route through `PageReader` (`ComposedReader` runs `LayoutDetector` + `postprocess_layout(..., keep_empty_clusters=True)` and `TextRecognizer`, assigns OCR lines to non-picture clusters preserving `metadata.layout_label`, keeps orphan lines outside `picture` boxes, and orders blocks via XY-cut; `MinerUReader` maps `middle_json`). When `ocr=False`, `raster` pages are listed in `metadata.unreadable_pages` and `hybrid` `suspect_ocr_layer` pages stay on `text_layer` with a `metadata.warnings` entry.
+- **Image pipeline (`figures.py`, `grouping.py`, `pdf/layout/`):** renders pages via `pypdfium2` (`150 DPI`, sharing rendered BGR frames with `ImageLayoutBackend` on live cache misses), uses `CachedLayoutBackend` / `LayoutCache` keyed by `(backend, revision, dpi, postprocess_version, pdf_sha256)`, and runs the layout backend lazily on cache misses (`ImageLayoutBackend` rescales to `96.012 DPI`, runs `postprocess_layout(..., keep_empty_clusters=False)` and `clusters_to_items()` preserving cluster `score`). Applies the selected `FigureGrouper` (`v1_anchor` uses OpenCV/numpy + DSU with `min_area = 0.015`, `footer_frac = 0.88`) returning `GroupedFigure` boxes with area-weighted cluster scores (falling back to `0.95` only for legacy caches missing `score`), and collects `layout_table` boxes (`include_tables=True`).
+- **Assembler & IR (`assemble.py`, `hierarchy.py`, `ir.py`):** opens one shared `PdfContext` per `extract_ir()` call, drops any `table` box overlapped `>= 50%` by a `figure` box; assigns each word whose center lies in a box to the smallest-area enclosing box (`(area, box_index)` tie-break) before running body XY-cut; orders `[body TextBlocks + atomic figures/tables]` via page-level XY-cut; emits `figure` inner words (via local XY-cut) and `table` inner blocks as `level=2` child `text` elements sequentially after their parent (`reading_order` restarts at `0` per page). On `raster` pages, `TextBlock`s inside `table` boxes also nest as `level=2` children. When `tables=True`, `extract_tables_on_page()` parses table structure into `ir["tables"]`, links `metadata.table_id`, and emits a `table_parse_empty` warning on `0x0` grids. `tag_running_headers_footers()` sets `metadata.role` (`page_header` / `page_footer`) on repeating top/bottom bands (or matching OCR labels), and `apply_structure()` (enabled via `structure=True`, passing ToC bookmarks via `pypdfium2`) links `caption` elements to `figure`/`table` boxes (`caption_of`, `caption_id`, `caption_text`), detects headings via bookmarks (ignoring slide `Folie`/`Slide`/`Page` bookmarks), numbering, and 5%-tolerance style clustering (`heading_level`, `section_parent_id`), and populates `metadata.outline`.
+- **Raster & hybrid OCR fallback (`raster.py`, `pdf/backends/reader_composed.py`):** when `ocr=True`, `raster` pages and `hybrid` pages with `suspect_ocr_layer=True` route through `PageReader` (`ComposedReader` runs `LayoutDetector` + `postprocess_layout(..., keep_empty_clusters=True)` and `TextRecognizer`, assigns OCR lines to non-picture clusters preserving `metadata.layout_label` and cluster `confidence` on `FigureBox`, keeps orphan lines outside `picture` boxes, and orders blocks via XY-cut; `MinerUReader` maps `middle_json`). When `ocr=False`, `raster` pages are listed in `metadata.unreadable_pages` and `hybrid` `suspect_ocr_layer` pages stay on `text_layer` with a `metadata.warnings` entry.
 
 ## 3. IR differences
 
-- **From `parsers/pptx_ir.py`:** uses the same 7 top-level keys (`doc_id`, `source_file`, `doc_type="pdf"`, `metadata`, `elements`, `tables=[]`, `diagrams=[]`) and `coord_unit="pt"`, `reading_order` 0-based per page. Differences: PDF elements emit `type` in `{"text", "figure", "table"}`, include top-level `source` and `confidence`, preserve `font_size` and `bold` in `elements[].metadata` (and `layout_label` for OCR blocks), omit `table_id` while `tables == []`, and use `source_ref: {file, page, bbox}` (no `shape_id`).
-- **From `docs/01_architecture_and_ir_schema.md` (`feat/structure-and-diagram-recovery`):** coordinates are PDF `pt` instead of page pixels; `reading_order` is per-page 0-based instead of document-wide; `diagrams` is `[]` and `tables` is `[]` (no HTML or cell structure yet); `type` is normalized to `text`/`figure`/`table`; every element carries `source` (`text_layer` / `ocr` / `v1_group` / `layout_picture` / `vector_only` / `layout_table`).
+- **From `parsers/pptx_ir.py`:** uses the same 7 top-level keys (`doc_id`, `source_file`, `doc_type="pdf"`, `metadata`, `elements`, `tables`, `diagrams=[]`) and `coord_unit="pt"`, `reading_order` 0-based per page. Differences: PDF elements emit `type` in `{"text", "figure", "table"}`, include top-level `source` and `confidence`, preserve `font_size` and `bold` in `elements[].metadata` (and `layout_label` for OCR blocks), keep `table_id` only in `elements[].metadata` (not top-level `element`), emit `source`/`confidence`/`html` on `tables[]` when `tables=True` (no per-cell `confidence` yet), and use `source_ref: {file, page, bbox}` (no `shape_id`).
+- **From `docs/01_architecture_and_ir_schema.md` (`feat/structure-and-diagram-recovery`):** coordinates are PDF `pt` instead of page pixels; `reading_order` is per-page 0-based instead of document-wide; `diagrams` is `[]` (placeholder `diagrams` / `diagram_backend` kwargs on `extract_ir()` only) and `tables` is populated only when `tables=True`; `type` is normalized to `text`/`figure`/`table`; every element carries `source` (`text_layer` / `ocr` / `v1_group` / `layout_picture` / `vector_only` / `layout_table`).
 
 ## 4. Measured results (Windows, `.venv` Python 3.12, zero Docling)
 
@@ -151,7 +156,7 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 ## 5. Known limits
 
 - Default full-pipeline execution (`heron-onnx` + `rapidocr-onnx`) uses `onnxruntime`, avoiding `torch` and `transformers`; the PyTorch `heron` and `rapidocr-torch` backends remain available by name.
-- No PDF table cell extraction yet (`tables` is `[]`; words inside table boxes appear as `level=2` child `text` elements).
-- No diagram node-edge reconstruction (`diagrams` is `[]`).
+- Table cell extraction requires `tables=True` (default `False` on `extract_ir()`); `cells[]` do not yet carry per-cell `confidence`.
+- No diagram node-edge reconstruction yet (`diagrams` is always `[]`; `diagrams` / `diagram_backend` on `extract_ir()` are placeholders until `DiagramExtractor` is implemented).
 - Repeating running headers/footers are tagged (`metadata.role`), not dropped, and sub-visible watermarks (e.g., 2 pt text) are not filtered by default (`min_font_size=0.0`) so word parity with `get_text("words")` holds.
 - If `v1_group` absorbs an adjacent `table` (`<= 45 px` gap) into a figure box, the `>= 50%` overlap filter drops the standalone `table` box.

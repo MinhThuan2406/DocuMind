@@ -8,6 +8,7 @@ PageKind = Literal["native", "raster", "hybrid"]
 TextSource = Literal["text_layer", "ocr"]
 FigureKind = Literal["figure", "table"]
 FigureSource = Literal["layout_picture", "v1_group", "vector_only", "layout_table"]
+TableSource = Literal["pdfplumber", "tatr_onnx", "auto", "auto_refined", "auto_tatr"]
 
 FIGURE_MIN_AREA = 0.015
 FIGURE_FOOTER_FRAC = 0.88
@@ -42,6 +43,13 @@ class TextBlock:
     confidence: float
     words: tuple[Word, ...] = ()
     label: str | None = None
+
+
+@dataclass(frozen=True)
+class GroupedFigure:
+    bbox: BBox
+    score: float
+    source: FigureSource
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from ..models import BBox, ExtractedTable, TableCell
+from ..models import BBox, ExtractedTable, TableCell, Word
 from .base import RunStats
 from .rss import peak_rss_mb
 
@@ -357,6 +357,66 @@ class TatrOnnxTableExtractor:
             y1 = max(0.0, min(float(h), (cy + bh * 0.5) * h))
             if x1 > x0 and y1 > y0:
                 out.append((label, (x0, y0, x1, y1), float(score)))
+        return out
+
+    def extract_from_page(
+        self,
+        page: Any,
+        table_boxes_pt: Sequence[BBox],
+        *,
+        words: Sequence[Word] | None = None,
+        is_raster: bool = False,
+        ocr_backend: str = "rapidocr-onnx",
+        device: str | None = None,
+        dpi: int = 200,
+    ) -> list[ExtractedTable]:
+        if not table_boxes_pt:
+            self.last_stats = RunStats(
+                load_sec=0.0,
+                infer_sec=0.0,
+                pages=1,
+                peak_rss_mb=peak_rss_mb(),
+                in_process=True,
+            )
+            return []
+
+        t_load0 = time.perf_counter()
+        loaded = self.ensure_loaded()
+        load_sec = time.perf_counter() - t_load0 if loaded else 0.0
+
+        from ..tables import crop_page_region, ocr_crop_tokens, tokens_in_box
+
+        t0 = time.perf_counter()
+        ocr_rec: Any = None
+        native_tokens: list[tuple[str, BBox]] = []
+        if is_raster:
+            from .registry import get as get_backend
+
+            ocr_rec = get_backend("ocr", ocr_backend, device=self.device_name if device is None else device)
+        elif words is None:
+            from ..text import extract_words
+
+            native_tokens = [(w.text, w.bbox) for w in extract_words(page)]
+        else:
+            native_tokens = [(w.text, w.bbox) for w in words]
+
+        out: list[ExtractedTable] = []
+        for box in table_boxes_pt:
+            crop, crop_box = crop_page_region(page, box, dpi)
+            if is_raster and ocr_rec is not None:
+                box_tokens = ocr_crop_tokens(ocr_rec, crop, crop_box)
+            else:
+                box_tokens = tokens_in_box(native_tokens, crop_box)
+            objects = self.detect_objects(crop)
+            out.append(objects_to_table(objects, crop.size, crop_box, box_tokens))
+
+        self.last_stats = RunStats(
+            load_sec=round(load_sec, 4),
+            infer_sec=round(time.perf_counter() - t0, 4),
+            pages=1,
+            peak_rss_mb=peak_rss_mb(),
+            in_process=True,
+        )
         return out
 
     def extract(

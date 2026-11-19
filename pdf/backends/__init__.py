@@ -1,4 +1,5 @@
 from .base import (
+    DiagramExtractor,
     FigureGrouper,
     LayoutBackend,
     LayoutDetector,
@@ -16,6 +17,7 @@ from .registry import get, register, registered, reset_cache
 __all__ = [
     "CachedLayoutBackend",
     "ComposedReader",
+    "DiagramExtractor",
     "FigureGrouper",
     "ImageLayoutBackend",
     "LayoutBackend",

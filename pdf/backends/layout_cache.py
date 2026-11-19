@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .base import LayoutBackend, PageLayout, RunStats
+
+DEFAULT_POSTPROCESS_VERSION = "v2"
 
 
 def file_sha256(path: Path) -> str:
@@ -26,9 +30,11 @@ class LayoutCache:
         revision: str,
         dpi: int,
         pdf_hash: str,
+        postprocess_version: str = DEFAULT_POSTPROCESS_VERSION,
     ) -> None:
         rev_tag = revision[:12] if revision else "local"
-        self.dir = root_dir / f"{backend}_{rev_tag}_dpi{dpi}_{pdf_hash[:16]}"
+        self.dir = root_dir / f"{backend}_{rev_tag}_dpi{dpi}_{postprocess_version}_{pdf_hash[:16]}"
+        self.last_save_error: OSError | None = None
 
     def path_for(self, page: int) -> Path:
         return self.dir / f"p{page:03d}.json"
@@ -37,34 +43,75 @@ class LayoutCache:
         p = self.path_for(page)
         if not p.exists():
             return None
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data["items"], (float(data["page_size"][0]), float(data["page_size"][1]))
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items")
+            page_size = data.get("page_size")
+            if not isinstance(items, list) or not isinstance(page_size, (list, tuple)) or len(page_size) != 2:
+                return None
+            return items, (float(page_size[0]), float(page_size[1]))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
 
-    def save(self, page: int, items: list[dict[str, Any]], page_size: tuple[float, float]) -> None:
+    def save(self, page: int, items: list[dict[str, Any]], page_size: tuple[float, float]) -> bool:
         p = self.path_for(page)
+        tmp_path: Path | None = None
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(
-                json.dumps({"items": items, "page_size": list(page_size)}, ensure_ascii=False),
+            payload = json.dumps({"items": items, "page_size": list(page_size)}, ensure_ascii=False)
+            with tempfile.NamedTemporaryFile(
+                "w",
                 encoding="utf-8",
-            )
-        except OSError:
-            pass
+                dir=p.parent,
+                prefix=f".{p.stem}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                tmp.write(payload)
+            os.replace(tmp_path, p)
+            tmp_path = None
+            self.last_save_error = None
+            return True
+        except OSError as exc:
+            self.last_save_error = exc
+            return False
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 class CachedLayoutBackend:
-    def __init__(self, backend: LayoutBackend, root_dir: Path) -> None:
+    def __init__(
+        self,
+        backend: LayoutBackend,
+        root_dir: Path,
+        *,
+        postprocess_version: str = DEFAULT_POSTPROCESS_VERSION,
+    ) -> None:
         self.backend = backend
         self.root_dir = Path(root_dir)
         self.name = backend.name
         self.revision = backend.revision
         self.cache_dpi = getattr(backend, "cache_dpi", 150)
+        self.postprocess_version = postprocess_version
 
     @property
     def last_stats(self) -> RunStats | None:
         return self.backend.last_stats
 
-    def analyze(self, pdf_path: str | Path, pages: Sequence[int]) -> dict[int, PageLayout]:
+    def analyze(
+        self,
+        pdf_path: str | Path,
+        pages: Sequence[int],
+        *,
+        pdf_hash: str | None = None,
+    ) -> dict[int, PageLayout]:
         path = Path(pdf_path)
         target_pages = sorted(set(pages))
         cache = LayoutCache(
@@ -72,7 +119,8 @@ class CachedLayoutBackend:
             backend=self.name,
             revision=self.revision,
             dpi=self.cache_dpi,
-            pdf_hash=file_sha256(path),
+            pdf_hash=pdf_hash or file_sha256(path),
+            postprocess_version=self.postprocess_version,
         )
         out: dict[int, PageLayout] = {}
         missing: list[int] = []

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from pdf.backends import get as get_backend, registered  # noqa: E402
 from pdf.backends.rss import peak_rss_mb  # noqa: E402
-from pdf.eval.gt import build_raster_pdf, load_autosar_gt, load_omnidoc_gt  # noqa: E402
+from pdf.eval.gt import append_run_log, build_raster_pdf, load_autosar_gt, load_omnidoc_gt  # noqa: E402
 from pdf.eval.metrics import char_counts, match_count, median, prf, strip_markup  # noqa: E402
 
 
@@ -246,12 +246,6 @@ def _print_raster_table(rows: list[dict[str, Any]]) -> None:
         )
 
 
-def _append_run_log(log_file: Path, record: dict[str, Any]) -> None:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Compare swappable pdf/ backends on AUTOSAR figures or OmniDocBench raster.")
     ap.add_argument("--task", required=True, choices=["figures", "raster"])
@@ -313,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_raster_table(rows)
 
-    _append_run_log(
+    append_run_log(
         Path(args.log_file),
         {
             "timestamp": datetime.now(timezone.utc).isoformat(),

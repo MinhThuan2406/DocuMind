@@ -11,14 +11,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pdf import extract_ir  # noqa: E402
-from pdf.hierarchy import _load_pdf_toc, _norm_title, apply_structure  # noqa: E402
-
 AUTOSAR_PDFS = (
     "AUTOSAR_CP_EXP_VFB.pdf",
+    "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf",
     "AUTOSAR_CP_SWS_OS.pdf",
     "AUTOSAR_CP_SWS_ECUStateManager.pdf",
-    "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf",
 )
 
 _NUMBERED_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\b")
@@ -28,6 +25,8 @@ def _score_against_toc(
     outline: list[dict[str, Any]],
     toc: list[tuple[int, str, int]],
 ) -> dict[str, Any]:
+    from pdf.hierarchy import _norm_title
+
     if not toc:
         return {"toc_len": 0, "matched": 0, "recall": None, "level_acc": None, "extra": len(outline)}
 
@@ -122,30 +121,47 @@ def _run_heron_sample(pdf_dir: Path, sample_spec: dict[str, list[int]]) -> None:
                         print(f"    {lbl} ({conf}): {txt!r}")
             finally:
                 fdoc.close()
-        finally:
-            doc.close()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Compare current pdf/hierarchy.py vs Docling-style hierarchy on AUTOSAR.")
     ap.add_argument("--pdf-dir", default=str(ROOT / "datasets" / "AUTOSAR"))
+    ap.add_argument(
+        "--split",
+        default="dev",
+        choices=["dev", "test"],
+        help="dev runs all 4 AUTOSAR PDFs (tuning reference); test requires --final and explicit --pdfs",
+    )
+    ap.add_argument("--final", action="store_true", help="Required when --split test")
+    ap.add_argument("--pdfs", nargs="+", default=None, help="Explicit PDF filenames/paths for unseen test evaluation")
     ap.add_argument("--heron-sample", action="store_true", help="Inspect Heron-ONNX section_header/caption on sample pages")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+
+    if args.split == "test" and not args.final:
+        print("REFUSED: --split test requires --final to prevent accidental test-split evaluation.", file=sys.stderr)
+        return 2
+    if args.split == "test" and not args.pdfs:
+        print("REFUSED: all 4 AUTOSAR PDFs are dev-tuned; pass --pdfs <unseen.pdf ...> for --split test.", file=sys.stderr)
+        return 2
+
+    from pdf import extract_ir
+    from pdf.hierarchy import _load_pdf_toc, apply_structure
 
     pdf_dir = Path(args.pdf_dir)
+    selected_paths = [Path(p) if Path(p).is_file() else (pdf_dir / p) for p in (args.pdfs or AUTOSAR_PDFS)]
     modes = (
         ("no_toc", lambda base, p: apply_structure(base, use_bookmarks=False)),
         ("with_toc", lambda base, p: apply_structure(base, pdf_path=p, use_bookmarks=True)),
     )
 
-    for name in AUTOSAR_PDFS:
-        path = pdf_dir / name
+    for path in selected_paths:
+        name = path.name
         if not path.exists():
             print(f"SKIP missing {path}")
             continue
         base_ir = extract_ir(path, figures=False, ocr=False, structure=False)
         toc = _load_pdf_toc(path)
-        print(f"\n=== {name} (pages={len(base_ir['metadata']['pages'])}, toc={len(toc)}) ===")
+        print(f"\n=== {name} (split={args.split}, pages={len(base_ir['metadata']['pages'])}, toc={len(toc)}) ===")
         header = f"{'mode':<16} {'out_n':>6} {'toc_rec':>8} {'lvl_acc':>8} {'extra':>6} {'front':>6} {'deep5+':>7} {'ms':>7}  levels"
         print(header)
         print("-" * len(header))
@@ -164,13 +180,13 @@ def main() -> int:
             )
 
     if args.heron_sample:
-        _run_heron_sample(
-            pdf_dir,
-            {
-                "AUTOSAR_CP_SWS_OS.pdf": [1, 7, 36, 61, 131, 209],
-                "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf": [1, 10, 11, 27, 79],
-            },
-        )
+        sample_pages = {
+            "AUTOSAR_CP_EXP_VFB.pdf": [1, 17, 35, 50],
+            "AUTOSAR_CP_EXP_LayeredSoftwareArchitecture.pdf": [1, 10, 11, 27, 79],
+            "AUTOSAR_CP_SWS_OS.pdf": [1, 7, 36, 61, 131, 209],
+            "AUTOSAR_CP_SWS_ECUStateManager.pdf": [1, 12, 30, 60],
+        }
+        _run_heron_sample(pdf_dir, {k: v for k, v in sample_pages.items() if k in {p.name for p in selected_paths}})
     return 0
 
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
@@ -13,6 +15,7 @@ from .._test_pdf import TestPdfBuilder
 from .metrics import char_counts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+PT_PER_PX_150DPI = 72.0 / 150.0
 
 OMNIDOC_SAMPLE_PAGES = (
     "PPT_1001115_eng_page_003.png",
@@ -132,3 +135,14 @@ def build_raster_pdf(image_paths: Sequence[Path], dst: Path) -> None:
         page = builder.new_page(width=pw, height=ph)
         page.insert_image((0.0, 0.0, pw, ph), stream=img_path.read_bytes())
     builder.save(dst)
+
+
+def omnidoc_image_split(image_name: str) -> str:
+    digest = hashlib.sha256(image_name.encode("utf-8")).digest()
+    return "dev" if (digest[0] & 1) == 0 else "test"
+
+
+def append_run_log(log_file: Path, record: dict[str, Any]) -> None:
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")

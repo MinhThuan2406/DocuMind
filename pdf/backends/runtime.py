@@ -41,6 +41,7 @@ def run_isolated_json(
     env_overrides: Mapping[str, str] | None = None,
     metrics_prefix: str = "SUBPROCESS_METRICS=",
     label: str = "subprocess",
+    timeout_sec: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     env = os.environ.copy()
     if env_overrides:
@@ -49,14 +50,20 @@ def run_isolated_json(
     with tempfile.TemporaryDirectory() as tmp:
         out_path = Path(tmp) / "output.json"
         t0 = time.perf_counter()
-        proc = subprocess.run(
-            [str(python_exe), "-B", str(script_path), *make_args(out_path)],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        try:
+            proc = subprocess.run(
+                [str(python_exe), "-B", str(script_path), *make_args(out_path)],
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"{label} subprocess ({Path(script_path).name}) timed out after {timeout_sec}s"
+            ) from exc
         wall_sec = round(time.perf_counter() - t0, 4)
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout)[-2000:]

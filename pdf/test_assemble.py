@@ -90,8 +90,8 @@ def test_extract_ir_end_to_end_with_mocked_figures():
         pdf_path = Path(tmp) / "assembled.pdf"
         _make_synthetic_builder().save(pdf_path)
 
-        fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.95)
-        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.95)
+        fig = FigureBox((60.0, 110.0, 280.0, 220.0), "figure", "v1_group", 0.83)
+        tbl = FigureBox((40.0, 290.0, 340.0, 400.0), "table", "layout_table", 0.79)
 
         import pdf.figures as figures_mod
 
@@ -106,6 +106,9 @@ def test_extract_ir_end_to_end_with_mocked_figures():
     assert ir["tables"] == []
     elems = ir["elements"]
     assert [e["reading_order"] for e in elems] == list(range(len(elems)))
+    fig_elems = [e for e in elems if e["type"] == "figure"]
+    tbl_elems = [e for e in elems if e["type"] == "table"]
+    assert fig_elems[0]["confidence"] == 0.83 and tbl_elems[0]["confidence"] == 0.79
     for e in elems:
         assert e["source_ref"] == {"file": "assembled.pdf", "page": 1, "bbox": e["bbox"]}
         assert isinstance(e["confidence"], float)

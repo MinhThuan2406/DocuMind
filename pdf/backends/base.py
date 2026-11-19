@@ -8,7 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from ..layout.types import LayoutItem
-from ..models import BBox, ExtractedTable, RasterPage
+from ..models import BBox, ExtractedTable, GroupedFigure, RasterPage
 from ..ocr.types import OcrLine
 
 
@@ -19,6 +19,7 @@ class RunStats:
     pages: int = 0
     peak_rss_mb: float = 0.0
     in_process: bool = True
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class PageReader(Protocol):
 class FigureGrouper(Protocol):
     name: str
 
-    def group(self, bgr: Any, layout: PageLayout, min_area: float) -> list[list[float]]: ...
+    def group(self, bgr: Any, layout: PageLayout, min_area: float) -> list[GroupedFigure]: ...
 
 
 @runtime_checkable
@@ -73,3 +74,33 @@ class TableExtractor(Protocol):
         table_bbox_pt: BBox,
         tokens: Sequence[tuple[str, BBox]] = (),
     ) -> ExtractedTable: ...
+
+    def extract_from_page(
+        self,
+        page: Any,
+        table_boxes_pt: Sequence[BBox],
+        *,
+        words: Sequence[Any] | None = None,
+        is_raster: bool = False,
+        ocr_backend: str = "rapidocr-onnx",
+        device: str | None = None,
+        dpi: int = 200,
+    ) -> list[ExtractedTable]: ...
+
+
+@runtime_checkable
+class DiagramExtractor(Protocol):
+    name: str
+    last_stats: RunStats | None
+
+    def extract_from_page(
+        self,
+        page: Any,
+        diagram_boxes_pt: Sequence[BBox],
+        *,
+        words: Sequence[Any] | None = None,
+        is_raster: bool = False,
+        ocr_backend: str = "rapidocr-onnx",
+        device: str | None = None,
+        dpi: int = 150,
+    ) -> list[dict[str, Any]]: ...

@@ -263,6 +263,221 @@ def test_mineru_subprocess_integration_optional():
         assert p1_cache is not None
 
 
+def test_grouped_figure_real_scores_and_legacy_fallback():
+    import numpy as np
+
+    from pdf.grouping import RawPictureGrouper, V1AnchorGrouper
+    from pdf.layout import LayoutItem, clusters_to_items, postprocess_layout
+    from pdf.models import GroupedFigure
+
+    clusters = postprocess_layout(
+        [
+            LayoutItem("picture", (40.0, 40.0, 240.0, 200.0), 0.81),
+            LayoutItem("table", (300.0, 40.0, 560.0, 200.0), 0.77),
+        ],
+        (600.0, 400.0),
+        keep_empty_clusters=False,
+    )
+    items = clusters_to_items(clusters)
+    assert [it["score"] for it in items] == [0.81, 0.77]
+
+    bgr = np.full((400, 600, 3), 255, dtype=np.uint8)
+    layout = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [40.0, 40.0, 240.0, 140.0], "text": "", "score": 0.80},
+            {"order": 1, "label": "caption", "bbox": [40.0, 145.0, 140.0, 165.0], "text": "", "score": 0.91},
+            {"order": 2, "label": "table", "bbox": [300.0, 40.0, 560.0, 200.0], "text": "", "score": 0.73},
+        ],
+        frame=(600.0, 400.0),
+    )
+    grouped_v1 = V1AnchorGrouper().group(bgr, layout)
+    assert len(grouped_v1) == 1 and isinstance(grouped_v1[0], GroupedFigure)
+    assert grouped_v1[0].source == "v1_group"
+    expected_wmean = round((20000.0 * 0.80 + 2000.0 * 0.91) / 22000.0, 4)
+    assert grouped_v1[0].score == expected_wmean
+
+    grouped_raw = RawPictureGrouper().group(bgr, layout)
+    assert len(grouped_raw) == 1 and grouped_raw[0].score == 0.80
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "scored.pdf"
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400)
+        b.save(pdf_path)
+
+        class _ScoredBackend:
+            name = "scored_mock"
+            revision = "r1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def analyze(self, _pdf_path, pages):
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                return {p: layout for p in pages}
+
+        register("layout", "scored_mock", lambda **_kw: _ScoredBackend())
+        detected = detect_figures(pdf_path, [1], layout="scored_mock", cache_dir=tmp_path / "cache")
+        assert [round(f.confidence, 4) for f in detected[1]] == [expected_wmean, 0.73]
+
+
+def test_extract_ir_single_pdf_open_and_no_double_render():
+    import io
+
+    import pdfplumber
+    from PIL import ImageDraw
+
+    import pdf._pdf_io as pdf_io_mod
+    import pdf.backends.layout_cache as cache_mod
+    import pdf.backends.layout_image as layout_image_mod
+    import pdf.figures as figures_mod
+    from pdf.layout.types import LayoutItem
+    from pdf.ocr.types import OcrLine
+
+    class _Det:
+        def detect(self, image):
+            w, h = float(image.width), float(image.height)
+            return [
+                LayoutItem("picture", (0.1 * w, 0.1 * h, 0.5 * w, 0.5 * h), 0.84),
+                LayoutItem("text", (0.1 * w, 0.6 * h, 0.6 * w, 0.8 * h), 0.90),
+            ]
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            w, h = float(image.width), float(image.height)
+            return [OcrLine("Scanned line", (0.1 * w, 0.6 * h, 0.5 * w, 0.75 * h), 0.91)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "two_kinds.pdf"
+        b = TestPdfBuilder()
+        p1 = b.new_page(width=600, height=400)
+        p1.insert_text((50, 40), "Candidate native page", fontsize=12)
+        for i in range(8):
+            p1.draw_rect((60 + i * 30, 80, 80 + i * 30, 100))
+
+        img = Image.new("RGB", (600, 400), color=(255, 255, 255))
+        ImageDraw.Draw(img).text((40, 80), "RASTER", fill=(0, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        p2 = b.new_page(width=600, height=400)
+        p2.insert_image((0, 0, 600, 400), stream=buf.getvalue())
+        b.save(pdf_path)
+
+        from pdf.backends import ComposedReader, ImageLayoutBackend
+
+        layout_backend = ImageLayoutBackend(_Det(), name="mock_img_layout", revision="r1", dpi=150)
+        ocr_reader = ComposedReader(_Det(), _Ocr())
+
+        counts = {"plumber": 0, "pdfium": 0, "sha256": 0, "render_bgr": 0}
+        orig_plumber = pdfplumber.open
+        orig_pdfium = pdfium.PdfDocument
+        orig_sha = cache_mod.file_sha256
+        orig_render_fig = figures_mod.render_bgr
+        orig_render_img = layout_image_mod.render_bgr
+        orig_root = figures_mod._REPO_ROOT
+
+        def _wrap_plumber(*a, **kw):
+            counts["plumber"] += 1
+            return orig_plumber(*a, **kw)
+
+        def _wrap_pdfium(*a, **kw):
+            counts["pdfium"] += 1
+            return orig_pdfium(*a, **kw)
+
+        def _wrap_sha(*a, **kw):
+            counts["sha256"] += 1
+            return orig_sha(*a, **kw)
+
+        def _wrap_render(*a, **kw):
+            counts["render_bgr"] += 1
+            return pdf_io_mod.render_bgr(*a, **kw)
+
+        pdfplumber.open = _wrap_plumber
+        pdfium.PdfDocument = _wrap_pdfium
+        cache_mod.file_sha256 = _wrap_sha
+        figures_mod.render_bgr = _wrap_render
+        layout_image_mod.render_bgr = _wrap_render
+        figures_mod._REPO_ROOT = tmp_path
+        try:
+            ir = extract_ir(
+                pdf_path,
+                figures=True,
+                ocr=True,
+                tables=False,
+                layout=layout_backend,
+                reader=ocr_reader,
+                structure=True,
+            )
+            assert counts == {"plumber": 1, "pdfium": 1, "sha256": 1, "render_bgr": 1}, counts
+            assert layout_backend.last_rendered == {}
+            p1_figs = [e for e in ir["elements"] if e["page"] == 1 and e["type"] == "figure"]
+            assert len(p1_figs) == 1 and p1_figs[0]["confidence"] == 0.84
+
+            class _WarnLayout:
+                name = "warn_layout_str"
+                revision = "w1"
+                cache_dpi = 150
+                last_stats = None
+
+                def analyze(self, _pdf_path, pages):
+                    self.last_stats = RunStats(
+                        pages=len(pages),
+                        in_process=True,
+                        warnings=({"page": 1, "code": "layout_note", "severity": "info", "reason": "test_warn", "fallback": None},),
+                    )
+                    return {p: PageLayout(items=[], frame=(600.0, 400.0)) for p in pages}
+
+            register("layout", "warn_layout_str", lambda **_kw: _WarnLayout())
+            ir_warn = extract_ir(pdf_path, figures=True, ocr=False, layout="warn_layout_str")
+            assert any(w.get("code") == "layout_note" for w in ir_warn["metadata"]["warnings"])
+
+            # Verify detect_figures bounds in-memory rendered BGR buffers across batches and aggregates RunStats.
+            multi_pdf = tmp_path / "multi_20.pdf"
+            mb = TestPdfBuilder()
+            for idx in range(20):
+                mp = mb.new_page(width=400, height=300)
+                mp.insert_text((30, 30), f"Page {idx + 1}", fontsize=10)
+            mb.save(multi_pdf)
+
+            max_live_rendered = 0
+            orig_analyze = layout_backend.analyze
+
+            def _tracking_analyze(p, pages, **kw):
+                nonlocal max_live_rendered
+                res = orig_analyze(p, pages, **kw)
+                max_live_rendered = max(max_live_rendered, len(layout_backend.last_rendered))
+                return res
+
+            layout_backend.analyze = _tracking_analyze
+            try:
+                figs_20 = figures_mod.detect_figures(
+                    multi_pdf, list(range(1, 21)), layout=layout_backend, cache_dir=tmp_path / "multi_cache"
+                )
+            finally:
+                layout_backend.analyze = orig_analyze
+
+            assert len(figs_20) == 20
+            assert 1 <= max_live_rendered <= figures_mod.DEFAULT_RENDER_BATCH_SIZE
+            assert layout_backend.last_rendered == {}
+            assert layout_backend.last_stats is not None and layout_backend.last_stats.pages == 20
+
+            with pdfplumber.open(str(pdf_path)) as doc:
+                crop, crop_box = pdf_io_mod.crop_page_rgb_with_bbox(
+                    doc.pages[0], (10.0, 10.0, 110.0, 110.0), 150, pad_pt=5.0, max_pixels=10_000
+                )
+                assert crop.width * crop.height <= 12_000
+                assert crop_box == (5.0, 5.0, 115.0, 115.0)
+        finally:
+            pdfplumber.open = orig_plumber
+            pdfium.PdfDocument = orig_pdfium
+            cache_mod.file_sha256 = orig_sha
+            figures_mod.render_bgr = orig_render_fig
+            layout_image_mod.render_bgr = orig_render_img
+            figures_mod._REPO_ROOT = orig_root
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

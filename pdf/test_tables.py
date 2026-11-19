@@ -11,7 +11,7 @@ from PIL import Image  # noqa: E402
 
 import pdf.ir as ir_mod  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
-from pdf.backends import TableExtractor, get, register, registered, reset_cache  # noqa: E402
+from pdf.backends import DiagramExtractor, RunStats, TableExtractor, get, register, registered, reset_cache  # noqa: E402
 from pdf.backends.table_auto import AutoTableExtractor, _row_y_spans_pt, refine_table_headers  # noqa: E402
 from pdf.backends.tatr_onnx import objects_to_table, table_to_html  # noqa: E402
 from pdf.eval.tables import teds_score  # noqa: E402
@@ -302,7 +302,7 @@ def test_auto_bordered_multirow_projected_headers_and_staggered_rowspan():
             )
 
     tbl = tables[0]
-    assert tbl.source == "auto" and tbl.confidence == 1.0
+    assert tbl.source == "auto_refined" and tbl.confidence == 1.0
     assert tbl.num_rows == 6 and tbl.num_cols == 4
     by_rc = {(c.row, c.col): c for c in tbl.cells}
     assert by_rc[(0, 0)].rowspan == 2 and by_rc[(0, 0)].is_header is True
@@ -352,7 +352,7 @@ def test_auto_bordered_key_value_no_header_and_column_only_fallback():
                 ])
             )
             kv_tbl = extract_tables_on_page(page, [(38.0, 48.0, 282.0, 142.0)], extractor=kv_ext)[0]
-            assert kv_tbl.source == "auto" and kv_tbl.confidence == 1.0
+            assert kv_tbl.source == "auto_refined" and kv_tbl.confidence == 1.0
             assert all(not c.is_header for c in kv_tbl.cells)
 
             for col_only_objs in (
@@ -361,7 +361,7 @@ def test_auto_bordered_key_value_no_header_and_column_only_fallback():
             ):
                 fb_ext = AutoTableExtractor(tatr_extractor=_TatrObjects(col_only_objs))
                 fb_tbl = extract_tables_on_page(page, [(38.0, 48.0, 282.0, 142.0)], extractor=fb_ext)[0]
-                assert fb_tbl.source == "auto" and fb_tbl.confidence == 1.0
+                assert fb_tbl.source == "auto_refined" and fb_tbl.confidence == 1.0
                 assert all(c.is_header == (c.row == 0) for c in fb_tbl.cells)
 
 
@@ -430,25 +430,25 @@ def test_auto_borderless_0x0_and_1x1_and_zebra_nx1_fallback_to_tatr():
             box = [(38.0, 48.0, 282.0, 152.0)]
 
             t_0x0 = extract_tables_on_page(doc.pages[0], box, words=None, extractor=AutoTableExtractor(tatr_extractor=_make_tatr(2)))[0]
-            assert t_0x0.source == "auto" and t_0x0.confidence == 0.91
+            assert t_0x0.source == "auto_tatr" and t_0x0.confidence == 0.91
             assert t_0x0.num_rows == 2 and t_0x0.num_cols == 2
             assert [c.text for c in t_0x0.cells] == ["ColA", "ColB", "Val1", "Val2"]
 
             t_1x1 = extract_tables_on_page(doc.pages[1], box, extractor=AutoTableExtractor(tatr_extractor=_make_tatr(2)))[0]
-            assert t_1x1.source == "auto" and t_1x1.confidence == 0.91
+            assert t_1x1.source == "auto_tatr" and t_1x1.confidence == 0.91
             assert t_1x1.num_rows == 2 and t_1x1.num_cols == 2
             assert [c.text for c in t_1x1.cells] == ["ColA", "ColB", "Val1", "Val2"]
 
             tatr_multi = _make_tatr(2)
             t_nx1_split = extract_tables_on_page(doc.pages[2], box, extractor=AutoTableExtractor(tatr_extractor=tatr_multi))[0]
             assert tatr_multi.detect_calls == 1
-            assert t_nx1_split.source == "auto" and t_nx1_split.confidence == 0.91
+            assert t_nx1_split.source == "auto_tatr" and t_nx1_split.confidence == 0.91
             assert t_nx1_split.num_rows == 2 and t_nx1_split.num_cols == 2
 
             tatr_single = _make_tatr(1)
             t_nx1_keep = extract_tables_on_page(doc.pages[2], box, extractor=AutoTableExtractor(tatr_extractor=tatr_single))[0]
             assert tatr_single.detect_calls == 1
-            assert t_nx1_keep.source == "auto" and t_nx1_keep.confidence == 1.0
+            assert t_nx1_keep.source == "auto_refined" and t_nx1_keep.confidence == 1.0
             assert t_nx1_keep.num_rows == 2 and t_nx1_keep.num_cols == 1
             assert t_nx1_keep.cells[0].is_header is True and t_nx1_keep.cells[1].is_header is False
 
@@ -502,9 +502,9 @@ def test_auto_mixed_page_bordered_and_borderless():
                 extractor=AutoTableExtractor(tatr_extractor=_FakeTatr()),
             )
     assert len(tables) == 2
-    assert tables[0].source == "auto" and tables[0].confidence == 1.0
+    assert tables[0].source == "auto_refined" and tables[0].confidence == 1.0
     assert [c.text for c in tables[0].cells] == ["H1", "H2", "V1", "V2"]
-    assert tables[1].source == "auto" and tables[1].confidence < 1.0
+    assert tables[1].source == "auto_tatr" and tables[1].confidence < 1.0
     assert [c.text for c in tables[1].cells] == ["B1", "B2", "D1", "D2"]
 
 
@@ -562,7 +562,7 @@ def test_auto_raster_and_suspect_ocr_skip_pdfplumber():
                 extractor=ext,
             )
     tbl = tables[0]
-    assert tbl.source == "auto"
+    assert tbl.source == "auto_tatr"
     assert [c.text for c in tbl.cells] == ["OcrH1", "OcrH2", "OcrV1", "OcrV2"]
     assert all("BAD_TEXT_LAYER" not in c.text for c in tbl.cells)
 
@@ -614,6 +614,77 @@ def test_explicit_pdfplumber_and_tatr_backends_unchanged():
         finally:
             figures_mod.detect_figures = orig_detect
             reset_cache()
+
+
+def test_table_ir_top_level_fields_and_empty_table_warning():
+    from pdf.tables import table_to_ir_dict
+
+    tbl = ExtractedTable(
+        bbox=(10.0, 20.0, 110.0, 80.0),
+        num_rows=1,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "A", (10.0, 20.0, 60.0, 80.0), True),
+            TableCell(0, 1, 1, 1, "B", (60.0, 20.0, 110.0, 80.0), True),
+        ),
+        source="auto_refined",
+        confidence=0.92,
+    )
+    ir_tbl = table_to_ir_dict("tbl_0001", "elem_0001", 1, "doc.pdf", tbl)
+    assert ir_tbl["source"] == "auto_refined"
+    assert ir_tbl["confidence"] == 0.92
+    assert ir_tbl["metadata"]["source"] == "auto_refined"
+    assert ir_tbl["metadata"]["confidence"] == 0.92
+    assert all("confidence" not in c for c in ir_tbl["cells"])
+    assert isinstance(get("table", "tatr-onnx"), TableExtractor)
+    assert DiagramExtractor is not None
+
+    class _EmptyExtractor:
+        name = "empty_tbl"
+        last_stats = None
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            del image, tokens
+            return ExtractedTable(table_bbox_pt, 0, 0, (), "empty_tbl", 0.0)
+
+        def extract_from_page(self, page, table_boxes_pt, **_kw):
+            del page
+            warn = {"page": 1, "code": "backend_note", "severity": "info", "reason": "custom_stats_warning", "fallback": None}
+            self.last_stats = RunStats(pages=1, in_process=True, warnings=(warn,))
+            return [ExtractedTable(b, 0, 0, (), "empty_tbl", 0.0) for b in table_boxes_pt]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "empty_tbl.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        for i in range(8):
+            p.draw_rect((40 + i * 25, 50, 60 + i * 25, 70))
+        p.insert_text((40, 200), "Body text", fontsize=10)
+        b.save(pdf_path)
+
+        import pdf.figures as figures_mod
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = lambda _p, pages, **_kw: {
+            pno: [FigureBox((38.0, 48.0, 250.0, 120.0), "table", "layout_table", 0.88)] for pno in pages
+        }
+        try:
+            ir = ir_mod.extract_ir(
+                pdf_path,
+                figures=True,
+                ocr=False,
+                tables=True,
+                diagrams=False,
+                diagram_backend="vector_first",
+                table_backend=_EmptyExtractor(),
+            )
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+    assert ir["tables"] == []
+    assert ir["diagrams"] == []
+    assert any(w.get("code") == "table_parse_empty" and w.get("page") == 1 for w in ir["metadata"]["warnings"])
+    assert any(w.get("code") == "backend_note" for w in ir["metadata"]["warnings"])
 
 
 def main():

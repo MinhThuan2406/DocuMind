@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import cv2
 import numpy as np
 
 from .backends.base import FigureGrouper, PageLayout
-from .models import FIGURE_MIN_AREA, FigureSource
+from .models import FIGURE_MIN_AREA, FigureSource, GroupedFigure
 
 __all__ = ["FigureGrouper", "RawPictureGrouper", "V1AnchorGrouper"]
+
+_LEGACY_DEFAULT_SCORE = 0.95
+
+
+def _item_score(item: Mapping[str, Any], default: float = _LEGACY_DEFAULT_SCORE) -> float:
+    val = item.get("score")
+    return float(val) if val is not None else default
 
 
 class _DisjointSetUnion:
@@ -103,7 +110,7 @@ def _v1_group_boxes(
     img_size: tuple[int, int],
     page_size: tuple[float, float],
     min_area: float,
-) -> list[list[float]]:
+) -> list[GroupedFigure]:
     img_w, img_h = img_size
     dw, dh = page_size
     sx = img_w / dw if dw > 0 else 1.0
@@ -114,6 +121,7 @@ def _v1_group_boxes(
         {
             "orig_item": it,
             "label": it.get("label", "text"),
+            "score": _item_score(it),
             "bbox": [
                 round(it["bbox"][0] * sx, 1),
                 round(it["bbox"][1] * sy, 1),
@@ -196,7 +204,7 @@ def _v1_group_boxes(
     for i in range(n_items):
         clusters.setdefault(dsu.find(i), []).append(i)
 
-    boxes_px: list[list[float]] = []
+    boxes_px: list[GroupedFigure] = []
     for idx_list in clusters.values():
         if len(idx_list) < 2 and not any(pixel_items[idx]["label"] in ("picture", "figure") for idx in idx_list):
             continue
@@ -221,12 +229,27 @@ def _v1_group_boxes(
                 u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
                 break
 
-        boxes_px.append([
-            max(0.0, round(u_box[0] - 8, 1)),
-            max(0.0, round(u_box[1] - 8, 1)),
-            min(float(img_w), round(u_box[2] + 8, 1)),
-            min(float(img_h), round(u_box[3] + 8, 1)),
-        ])
+        total_w = 0.0
+        weighted = 0.0
+        for idx in idx_list:
+            pb = pixel_items[idx]["bbox"]
+            area = max(1.0, (pb[2] - pb[0]) * (pb[3] - pb[1]))
+            weighted += area * pixel_items[idx]["score"]
+            total_w += area
+        score = round(weighted / total_w, 4) if total_w > 0 else _LEGACY_DEFAULT_SCORE
+
+        boxes_px.append(
+            GroupedFigure(
+                bbox=(
+                    max(0.0, round(u_box[0] - 8, 1)),
+                    max(0.0, round(u_box[1] - 8, 1)),
+                    min(float(img_w), round(u_box[2] + 8, 1)),
+                    min(float(img_h), round(u_box[3] + 8, 1)),
+                ),
+                score=score,
+                source="v1_group",
+            )
+        )
     return boxes_px
 
 
@@ -239,7 +262,7 @@ class V1AnchorGrouper:
         bgr: np.ndarray,
         layout: PageLayout,
         min_area: float = FIGURE_MIN_AREA,
-    ) -> list[list[float]]:
+    ) -> list[GroupedFigure]:
         ih, iw = bgr.shape[:2]
         return _v1_group_boxes(bgr, layout.items, (iw, ih), layout.frame, min_area)
 
@@ -253,13 +276,13 @@ class RawPictureGrouper:
         bgr: np.ndarray,
         layout: PageLayout,
         min_area: float = FIGURE_MIN_AREA,
-    ) -> list[list[float]]:
+    ) -> list[GroupedFigure]:
         del min_area
         ih, iw = bgr.shape[:2]
         dw, dh = layout.frame
         sx = iw / dw if dw > 0 else 1.0
         sy = ih / dh if dh > 0 else 1.0
-        boxes: list[list[float]] = []
+        boxes: list[GroupedFigure] = []
         for it in layout.items:
             if str(it.get("label", "")).lower() not in ("picture", "figure"):
                 continue
@@ -271,5 +294,5 @@ class RawPictureGrouper:
             x1 = min(float(iw), float(bbox[2]) * sx)
             y1 = min(float(ih), float(bbox[3]) * sy)
             if x1 > x0 and y1 > y0:
-                boxes.append([x0, y0, x1, y1])
+                boxes.append(GroupedFigure(bbox=(x0, y0, x1, y1), score=round(_item_score(it), 4), source=self.source))
         return boxes

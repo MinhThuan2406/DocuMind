@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Sequence
 from typing import Any
 
 from PIL import Image
 
-from ._pdf_io import clip_box, crop_page_rgb, page_bbox
+from ._pdf_io import crop_page_rgb_with_bbox
 from .backends import TableExtractor, get as get_backend
 from .backends.tatr_onnx import table_to_html
 from .models import BBox, ExtractedTable, Word
@@ -20,18 +19,7 @@ def _round_bbox(bbox: BBox) -> list[float]:
 
 
 def crop_page_region(page: Any, bbox_pt: BBox, dpi: int = DEFAULT_TABLE_DPI) -> tuple[Image.Image, BBox]:
-    bounds = page_bbox(page)
-    padded = (
-        bbox_pt[0] - _CROP_PAD_PT,
-        bbox_pt[1] - _CROP_PAD_PT,
-        bbox_pt[2] + _CROP_PAD_PT,
-        bbox_pt[3] + _CROP_PAD_PT,
-    )
-    clip = clip_box(padded, bounds) or bounds
-    return crop_page_rgb(page, clip, dpi), clip
-
-
-_crop_page_region = crop_page_region
+    return crop_page_rgb_with_bbox(page, bbox_pt, dpi, pad_pt=_CROP_PAD_PT)
 
 
 def tokens_in_box(tokens: Sequence[tuple[str, BBox]], box: BBox) -> list[tuple[str, BBox]]:
@@ -42,9 +30,6 @@ def tokens_in_box(tokens: Sequence[tuple[str, BBox]], box: BBox) -> list[tuple[s
         if box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
             out.append((text, tb))
     return out
-
-
-_tokens_in_box = tokens_in_box
 
 
 def ocr_crop_tokens(ocr_rec: Any, crop: Image.Image, crop_box: BBox) -> list[tuple[str, BBox]]:
@@ -73,8 +58,9 @@ def table_to_ir_dict(
     table: ExtractedTable,
 ) -> dict[str, Any]:
     bbox = _round_bbox(table.bbox)
-    cells = [
-        {
+    cells = []
+    for c in table.cells:
+        cell_dict: dict[str, Any] = {
             "row": c.row,
             "col": c.col,
             "rowspan": c.rowspan,
@@ -84,14 +70,18 @@ def table_to_ir_dict(
             "is_merged": c.rowspan > 1 or c.colspan > 1,
             "bbox": None if c.bbox is None else _round_bbox(c.bbox),
         }
-        for c in table.cells
-    ]
+        cell_conf = getattr(c, "confidence", None)
+        if cell_conf is not None:
+            cell_dict["confidence"] = cell_conf
+        cells.append(cell_dict)
     return {
         "id": tbl_id,
         "page": page_no,
         "bbox": bbox,
         "num_rows": table.num_rows,
         "num_cols": table.num_cols,
+        "source": table.source,
+        "confidence": table.confidence,
         "cells": cells,
         "html": table_to_html(table),
         "source_ref": {"file": source_file, "page": page_no, "bbox": bbox},
@@ -119,21 +109,17 @@ def extract_tables_on_page(
     backend = get_backend("table", extractor, device=device) if isinstance(extractor, str) else extractor
     extract_page = getattr(backend, "extract_from_page", None)
     if callable(extract_page):
-        params = inspect.signature(extract_page).parameters
-        accepts_ext = "is_raster" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-        if accepts_ext:
-            return list(
-                extract_page(
-                    page,
-                    table_boxes_pt,
-                    words=words,
-                    is_raster=is_raster,
-                    ocr_backend=ocr_backend,
-                    device=device,
-                    dpi=dpi,
-                )
+        return list(
+            extract_page(
+                page,
+                table_boxes_pt,
+                words=words,
+                is_raster=is_raster,
+                ocr_backend=ocr_backend,
+                device=device,
+                dpi=dpi,
             )
-        return list(extract_page(page, table_boxes_pt))
+        )
 
     ocr_rec = get_backend("ocr", ocr_backend, device=device) if is_raster else None
     if is_raster:

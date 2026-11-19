@@ -9,7 +9,8 @@ def peak_rss_mb() -> float:
     if sys.platform != "win32":
         import resource
 
-        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
+        divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / divisor, 2)
 
     class _PMC(ctypes.Structure):
         _fields_ = [

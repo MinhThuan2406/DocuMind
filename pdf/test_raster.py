@@ -77,6 +77,15 @@ def test_read_raster_page_and_ir_emit_ocr_source_and_confidence():
         ir = extract_ir(pdf_path, figures=False, ocr=True, layout="fake_det", ocr_backend="fake_ocr")
         assert isinstance(ComposedReader(_FakeDetector(), _FakeRecognizer()).read(pdf_path, [1])[1].blocks, tuple)
 
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(str(pdf_path))
+        try:
+            shared_res = ComposedReader(_FakeDetector(), _FakeRecognizer()).read(pdf_path, [1], pdfium_doc=doc)
+            assert len(doc) == 1 and shared_res[1].figures[0].confidence == 0.94
+        finally:
+            doc.close()
+
     assert json.loads(json.dumps(ir)) == ir
     assert ir["metadata"]["unreadable_pages"] == []
     elems = ir["elements"]
@@ -86,7 +95,7 @@ def test_read_raster_page_and_ir_emit_ocr_source_and_confidence():
     assert elems[1]["metadata"]["layout_label"] == "text"
     assert elems[0]["confidence"] == 0.91 and elems[0]["source"] == "ocr"
     assert elems[1]["confidence"] == 0.93 and elems[1]["source"] == "ocr"
-    assert elems[2]["source"] == "layout_picture"
+    assert elems[2]["source"] == "layout_picture" and elems[2]["confidence"] == 0.94
     assert "docling" not in sys.modules
 
 

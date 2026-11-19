@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pypdfium2 as pdfium
 from PIL import Image
@@ -16,7 +17,6 @@ from .base import LayoutDetector, RunStats, TextRecognizer
 from .rss import peak_rss_mb
 
 DEFAULT_RASTER_DPI = 150
-LAYOUT_BOX_CONFIDENCE = 0.95
 
 
 def _area(b: BBox) -> float:
@@ -116,7 +116,7 @@ class ComposedReader:
                         bbox=_scale_box(c.bbox, sx, sy),
                         kind="figure",
                         source="layout_picture",
-                        confidence=LAYOUT_BOX_CONFIDENCE,
+                        confidence=round(float(c.confidence), 4),
                     )
                 )
                 continue
@@ -126,7 +126,7 @@ class ComposedReader:
                         bbox=_scale_box(c.bbox, sx, sy),
                         kind="table",
                         source="layout_table",
-                        confidence=LAYOUT_BOX_CONFIDENCE,
+                        confidence=round(float(c.confidence), 4),
                     )
                 )
             cluster_lines = by_cluster.get(c.id)
@@ -174,7 +174,7 @@ class ComposedReader:
             reading_order=tuple(range(len(ordered_blocks))),
         )
 
-    def read(self, pdf_path: str | Path, pages: Sequence[int]) -> dict[int, RasterPage]:
+    def read(self, pdf_path: str | Path, pages: Sequence[int], *, pdfium_doc: Any = None) -> dict[int, RasterPage]:
         page_list = list(pages)
         if not page_list:
             return {}
@@ -187,7 +187,8 @@ class ComposedReader:
                     load_sec += time.perf_counter() - t_load0
 
         t0 = time.perf_counter()
-        doc_pdf = pdfium.PdfDocument(str(pdf_path))
+        owns_doc = pdfium_doc is None
+        doc_pdf = pdfium.PdfDocument(str(pdf_path)) if owns_doc else pdfium_doc
         out: dict[int, RasterPage] = {}
         try:
             for pno in page_list:
@@ -195,7 +196,8 @@ class ComposedReader:
                     raise ValueError(f"page {pno} out of range 1..{len(doc_pdf)}")
                 out[pno] = self._read_single_page(doc_pdf[pno - 1])
         finally:
-            doc_pdf.close()
+            if owns_doc:
+                doc_pdf.close()
         self.last_stats = RunStats(
             load_sec=round(load_sec, 4),
             infer_sec=round(time.perf_counter() - t0, 4),

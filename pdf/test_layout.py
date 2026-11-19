@@ -2,7 +2,9 @@ import io
 import json
 import sys
 import tempfile
+import types
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -11,7 +13,10 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from pdf import extract_ir  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
-from pdf.backends import LayoutCache  # noqa: E402
+from pdf.backends import CachedLayoutBackend, LayoutCache, PageLayout, RunStats  # noqa: E402
+from pdf.backends.layout_cache import DEFAULT_POSTPROCESS_VERSION  # noqa: E402
+from pdf.backends.rss import peak_rss_mb  # noqa: E402
+from pdf.backends.runtime import run_isolated_json  # noqa: E402
 from pdf.layout import (  # noqa: E402
     LayoutItem,
     clamp_and_rescale,
@@ -63,10 +68,117 @@ def test_layout_cache_isolates_by_backend_revision_dpi_and_hash():
         c2 = LayoutCache(root, backend="heron", revision="rev2", dpi=150, pdf_hash="aaaa" * 16)
         c3 = LayoutCache(root, backend="heron", revision="rev1", dpi=200, pdf_hash="aaaa" * 16)
         c4 = LayoutCache(root, backend="heron", revision="rev1", dpi=150, pdf_hash="bbbb" * 16)
-        assert len({c1.dir, c2.dir, c3.dir, c4.dir}) == 4
-        c1.save(1, [{"order": 0, "label": "picture", "bbox": [1, 2, 3, 4], "text": ""}], (100.0, 100.0))
+        c5 = LayoutCache(
+            root,
+            backend="heron",
+            revision="rev1",
+            dpi=150,
+            pdf_hash="aaaa" * 16,
+            postprocess_version="v3",
+        )
+        assert DEFAULT_POSTPROCESS_VERSION == "v2"
+        assert DEFAULT_POSTPROCESS_VERSION in c1.dir.name
+        assert len({c1.dir, c2.dir, c3.dir, c4.dir, c5.dir}) == 5
+        assert c1.save(1, [{"order": 0, "label": "picture", "bbox": [1, 2, 3, 4], "text": ""}], (100.0, 100.0))
         assert c1.load(1) is not None
         assert c2.load(1) is None
+        assert c5.load(1) is None
+
+
+def test_layout_cache_load_recovers_from_corrupt_and_incomplete_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = LayoutCache(Path(tmp), backend="heron", revision="rev1", dpi=150, pdf_hash="aaaa" * 16)
+        cache.dir.mkdir(parents=True, exist_ok=True)
+
+        bad_payloads = [
+            b'{"items": [{"label": "text"',
+            b"\xff\xfe\xfd",
+            b'["not", "a", "dict"]',
+            b'{"items": "not_a_list", "page_size": [100, 200]}',
+            b'{"items": [], "page_size": [100]}',
+            b'{"items": [], "page_size": null}',
+            b'{"items": [], "page_size": ["bad", 200]}',
+        ]
+        for idx, raw in enumerate(bad_payloads, start=1):
+            cache.path_for(idx).write_bytes(raw)
+            assert cache.load(idx) is None, idx
+
+
+def test_layout_cache_atomic_save_and_error_cleanup():
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = LayoutCache(Path(tmp), backend="heron", revision="rev1", dpi=150, pdf_hash="aaaa" * 16)
+        orig_items = [{"order": 0, "label": "text", "bbox": [1.0, 2.0, 3.0, 4.0], "text": "ok"}]
+        assert cache.save(1, orig_items, (600.0, 800.0)) is True
+        assert cache.last_save_error is None
+        assert [p.name for p in cache.dir.iterdir()] == ["p001.json"]
+
+        with mock.patch("pdf.backends.layout_cache.os.replace", side_effect=OSError("disk error")):
+            ok = cache.save(1, [{"order": 0, "label": "table", "bbox": [0, 0, 1, 1], "text": ""}], (10.0, 10.0))
+        assert ok is False
+        assert isinstance(cache.last_save_error, OSError)
+        assert [p.name for p in cache.dir.iterdir()] == ["p001.json"]
+        assert cache.load(1) == (orig_items, (600.0, 800.0))
+
+
+def test_cached_layout_backend_uses_precomputed_hash_and_postprocess_version():
+    class _DummyBackend:
+        name = "dummy"
+        revision = "r1"
+        cache_dpi = 150
+        last_stats = RunStats(infer_sec=0.01, pages=1, in_process=True)
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze(self, _pdf_path, pages):
+            self.calls += 1
+            return {
+                p: PageLayout(items=[{"label": "picture", "bbox": [0, 0, 10, 10]}], frame=(100.0, 100.0))
+                for p in pages
+            }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pdf_path = root / "doc.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        backend = _DummyBackend()
+        cached = CachedLayoutBackend(backend, root, postprocess_version="v9")
+        with mock.patch("pdf.backends.layout_cache.file_sha256", side_effect=AssertionError("should not hash")):
+            out1 = cached.analyze(pdf_path, [1], pdf_hash="1234" * 16)
+            out2 = cached.analyze(pdf_path, [1], pdf_hash="1234" * 16)
+        assert backend.calls == 1
+        assert out1[1].items == out2[1].items
+        assert (root / f"dummy_r1_dpi150_v9_{'1234' * 4}").is_dir()
+
+
+def test_run_isolated_json_timeout():
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "slow_child.py"
+        script.write_text("import time\ntime.sleep(5)\n", encoding="utf-8")
+        try:
+            run_isolated_json(
+                Path(sys.executable),
+                script,
+                lambda out: [str(out)],
+                label="SlowBackend",
+                timeout_sec=0.2,
+            )
+            raise AssertionError("expected RuntimeError on timeout")
+        except RuntimeError as exc:
+            msg = str(exc)
+            assert "SlowBackend" in msg
+            assert "slow_child.py" in msg
+            assert "0.2" in msg
+
+
+def test_peak_rss_mb_darwin_vs_linux_units():
+    fake_usage = types.SimpleNamespace(ru_maxrss=10 * 1024 * 1024)
+    fake_resource = types.SimpleNamespace(RUSAGE_SELF=0, getrusage=lambda _who: fake_usage)
+    with mock.patch.dict(sys.modules, {"resource": fake_resource}):
+        with mock.patch.object(sys, "platform", "darwin"):
+            assert peak_rss_mb() == 10.0
+        with mock.patch.object(sys, "platform", "linux"):
+            assert peak_rss_mb() == 10240.0
 
 
 def test_pipeline_works_with_docling_blocked():

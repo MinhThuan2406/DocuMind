@@ -69,7 +69,7 @@ def refine_table_headers(
         or ch <= 0.0
         or not any(lbl in _ROW_OR_HEADER_LABELS for lbl, _, _ in objects)
     ):
-        return replace(table, source="auto")
+        return replace(table, source="auto_refined")
 
     row_spans = _row_y_spans_pt(table)
     sy = (crop_box_pt[3] - crop_box_pt[1]) / ch
@@ -91,7 +91,7 @@ def refine_table_headers(
         )
         for c in table.cells
     )
-    return replace(table, cells=new_cells, source="auto")
+    return replace(table, cells=new_cells, source="auto_refined")
 
 
 class AutoTableExtractor:
@@ -160,13 +160,23 @@ class AutoTableExtractor:
 
         t0 = time.perf_counter()
         out: list[ExtractedTable] = []
+        warnings: list[dict[str, Any]] = []
+        page_no = getattr(page, "page_number", None)
 
         if is_raster:
             ocr_rec = self._get_ocr(ocr_backend, device)
             for box in table_boxes_pt:
                 crop, crop_box = crop_page_region(page, box, dpi)
                 box_tokens = ocr_crop_tokens(ocr_rec, crop, crop_box)
-                out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto"))
+                if not box_tokens:
+                    warnings.append({
+                        "page": page_no,
+                        "code": "table_ocr_empty_tokens",
+                        "severity": "warning",
+                        "reason": "ocr_returned_no_tokens_in_table_crop",
+                        "fallback": "tatr_structure_only",
+                    })
+                out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
         else:
             pl_tables = self._get_plumber().extract_from_page(page, table_boxes_pt)
             cached_tokens: list[tuple[str, BBox]] | None = None if words is None else [(w.text, w.bbox) for w in words]
@@ -183,14 +193,14 @@ class AutoTableExtractor:
                 if pl_tbl.num_rows == 0 or pl_tbl.num_cols == 0 or (pl_tbl.num_rows == 1 and pl_tbl.num_cols == 1):
                     crop, crop_box = crop_page_region(page, box, dpi)
                     box_tokens = tokens_in_box(get_native_tokens(), crop_box)
-                    out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto"))
+                    out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
                 elif pl_tbl.num_cols == 1 and pl_tbl.num_rows >= 2:
                     crop, crop_box = crop_page_region(page, box, dpi)
                     box_tokens = tokens_in_box(get_native_tokens(), crop_box)
                     objects = tatr.detect_objects(crop)
                     tatr_tbl = objects_to_table(objects, crop.size, crop_box, box_tokens)
                     if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
-                        out.append(replace(tatr_tbl, source="auto"))
+                        out.append(replace(tatr_tbl, source="auto_tatr"))
                     else:
                         out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
                 else:
@@ -204,6 +214,7 @@ class AutoTableExtractor:
             pages=1,
             peak_rss_mb=peak_rss_mb(),
             in_process=True,
+            warnings=tuple(warnings),
         )
         return out
 
@@ -226,4 +237,4 @@ class AutoTableExtractor:
             peak_rss_mb=peak_rss_mb(),
             in_process=True,
         )
-        return replace(tbl, source="auto")
+        return replace(tbl, source="auto_tatr")

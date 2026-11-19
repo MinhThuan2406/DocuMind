@@ -134,7 +134,18 @@ class PdfPlumberTableExtractor:
     def __init__(self) -> None:
         self.last_stats: RunStats | None = None
 
-    def extract_from_page(self, page: Any, table_boxes_pt: Sequence[BBox]) -> list[ExtractedTable]:
+    def extract_from_page(
+        self,
+        page: Any,
+        table_boxes_pt: Sequence[BBox],
+        *,
+        words: Sequence[Any] | None = None,
+        is_raster: bool = False,
+        ocr_backend: str = "rapidocr-onnx",
+        device: str | None = None,
+        dpi: int = 200,
+    ) -> list[ExtractedTable]:
+        del words, is_raster, ocr_backend, device, dpi
         t0 = time.perf_counter()
         out: list[ExtractedTable] = []
         for box in table_boxes_pt:

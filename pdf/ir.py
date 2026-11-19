@@ -5,9 +5,9 @@ from typing import Any
 
 import pdfplumber
 
-from ._pdf_io import extract_toc, extract_words_raw, page_bbox
+from ._pdf_io import PdfContext, extract_toc, extract_words_raw, page_bbox
 from .assemble import AssembledItem, assemble_page, tag_running_headers_footers
-from .backends import FigureGrouper, LayoutBackend, PageReader, TableExtractor
+from .backends import FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage
 from .router import classify_page
@@ -54,26 +54,37 @@ def _uses_ocr_fallback(prof: PageProfile, ocr: bool) -> bool:
     return ocr and (prof.kind == "raster" or (prof.kind == "hybrid" and prof.suspect_ocr_layer))
 
 
+def _collect_stats_warnings(backend: Any, prev_stats: Any, warnings: list[dict[str, Any]]) -> None:
+    stats = getattr(backend, "last_stats", None)
+    if stats is not None and stats is not prev_stats:
+        for w in getattr(stats, "warnings", ()):
+            warnings.append(dict(w))
+
+
 def extract_ir(
     path: str | Path,
     *,
     figures: bool = True,
     ocr: bool = True,
     tables: bool = False,
+    diagrams: bool = False,
     layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr-onnx",
     table_backend: str | TableExtractor = "auto",
+    diagram_backend: str = "vector_first",
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
 ) -> dict[str, Any]:
+    del diagrams, diagram_backend
     pdf_path = Path(path)
     source_file = pdf_path.name
-    toc = extract_toc(pdf_path) if structure else ()
 
-    with pdfplumber.open(str(pdf_path)) as doc:
+    with PdfContext(pdf_path) as ctx:
+        toc = extract_toc(pdf_path, pdfium_doc=ctx.pdfium) if structure else ()
+        doc = ctx.plumber
         profiles: list[PageProfile] = []
         raw_words_by_page: dict[int, list[dict[str, Any]]] = {}
         page_sizes: list[dict[str, Any]] = []
@@ -108,7 +119,16 @@ def extract_ir(
         if figures and candidate_pages:
             from .figures import detect_figures
 
-            figures_by_page = detect_figures(pdf_path, candidate_pages, layout=layout, grouper=grouper, device=device)
+            figures_by_page = detect_figures(
+                pdf_path,
+                candidate_pages,
+                layout=layout,
+                grouper=grouper,
+                device=device,
+                pdfium_doc=ctx.pdfium,
+                pdf_hash=ctx.pdf_hash,
+                warnings_out=warnings,
+            )
 
         raster_by_page: dict[int, RasterPage] = {}
         if ocr:
@@ -116,19 +136,34 @@ def extract_ir(
             if raster_pages:
                 from .raster import read_raster_pages
 
+                resolved_reader = (
+                    get_backend(
+                        "reader",
+                        reader,
+                        layout=layout if isinstance(layout, str) else "heron-onnx",
+                        ocr_backend=ocr_backend,
+                        device=device,
+                    )
+                    if isinstance(reader, str)
+                    else reader
+                )
+                prev_reader_stats = getattr(resolved_reader, "last_stats", None)
                 raster_by_page = read_raster_pages(
                     pdf_path,
                     raster_pages,
-                    reader=reader,
+                    reader=resolved_reader,
                     layout=layout if isinstance(layout, str) else "heron-onnx",
                     ocr_backend=ocr_backend,
                     device=device,
+                    pdfium_doc=ctx.pdfium,
                 )
+                _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
 
         elements: list[dict[str, Any]] = []
         extracted_tables: list[dict[str, Any]] = []
         elem_counter = 0
         tbl_counter = 0
+        resolved_table_backend: TableExtractor | None = None
 
         for prof in profiles:
             page = doc.pages[prof.page - 1]
@@ -159,17 +194,32 @@ def extract_ir(
                 if tbl_elems:
                     from .tables import extract_tables_on_page, table_to_ir_dict
 
+                    if resolved_table_backend is None:
+                        resolved_table_backend = (
+                            get_backend("table", table_backend, device=device)
+                            if isinstance(table_backend, str)
+                            else table_backend
+                        )
+                    prev_tbl_stats = getattr(resolved_table_backend, "last_stats", None)
                     parsed_tables = extract_tables_on_page(
                         page,
                         [tuple(e["bbox"]) for e in tbl_elems],
                         words=words,
                         is_raster=use_ocr,
-                        extractor=table_backend,
+                        extractor=resolved_table_backend,
                         ocr_backend=ocr_backend,
                         device=device,
                     )
+                    _collect_stats_warnings(resolved_table_backend, prev_tbl_stats, warnings)
                     for tbl_elem, parsed in zip(tbl_elems, parsed_tables):
                         if parsed.num_rows == 0 or parsed.num_cols == 0:
+                            warnings.append({
+                                "page": prof.page,
+                                "code": "table_parse_empty",
+                                "severity": "warning",
+                                "reason": "table_extractor_returned_empty_grid",
+                                "fallback": None,
+                            })
                             continue
                         tbl_counter += 1
                         tbl_id = f"tbl_{tbl_counter:04d}"

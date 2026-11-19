@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -56,9 +57,27 @@ class ImageLayoutBackend:
         self.revision = revision
         self.cache_dpi = dpi
         self.last_stats: RunStats | None = None
+        self.last_rendered: dict[int, np.ndarray] = {}
+        self._shared_pdfium_doc: tuple[Path, Any] | None = None
 
-    def analyze(self, pdf_path: str | Path, pages: Sequence[int]) -> dict[int, PageLayout]:
+    @contextmanager
+    def _use_pdfium_doc(self, pdf_path: str | Path, pdfium_doc: Any) -> Iterator[None]:
+        prev = self._shared_pdfium_doc
+        self._shared_pdfium_doc = (Path(pdf_path).resolve(), pdfium_doc)
+        try:
+            yield
+        finally:
+            self._shared_pdfium_doc = prev
+
+    def analyze(
+        self,
+        pdf_path: str | Path,
+        pages: Sequence[int],
+        *,
+        pdfium_doc: Any = None,
+    ) -> dict[int, PageLayout]:
         target_pages = sorted(set(pages))
+        self.last_rendered.clear()
         if not target_pages:
             return {}
         load_sec = 0.0
@@ -68,7 +87,14 @@ class ImageLayoutBackend:
             if ensure():
                 load_sec = time.perf_counter() - t_load0
 
-        doc = pdfium.PdfDocument(str(pdf_path))
+        resolved = Path(pdf_path).resolve()
+        shared = (
+            self._shared_pdfium_doc[1]
+            if pdfium_doc is None and self._shared_pdfium_doc is not None and self._shared_pdfium_doc[0] == resolved
+            else pdfium_doc
+        )
+        owns_doc = shared is None
+        doc = pdfium.PdfDocument(str(pdf_path)) if owns_doc else shared
         t0 = time.perf_counter()
         out: dict[int, PageLayout] = {}
         try:
@@ -76,10 +102,12 @@ class ImageLayoutBackend:
                 if not (1 <= pno <= len(doc)):
                     raise ValueError(f"page {pno} out of range 1..{len(doc)}")
                 bgr, _ = render_bgr(doc[pno - 1], self.cache_dpi)
+                self.last_rendered[pno] = bgr
                 items, frame = run_layout_items(self.detector, bgr)
                 out[pno] = PageLayout(items=items, frame=frame)
         finally:
-            doc.close()
+            if owns_doc:
+                doc.close()
         self.last_stats = RunStats(
             load_sec=round(load_sec, 4),
             infer_sec=round(time.perf_counter() - t0, 4),
@@ -88,3 +116,15 @@ class ImageLayoutBackend:
             in_process=True,
         )
         return out
+
+    def analyze_with_images(
+        self,
+        pdf_path: str | Path,
+        pages: Sequence[int],
+        *,
+        pdfium_doc: Any = None,
+    ) -> tuple[dict[int, PageLayout], dict[int, np.ndarray]]:
+        layouts = self.analyze(pdf_path, pages, pdfium_doc=pdfium_doc)
+        images = dict(self.last_rendered)
+        self.last_rendered.clear()
+        return layouts, images

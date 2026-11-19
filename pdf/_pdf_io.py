@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,52 @@ from PIL import Image
 from .models import BBox
 
 WORD_X_TOLERANCE_RATIO = 0.15
+
+
+class PdfContext:
+    def __init__(self, pdf_path: str | Path) -> None:
+        self.pdf_path = Path(pdf_path)
+        self._plumber: Any = None
+        self._pdfium: pdfium.PdfDocument | None = None
+        self._pdf_hash: str | None = None
+
+    @property
+    def plumber(self) -> Any:
+        if self._plumber is None:
+            self._plumber = pdfplumber.open(str(self.pdf_path))
+        return self._plumber
+
+    @property
+    def pdfium(self) -> pdfium.PdfDocument:
+        if self._pdfium is None:
+            self._pdfium = pdfium.PdfDocument(str(self.pdf_path))
+        return self._pdfium
+
+    @property
+    def pdf_hash(self) -> str:
+        if self._pdf_hash is None:
+            from .backends.layout_cache import file_sha256
+
+            self._pdf_hash = file_sha256(self.pdf_path)
+        return self._pdf_hash
+
+    def close(self) -> None:
+        if self._plumber is not None:
+            try:
+                self._plumber.close()
+            finally:
+                self._plumber = None
+        if self._pdfium is not None:
+            try:
+                self._pdfium.close()
+            finally:
+                self._pdfium = None
+
+    def __enter__(self) -> PdfContext:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
 
 
 def page_bbox(page: Any) -> BBox:
@@ -39,8 +86,9 @@ def extract_words_raw(page: Any, *, with_style: bool = False) -> list[dict[str, 
     return list(page.extract_words(**kwargs))
 
 
-def extract_toc(pdf_path: str | Path) -> list[tuple[int, str, int]]:
-    doc = pdfium.PdfDocument(str(pdf_path))
+def extract_toc(pdf_path: str | Path, *, pdfium_doc: Any = None) -> list[tuple[int, str, int]]:
+    owns_doc = pdfium_doc is None
+    doc = pdfium.PdfDocument(str(pdf_path)) if owns_doc else pdfium_doc
     try:
         out: list[tuple[int, str, int]] = []
         for bm in doc.get_toc():
@@ -51,7 +99,8 @@ def extract_toc(pdf_path: str | Path) -> list[tuple[int, str, int]]:
             out.append((int(bm.level) + 1, str(bm.get_title()), int(idx) + 1))
         return out
     finally:
-        doc.close()
+        if owns_doc:
+            doc.close()
 
 
 def render_bgr(page: Any, dpi: int) -> tuple[np.ndarray, tuple[int, int]]:
@@ -68,3 +117,26 @@ def render_bgr(page: Any, dpi: int) -> tuple[np.ndarray, tuple[int, int]]:
 
 def crop_page_rgb(page: Any, clip_bbox: BBox, dpi: int) -> Image.Image:
     return page.crop(clip_bbox).to_image(resolution=dpi).original.convert("RGB")
+
+
+def crop_page_rgb_with_bbox(
+    page: Any,
+    clip_bbox: BBox,
+    dpi: int,
+    *,
+    pad_pt: float = 0.0,
+    max_pixels: int = 25_000_000,
+) -> tuple[Image.Image, BBox]:
+    bounds = page_bbox(page)
+    padded = (
+        (clip_bbox[0] - pad_pt, clip_bbox[1] - pad_pt, clip_bbox[2] + pad_pt, clip_bbox[3] + pad_pt)
+        if pad_pt
+        else clip_bbox
+    )
+    clip = clip_box(padded, bounds) or bounds
+    eff_dpi = dpi
+    if max_pixels > 0:
+        est_pixels = ((clip[2] - clip[0]) * dpi / 72.0) * ((clip[3] - clip[1]) * dpi / 72.0)
+        if est_pixels > max_pixels:
+            eff_dpi = max(1, int(dpi * math.sqrt(max_pixels / est_pixels)))
+    return crop_page_rgb(page, clip, eff_dpi), clip

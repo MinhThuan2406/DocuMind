@@ -287,15 +287,26 @@ def postprocess_layout(
 
 
 def clusters_to_items(clusters: Sequence[Cluster]) -> list[dict[str, object]]:
-    # Mirrors PageAssembleModel + ReadingOrderModel.iterate_leaves for cell-free image input:
-    # empty containers (form / key_value_region) yield no leaf items.
+    # Mirrors PageAssembleModel + ReadingOrderModel.iterate_leaves for cell-free image input.
     ordered = sorted(clusters, key=lambda c: (c.bbox[1], c.bbox[0]))
     out: list[dict[str, object]] = []
     for cluster in ordered:
         if cluster.label in _CONTAINER_TYPES:
             if cluster.children:
                 for ch in cluster.children:
-                    out.append({"order": len(out), "label": ch.label, "bbox": list(ch.bbox), "text": ""})
+                    out.append({
+                        "order": len(out),
+                        "label": ch.label,
+                        "bbox": list(ch.bbox),
+                        "text": "",
+                        "score": round(float(ch.confidence), 4),
+                    })
             continue
-        out.append({"order": len(out), "label": cluster.label, "bbox": list(cluster.bbox), "text": ""})
+        out.append({
+            "order": len(out),
+            "label": cluster.label,
+            "bbox": list(cluster.bbox),
+            "text": "",
+            "score": round(float(cluster.confidence), 4),
+        })
     return out
