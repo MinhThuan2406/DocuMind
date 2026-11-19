@@ -248,13 +248,29 @@ def test_hybrid_suspect_ocr_layer_fallback_vs_ocr_disabled():
             figures_mod.detect_figures = orig_detect
 
         assert ir_on["metadata"]["unreadable_pages"] == []
-        assert ir_on["metadata"]["warnings"] == [{"page": 1, "reason": "suspect_ocr_layer", "fallback": "ocr"}]
+        assert ir_on["metadata"]["warnings"] == [
+            {
+                "page": 1,
+                "code": "suspect_ocr_layer",
+                "severity": "warning",
+                "reason": "suspect_ocr_layer",
+                "fallback": "ocr",
+            }
+        ]
         assert [e["text"] for e in ir_on["elements"]] == ["Clean OCR fallback"]
         assert ir_on["elements"][0]["source"] == "ocr"
 
         ir_off = extract_ir(pdf_path, figures=False, ocr=False)
         assert ir_off["metadata"]["unreadable_pages"] == []
-        assert ir_off["metadata"]["warnings"] == [{"page": 1, "reason": "suspect_ocr_layer"}]
+        assert ir_off["metadata"]["warnings"] == [
+            {
+                "page": 1,
+                "code": "suspect_ocr_layer",
+                "severity": "warning",
+                "reason": "suspect_ocr_layer",
+                "fallback": None,
+            }
+        ]
         assert any("hidden" in e["text"] for e in ir_off["elements"])
         assert all(e["source"] == "text_layer" for e in ir_off["elements"])
 
@@ -320,6 +336,23 @@ def test_raster_table_child_nesting_and_empty_table():
     assert len(items_shifted) == 2
     assert items_shifted[0].kind == "table" and items_shifted[0].level == 1
     assert items_shifted[1].level == 2 and items_shifted[1].parent_index == 0 and items_shifted[1].label == "table"
+
+
+def test_zero_page_pdf_extract_ir_structure_true_without_handle_leak():
+    import pypdfium2 as pdfium
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "empty.pdf"
+        doc = pdfium.PdfDocument.new()
+        doc.save(str(pdf_path))
+        doc.close()
+
+        ir = extract_ir(pdf_path, figures=True, ocr=True, tables=True, structure=True)
+        assert ir["metadata"]["pages"] == []
+        assert ir["metadata"]["warnings"] == []
+        assert ir["metadata"]["outline"] == []
+        assert ir["elements"] == []
+        assert ir["tables"] == []
 
 
 def main():

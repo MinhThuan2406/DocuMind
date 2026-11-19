@@ -83,8 +83,8 @@ def extract_ir(
     source_file = pdf_path.name
 
     with PdfContext(pdf_path) as ctx:
-        toc = extract_toc(pdf_path, pdfium_doc=ctx.pdfium) if structure else ()
         doc = ctx.plumber
+        toc = extract_toc(pdf_path, pdfium_doc=ctx.pdfium) if (structure and doc.pages) else ()
         profiles: list[PageProfile] = []
         raw_words_by_page: dict[int, list[dict[str, Any]]] = {}
         page_sizes: list[dict[str, Any]] = []
@@ -105,10 +105,13 @@ def extract_ir(
                 "figure_candidate": prof.figure_candidate,
             })
             if prof.kind == "hybrid" and prof.suspect_ocr_layer:
-                warn: dict[str, Any] = {"page": idx, "reason": "suspect_ocr_layer"}
-                if ocr:
-                    warn["fallback"] = "ocr"
-                warnings.append(warn)
+                warnings.append({
+                    "page": idx,
+                    "code": "suspect_ocr_layer",
+                    "severity": "warning",
+                    "reason": "suspect_ocr_layer",
+                    "fallback": "ocr" if ocr else None,
+                })
             if prof.kind == "raster" and not ocr:
                 unreadable_pages.append({"page": idx, "reason": "raster_page_ocr_disabled"})
 

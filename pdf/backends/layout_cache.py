@@ -49,7 +49,12 @@ class LayoutCache:
                 return None
             items = data.get("items")
             page_size = data.get("page_size")
-            if not isinstance(items, list) or not isinstance(page_size, (list, tuple)) or len(page_size) != 2:
+            if (
+                not isinstance(items, list)
+                or not all(isinstance(it, dict) for it in items)
+                or not isinstance(page_size, (list, tuple))
+                or len(page_size) != 2
+            ):
                 return None
             return items, (float(page_size[0]), float(page_size[1]))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):

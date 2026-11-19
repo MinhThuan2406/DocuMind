@@ -51,6 +51,8 @@ class _TableTreeParser(HTMLParser):
             node = _HtmlNode("tr")
             self._stack[-1].children.append(node)
             self._stack.append(node)
+        elif t == "br" and self._in_cell:
+            self._cell_parts.append(" ")
         elif t in ("td", "th") and self._stack:
             attr_map = {k.lower(): (v or "") for k, v in attrs}
             try:
@@ -264,6 +266,7 @@ def load_omnidoc_tables(
     language: str = "english",
     split: str | None = "dev",
     limit: int | None = None,
+    whole_pages: bool = False,
     gt_file: Path | None = None,
     img_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -301,8 +304,10 @@ def load_omnidoc_tables(
                 "html": gt_html,
                 "has_merged": ("colspan=" in gt_html or "rowspan=" in gt_html),
             })
-            if limit is not None and len(out) >= limit:
+            if not whole_pages and limit is not None and len(out) >= limit:
                 return out
+        if whole_pages and limit is not None and len(out) >= limit:
+            return out
     return out
 
 
@@ -351,7 +356,7 @@ def bench_omnidoc(
     from pdf.backends.rss import peak_rss_mb
     from pdf.backends.tatr_onnx import table_to_html
 
-    samples = load_omnidoc_tables(language="english", split=split, limit=limit)
+    samples = load_omnidoc_tables(language="english", split=split, limit=limit, whole_pages=(mode == "e2e"))
     if not samples:
         raise FileNotFoundError(f"OmniDocBench table samples not found for split={split!r}")
 
@@ -573,7 +578,7 @@ def bench_autosar(*, split: str = "dev", device: str = "auto", max_tables: int =
         pdf_path = ROOT / "datasets" / "AUTOSAR" / fname
         if not pdf_path.is_file():
             continue
-        figs = detect_figures(pdf_path, pages, layout="heron", device=device)
+        figs = detect_figures(pdf_path, pages, layout="heron-onnx", device=device)
         for pno in pages:
             tboxes = [b.bbox for b in figs.get(pno, ()) if b.kind == "table"]
             if tboxes:
@@ -669,7 +674,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(row, ensure_ascii=False))
         logged_results.extend(rows)
 
-    if args.task in ("omnidoc", "all") and logged_results:
+    if logged_results:
         append_run_log(
             Path(args.log_file),
             {

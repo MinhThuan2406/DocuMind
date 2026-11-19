@@ -463,6 +463,25 @@ def test_extract_ir_single_pdf_open_and_no_double_render():
             assert layout_backend.last_rendered == {}
             assert layout_backend.last_stats is not None and layout_backend.last_stats.pages == 20
 
+            first_stats = layout_backend.last_stats
+            figs_20_cached = figures_mod.detect_figures(
+                multi_pdf, list(range(1, 21)), layout=layout_backend, cache_dir=tmp_path / "multi_cache"
+            )
+            assert len(figs_20_cached) == 20
+            assert layout_backend.last_stats is not first_stats and layout_backend.last_stats.pages == 0
+
+            bad_cache = cache_mod.LayoutCache(
+                tmp_path / "bad_item_cache",
+                backend="x",
+                revision="1",
+                dpi=150,
+                pdf_hash="abc",
+            )
+            bad_p = bad_cache.path_for(1)
+            bad_p.parent.mkdir(parents=True, exist_ok=True)
+            bad_p.write_text('{"items": [123], "page_size": [400, 300]}', encoding="utf-8")
+            assert bad_cache.load(1) is None
+
             with pdfplumber.open(str(pdf_path)) as doc:
                 crop, crop_box = pdf_io_mod.crop_page_rgb_with_bbox(
                     doc.pages[0], (10.0, 10.0, 110.0, 110.0), 150, pad_pt=5.0, max_pixels=10_000

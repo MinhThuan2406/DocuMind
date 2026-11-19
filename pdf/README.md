@@ -113,7 +113,7 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 ## 3. IR differences
 
 - **From `parsers/pptx_ir.py`:** uses the same 7 top-level keys (`doc_id`, `source_file`, `doc_type="pdf"`, `metadata`, `elements`, `tables`, `diagrams=[]`) and `coord_unit="pt"`, `reading_order` 0-based per page. Differences: PDF elements emit `type` in `{"text", "figure", "table"}`, include top-level `source` and `confidence`, preserve `font_size` and `bold` in `elements[].metadata` (and `layout_label` for OCR blocks), keep `table_id` only in `elements[].metadata` (not top-level `element`), emit `source`/`confidence`/`html` on `tables[]` when `tables=True` (no per-cell `confidence` yet), and use `source_ref: {file, page, bbox}` (no `shape_id`).
-- **From `docs/01_architecture_and_ir_schema.md` (`feat/structure-and-diagram-recovery`):** coordinates are PDF `pt` instead of page pixels; `reading_order` is per-page 0-based instead of document-wide; `diagrams` is `[]` (placeholder `diagrams` / `diagram_backend` kwargs on `extract_ir()` only) and `tables` is populated only when `tables=True`; `type` is normalized to `text`/`figure`/`table`; every element carries `source` (`text_layer` / `ocr` / `v1_group` / `layout_picture` / `vector_only` / `layout_table`).
+- **From `docs/01_architecture_and_ir_schema.md` (`feat/structure-and-diagram-recovery`):** coordinates are PDF `pt` instead of page pixels; `reading_order` is per-page 0-based instead of document-wide; `diagrams` is `[]` (placeholder `diagrams` / `diagram_backend` kwargs on `extract_ir()` only) and `tables` is populated only when `tables=True`; `type` is normalized to `text`/`figure`/`table`; every element carries `source` (`text_layer` / `ocr` / `v1_group` / `layout_picture` / `layout_table`).
 
 ## 4. Measured results (Windows, `.venv` Python 3.12, zero Docling)
 
@@ -156,7 +156,7 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
 ## 5. Known limits
 
 - Default full-pipeline execution (`heron-onnx` + `rapidocr-onnx`) uses `onnxruntime`, avoiding `torch` and `transformers`; the PyTorch `heron` and `rapidocr-torch` backends remain available by name.
-- Table cell extraction requires `tables=True` (default `False` on `extract_ir()`); `cells[]` do not yet carry per-cell `confidence`.
+- Table cell extraction requires `tables=True` (default `False` on `extract_ir()`) and relies on `table` regions detected via `figures=True` or `ocr=True` (with `figures=False, ocr=False, tables=True`, `tables` stays `[]`); `cells[]` do not yet carry per-cell `confidence`.
 - No diagram node-edge reconstruction yet (`diagrams` is always `[]`; `diagrams` / `diagram_backend` on `extract_ir()` are placeholders until `DiagramExtractor` is implemented).
 - Repeating running headers/footers are tagged (`metadata.role`), not dropped, and sub-visible watermarks (e.g., 2 pt text) are not filtered by default (`min_font_size=0.0`) so word parity with `get_text("words")` holds.
 - If `v1_group` absorbs an adjacent `table` (`<= 45 px` gap) into a figure box, the `>= 50%` overlap filter drops the standalone `table` box.

@@ -8,7 +8,10 @@ from typing import Any
 import pypdfium2 as pdfium
 
 from .backends import CachedLayoutBackend, FigureGrouper, LayoutBackend, get as get_backend
+from .backends.base import RunStats
+from .backends.layout_cache import file_sha256
 from .backends.layout_image import render_bgr
+from .backends.rss import peak_rss_mb
 from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox
 
 DEFAULT_DPI = 150
@@ -93,6 +96,7 @@ def detect_figures(
         if isinstance(rendered_cache, dict):
             rendered_cache.clear()
         cached_backend = CachedLayoutBackend(backend, cache_root)
+        resolved_hash = pdf_hash or file_sha256(path)
         can_reuse_bgr = getattr(backend, "cache_dpi", None) == dpi and isinstance(rendered_cache, dict)
         batch_size = DEFAULT_RENDER_BATCH_SIZE if isinstance(rendered_cache, dict) else len(target_pages)
         batches = [target_pages[i : i + batch_size] for i in range(0, len(target_pages), batch_size)]
@@ -104,7 +108,7 @@ def detect_figures(
         with doc_ctx:
             for batch in batches:
                 prev_stats = getattr(backend, "last_stats", None)
-                layouts = cached_backend.analyze(path, batch, pdf_hash=pdf_hash)
+                layouts = cached_backend.analyze(path, batch, pdf_hash=resolved_hash)
                 cur_stats = getattr(backend, "last_stats", None)
                 if cur_stats is not None and cur_stats is not prev_stats:
                     batch_stats.append(cur_stats)
@@ -156,17 +160,24 @@ def detect_figures(
                         )
                     results[pno] = page_boxes
 
-        if len(batch_stats) > 1 and hasattr(backend, "last_stats"):
-            from .backends.base import RunStats
-
-            backend.last_stats = RunStats(
-                load_sec=round(max(s.load_sec for s in batch_stats), 4),
-                infer_sec=round(sum(s.infer_sec for s in batch_stats), 4),
-                pages=sum(s.pages for s in batch_stats),
-                peak_rss_mb=max(s.peak_rss_mb for s in batch_stats),
-                in_process=all(s.in_process for s in batch_stats),
-                warnings=tuple(w for s in batch_stats for w in getattr(s, "warnings", ())),
-            )
+        if hasattr(backend, "last_stats"):
+            if len(batch_stats) == 0:
+                backend.last_stats = RunStats(
+                    load_sec=0.0,
+                    infer_sec=0.0,
+                    pages=0,
+                    peak_rss_mb=peak_rss_mb(),
+                    in_process=True,
+                )
+            elif len(batch_stats) > 1:
+                backend.last_stats = RunStats(
+                    load_sec=round(max(s.load_sec for s in batch_stats), 4),
+                    infer_sec=round(sum(s.infer_sec for s in batch_stats), 4),
+                    pages=sum(s.pages for s in batch_stats),
+                    peak_rss_mb=max(s.peak_rss_mb for s in batch_stats),
+                    in_process=all(s.in_process for s in batch_stats),
+                    warnings=tuple(w for s in batch_stats for w in getattr(s, "warnings", ())),
+                )
     finally:
         if isinstance(rendered_cache, dict):
             rendered_cache.clear()

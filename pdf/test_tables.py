@@ -687,6 +687,56 @@ def test_table_ir_top_level_fields_and_empty_table_warning():
     assert any(w.get("code") == "backend_note" for w in ir["metadata"]["warnings"])
 
 
+def test_table_to_html_preserves_full_rowspan_tr_and_br_whitespace():
+    from pdf.eval.tables import parse_table_html, teds_score
+    from pdf.models import ExtractedTable, TableCell
+
+    tbl_1col = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        num_rows=2,
+        num_cols=1,
+        cells=(TableCell(0, 0, 2, 1, "A", (0.0, 0.0, 100.0, 100.0)),),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    html_1col = table_to_html(tbl_1col)
+    assert html_1col == '<table><tr><td rowspan="2">A</td></tr><tr></tr></table>'
+    assert teds_score(html_1col, '<table><tr><td rowspan="2">A</td></tr><tr></tr></table>', structure_only=True) == 1.0
+
+    tbl_2col = ExtractedTable(
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        num_rows=2,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 2, 1, "A", (0.0, 0.0, 50.0, 100.0)),
+            TableCell(0, 1, 2, 1, "B", (50.0, 0.0, 100.0, 100.0)),
+        ),
+        source="tatr_onnx",
+        confidence=0.9,
+    )
+    html_2col = table_to_html(tbl_2col)
+    assert html_2col.count("<tr>") == 2
+    assert (
+        teds_score(
+            html_2col,
+            '<table><tr><td rowspan="2">A</td><td rowspan="2">B</td></tr><tr></tr></table>',
+            structure_only=True,
+        )
+        == 1.0
+    )
+
+    root = parse_table_html("<table><tr><td>hello<br>world<br/>again</td></tr></table>")
+    assert root.children[0].children[0].text == "hello world again"
+    assert (
+        teds_score(
+            "<table><tr><td>hello<br>world</td></tr></table>",
+            "<table><tr><td>hello world</td></tr></table>",
+            structure_only=False,
+        )
+        == 1.0
+    )
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -276,6 +276,30 @@ def test_load_omnidoc_tables_deterministic_disjoint_splits():
         assert dev_imgs.isdisjoint(test_imgs)
         assert dev_imgs | test_imgs == set(names)
 
+        # Multi-table page keeps all tables on that page when whole_pages=True.
+        multi_gt = tmp_path / "multi_omni.json"
+        (img_dir / "multi.png").write_bytes(b"x")
+        multi_gt.write_text(
+            json.dumps([
+                {
+                    "page_info": {"image_path": "multi.png", "page_attribute": {"language": "english"}},
+                    "layout_dets": [
+                        {"category_type": "table", "poly": [0, 0, 50, 0, 50, 50, 0, 50], "html": "<table><tr><td>1</td></tr></table>"},
+                        {"category_type": "table", "poly": [0, 60, 50, 60, 50, 100, 0, 100], "html": "<table><tr><td>2</td></tr></table>"},
+                    ],
+                }
+            ]),
+            encoding="utf-8",
+        )
+        assert len(load_omnidoc_tables(split=None, limit=1, whole_pages=False, gt_file=multi_gt, img_dir=img_dir)) == 1
+        assert len(load_omnidoc_tables(split=None, limit=1, whole_pages=True, gt_file=multi_gt, img_dir=img_dir)) == 2
+
+
+def test_compare_raster_test_split_refused():
+    from pdf.eval import compare
+
+    assert compare.main(["--task", "raster", "--split", "test"]) == 2
+
 
 def test_synthetic_reading_order_fixtures():
     res = bench_synthetic_reading_order()

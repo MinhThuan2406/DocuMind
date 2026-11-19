@@ -263,12 +263,15 @@ def table_to_html(table: ExtractedTable) -> str:
     if table.num_rows == 0 or table.num_cols == 0 or not table.cells:
         return "<table></table>"
     rows: dict[int, list[TableCell]] = {}
+    covered_rows: set[int] = set()
     for cell in table.cells:
         rows.setdefault(cell.row, []).append(cell)
+        for covered_r in range(cell.row + 1, min(table.num_rows, cell.row + cell.rowspan)):
+            covered_rows.add(covered_r)
     out = ["<table>"]
     for r in range(table.num_rows):
         row_cells = sorted(rows.get(r, ()), key=lambda c: c.col)
-        if not row_cells:
+        if not row_cells and r not in covered_rows:
             continue
         out.append("<tr>")
         for cell in row_cells:

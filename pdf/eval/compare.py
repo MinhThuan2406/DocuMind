@@ -264,9 +264,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
-    if args.task == "figures" and args.split == "test" and not args.final:
-        print("REFUSED: --split test requires --final to prevent accidental test-split evaluation.", file=sys.stderr)
-        return 2
+    if args.split == "test":
+        if args.task == "raster":
+            print(
+                "REFUSED: --task raster evaluates the fixed OmniDocBench dev sample set and has no test split.",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.final:
+            print("REFUSED: --split test requires --final to prevent accidental test-split evaluation.", file=sys.stderr)
+            return 2
 
     names = [b.strip() for b in args.backends.split(",") if b.strip()]
     if not names:
