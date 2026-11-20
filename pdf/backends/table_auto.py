@@ -319,7 +319,7 @@ class AutoTableExtractor:
                         crop, crop_box = crop_page_region(page, box, dpi)
                         crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
                         out.append(replace(tatr.extract(crop, crop_box, crop_tokens), source="auto_tatr"))
-                    elif pl_tbl.num_cols == 1 and pl_tbl.num_rows >= 2:
+                    elif (pl_tbl.num_cols == 1 or pl_tbl.num_rows == 1) and pl_tbl.num_rows * pl_tbl.num_cols >= 2:
                         crop, crop_box = crop_page_region(page, box, dpi)
                         crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
                         objects = tatr.detect_objects(crop)

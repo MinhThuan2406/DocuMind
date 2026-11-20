@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ._pdf_io import clip_box, page_bbox
+from ._pdf_io import clip_box, crop_page_rgb_with_bbox, page_bbox, pt_to_px, px_to_pt
 from .backends import DiagramExtractor, get as get_backend
 from .backends.base import RunStats
 from .backends.rss import peak_rss_mb
@@ -15,7 +15,9 @@ from .models import BBox, DiagramEdge, DiagramGroup, DiagramNode, ExtractedDiagr
 
 _BOX_PAD_PT = 2.0
 _LOOP_EPS_PT = 1.5
+_VISUAL_LOOP_EPS_PT = 4.5
 _JOINT_EPS_PT = 2.0
+_VISUAL_JOINT_EPS_PT = 4.5
 _SNAP_DIST_PT = 12.0
 _ARROW_MAX_DIM_PT = 14.0
 _ARROW_MATCH_DIST_PT = 10.0
@@ -264,15 +266,17 @@ def _dedup_poly_pts(pts: Sequence[tuple[float, float]]) -> list[tuple[float, flo
 
 def _reconstruct_rect_loops(
     lines: Sequence[tuple[tuple[float, float], tuple[float, float], bool]],
+    *,
+    loop_eps: float = _LOOP_EPS_PT,
 ) -> tuple[list[_RawShape], set[int]]:
     horiz: list[tuple[int, float, float, float, bool]] = []
     vert: list[tuple[int, float, float, float, bool]] = []
     for idx, (p1, p2, dashed) in enumerate(lines):
         dx = abs(p1[0] - p2[0])
         dy = abs(p1[1] - p2[1])
-        if dy <= _LOOP_EPS_PT and dx > 6.0:
+        if dy <= loop_eps and dx > 6.0:
             horiz.append((idx, min(p1[0], p2[0]), max(p1[0], p2[0]), (p1[1] + p2[1]) * 0.5, dashed))
-        elif dx <= _LOOP_EPS_PT and dy > 6.0:
+        elif dx <= loop_eps and dy > 6.0:
             vert.append((idx, (p1[0] + p2[0]) * 0.5, min(p1[1], p2[1]), max(p1[1], p2[1]), dashed))
 
     shapes: list[_RawShape] = []
@@ -284,17 +288,17 @@ def _reconstruct_rect_loops(
         for hi_bot, bx0, bx1, hy_bot, hd_bot in horiz[i + 1 :]:
             if hy_bot - hy_top <= 8.0:
                 continue
-            if abs(hx0 - bx0) > _LOOP_EPS_PT * 2.0 or abs(hx1 - bx1) > _LOOP_EPS_PT * 2.0:
+            if abs(hx0 - bx0) > loop_eps * 2.0 or abs(hx1 - bx1) > loop_eps * 2.0:
                 continue
             x0 = (hx0 + bx0) * 0.5
             x1 = (hx1 + bx1) * 0.5
             left_match: tuple[int, bool] | None = None
             right_match: tuple[int, bool] | None = None
             for vi, vx, vy0, vy1, vd in vert:
-                if abs(vy0 - hy_top) <= _LOOP_EPS_PT and abs(vy1 - hy_bot) <= _LOOP_EPS_PT:
-                    if left_match is None and abs(vx - x0) <= _LOOP_EPS_PT:
+                if abs(vy0 - hy_top) <= loop_eps and abs(vy1 - hy_bot) <= loop_eps:
+                    if left_match is None and abs(vx - x0) <= loop_eps:
                         left_match = (vi, vd)
-                    elif right_match is None and abs(vx - x1) <= _LOOP_EPS_PT:
+                    elif right_match is None and abs(vx - x1) <= loop_eps:
                         right_match = (vi, vd)
             if left_match is not None and right_match is not None:
                 box = (x0, hy_top, x1, hy_bot)
@@ -405,7 +409,7 @@ def _filter_border_frames(shapes: Sequence[_RawShape], page_box: BBox, fig_box: 
     return out
 
 
-def _chain_polylines(polylines: Sequence[_Polyline]) -> list[_Polyline]:
+def _chain_polylines(polylines: Sequence[_Polyline], *, joint_eps: float = _JOINT_EPS_PT) -> list[_Polyline]:
     if not polylines:
         return []
     work = [_Polyline(pts=list(p.pts), dashed=p.dashed) for p in polylines if len(p.pts) >= 2]
@@ -418,7 +422,7 @@ def _chain_polylines(polylines: Sequence[_Polyline]) -> list[_Polyline]:
 
     def _cluster_for(pt: tuple[float, float]) -> int:
         for cid, cpt in enumerate(clusters):
-            if _dist(pt, cpt) <= _JOINT_EPS_PT:
+            if _dist(pt, cpt) <= joint_eps:
                 return cid
         clusters.append(pt)
         return len(clusters) - 1
@@ -744,6 +748,8 @@ def _is_group_container(idx: int, shapes: Sequence[_RawShape]) -> bool:
 
 def _build_shape_hierarchy(
     shapes: Sequence[_RawShape],
+    *,
+    shape_conf: float = 0.95,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     n_shapes = len(shapes)
     group_indices = sorted(
@@ -762,7 +768,7 @@ def _build_shape_hierarchy(
             "bbox": shapes[s_idx].bbox,
             "parent_group_id": None,
             "words": [],
-            "confidence": 0.95,
+            "confidence": shape_conf,
         }
         for k, s_idx in enumerate(group_indices)
     ]
@@ -776,7 +782,7 @@ def _build_shape_hierarchy(
             "bbox": shapes[s_idx].bbox,
             "parent_group_id": _nearest_parent_group(shapes[s_idx].bbox, group_entries),
             "words": [],
-            "confidence": 0.95,
+            "confidence": shape_conf,
         }
         for k, s_idx in enumerate(node_indices)
     ]
@@ -871,6 +877,8 @@ def _fan_out_forks(
     connectors: Sequence[_Polyline],
     node_entries: Sequence[dict[str, Any]],
     has_arrow_fn: Any,
+    *,
+    joint_eps: float = _JOINT_EPS_PT,
 ) -> list[_Polyline]:
     items = [list(poly.pts) for poly in connectors if len(poly.pts) >= 2]
     dasheds = [poly.dashed for poly in connectors if len(poly.pts) >= 2]
@@ -903,7 +911,7 @@ def _fan_out_forks(
                 for b_end in (0, 1):
                     bfar = 1 - b_end
                     bpt = bpts[0] if b_end == 0 else bpts[-1]
-                    if _dist(jpt, bpt) <= _JOINT_EPS_PT and binfo[f"n{b_end}"] is None and not binfo[f"a{b_end}"]:
+                    if _dist(jpt, bpt) <= joint_eps and binfo[f"n{b_end}"] is None and not binfo[f"a{b_end}"]:
                         if binfo[f"n{bfar}"] is not None or binfo[f"a{bfar}"]:
                             branches.append((bi, b_end))
                             break
@@ -931,6 +939,12 @@ def _extract_edges_and_text_nodes(
     fig_words: Sequence[Word],
     word_clusters: Sequence[tuple[list[int], BBox]],
     used_word_ids: set[int],
+    *,
+    visual_arrows: Sequence[tuple[tuple[float, float], BBox]] = (),
+    joint_eps: float = _JOINT_EPS_PT,
+    edge_conf_snapped: float = 0.95,
+    edge_conf_unsnapped: float = 0.75,
+    text_node_conf: float = 0.85,
 ) -> list[dict[str, Any]]:
     def _has_arrow_at(end_pt: tuple[float, float], prev_pt: tuple[float, float]) -> bool:
         out_dir = _unit_vec(prev_pt, end_pt)
@@ -938,10 +952,17 @@ def _extract_edges_and_text_nodes(
             return False
         if any(_matches_arrow_poly(end_pt, out_dir, ap) for ap in arrow_polys):
             return True
-        return any(
+        if any(
             _dist(end_pt, tip) <= 6.0 and (out_dir[0] * bis[0] + out_dir[1] * bis[1]) > 0.3
             for tip, bis in matched_chevrons
-        )
+        ):
+            return True
+        for cent, abox in visual_arrows:
+            if _point_to_box_dist(end_pt, abox) <= _ARROW_MATCH_DIST_PT:
+                vec = _unit_vec(prev_pt, cent)
+                if vec is not None and (out_dir[0] * vec[0] + out_dir[1] * vec[1]) > 0.35:
+                    return True
+        return False
 
     def _create_text_node_at(end_pt: tuple[float, float], prev_pt: tuple[float, float]) -> str | None:
         best_cidx = _match_text_node_cluster(end_pt, prev_pt, word_clusters, used_word_ids)
@@ -957,12 +978,12 @@ def _extract_edges_and_text_nodes(
                 "bbox": cbox,
                 "parent_group_id": _nearest_parent_group(cbox, group_entries),
                 "words": [fig_words[k] for k in w_idxs],
-                "confidence": 0.85,
+                "confidence": text_node_conf,
             }
         )
         return nid
 
-    resolved_connectors = _fan_out_forks(connectors, node_entries, _has_arrow_at)
+    resolved_connectors = _fan_out_forks(connectors, node_entries, _has_arrow_at, joint_eps=joint_eps)
     edge_entries: list[dict[str, Any]] = []
     for poly in resolved_connectors:
         pts = list(poly.pts)
@@ -1005,7 +1026,7 @@ def _extract_edges_and_text_nodes(
                 "style": "dashed" if poly.dashed else "solid",
                 "pts": pts,
                 "words": [],
-                "confidence": 0.95 if (src_id and dst_id) else 0.75,
+                "confidence": edge_conf_snapped if (src_id and dst_id) else edge_conf_unsnapped,
             }
         )
 
@@ -1085,34 +1106,21 @@ def _assign_group_and_edge_labels(
                 used_word_ids.add(w_idx)
 
 
-def _extract_diagram_from_box(
+def _build_diagram_from_parts(
     fig_box: BBox,
-    page_box: BBox,
-    raw_rects: Sequence[Mapping[str, Any]],
-    raw_lines: Sequence[Mapping[str, Any]],
-    raw_curves: Sequence[Mapping[str, Any]],
-    words: Sequence[Word],
+    shapes: Sequence[_RawShape],
+    connectors: Sequence[_Polyline],
+    arrow_polys: Sequence[_ArrowPoly],
+    matched_chevrons: Sequence[tuple[tuple[float, float], tuple[float, float]]],
+    fig_words: Sequence[Word],
+    *,
+    visual_arrows: Sequence[tuple[tuple[float, float], BBox]] = (),
+    joint_eps: float = _JOINT_EPS_PT,
+    is_visual: bool = False,
 ) -> ExtractedDiagram:
-    padded = (
-        fig_box[0] - _BOX_PAD_PT,
-        fig_box[1] - _BOX_PAD_PT,
-        fig_box[2] + _BOX_PAD_PT,
-        fig_box[3] + _BOX_PAD_PT,
-    )
-    clip = clip_box(padded, page_box) or fig_box
+    shape_conf = 0.78 if is_visual else 0.95
+    node_entries, group_entries = _build_shape_hierarchy(shapes, shape_conf=shape_conf)
 
-    shapes, arrow_polys, line_segs, open_polys = _collect_primitives(
-        fig_box, page_box, clip, raw_rects, raw_lines, raw_curves
-    )
-    connectors, matched_chevrons = _resolve_connectors(line_segs, open_polys)
-    node_entries, group_entries = _build_shape_hierarchy(shapes)
-
-    fig_words = [
-        w
-        for w in words
-        if fig_box[0] <= (w.bbox[0] + w.bbox[2]) * 0.5 <= fig_box[2]
-        and fig_box[1] <= (w.bbox[1] + w.bbox[3]) * 0.5 <= fig_box[3]
-    ]
     used_word_ids = _assign_node_words(fig_words, node_entries)
     word_clusters = _build_word_clusters(fig_words, used_word_ids)
     edge_entries = _extract_edges_and_text_nodes(
@@ -1124,6 +1132,11 @@ def _extract_diagram_from_box(
         fig_words,
         word_clusters,
         used_word_ids,
+        visual_arrows=visual_arrows,
+        joint_eps=joint_eps,
+        edge_conf_snapped=0.78 if is_visual else 0.95,
+        edge_conf_unsnapped=0.60 if is_visual else 0.75,
+        text_node_conf=0.70 if is_visual else 0.85,
     )
     _assign_group_and_edge_labels(fig_words, word_clusters, used_word_ids, node_entries, group_entries, edge_entries)
 
@@ -1135,7 +1148,9 @@ def _extract_diagram_from_box(
             bbox=ne["bbox"],
             parent_group_id=ne["parent_group_id"],
             text_element_ids=(),
-            confidence=ne["confidence"],
+            confidence=_round_conf(0.78 if (is_visual and ne["words"]) else (0.65 if is_visual else ne["confidence"]))
+            if ne["shape_type"] != "text_node"
+            else ne["confidence"],
         )
         for ne in node_entries
     )
@@ -1162,7 +1177,7 @@ def _extract_diagram_from_box(
             bbox=ge["bbox"],
             parent_group_id=ge["parent_group_id"],
             member_node_ids=tuple(n.id for n in nodes_out if n.parent_group_id == ge["id"]),
-            confidence=ge["confidence"],
+            confidence=_round_conf(0.78 if (is_visual and ge["words"]) else (0.65 if is_visual else ge["confidence"])),
         )
         for ge in group_entries
     )
@@ -1178,14 +1193,559 @@ def _extract_diagram_from_box(
             confidence=0.0,
         )
 
-    return ExtractedDiagram(
+    diag = ExtractedDiagram(
         bbox=fig_box,
         diagram_type=_classify_diagram_type(nodes_out, edges_out, groups_out),
         nodes=nodes_out,
         edges=edges_out,
         groups=groups_out,
         source="vector_graph",
-        confidence=_estimate_confidence(nodes_out, edges_out),
+        confidence=_estimate_confidence(nodes_out, edges_out, is_visual=is_visual),
+    )
+    if is_visual:
+        object.__setattr__(diag, "metadata", {"extraction_mode": "visual_fallback"})
+    return diag
+
+
+def _extract_diagram_from_box(
+    fig_box: BBox,
+    page_box: BBox,
+    raw_rects: Sequence[Mapping[str, Any]],
+    raw_lines: Sequence[Mapping[str, Any]],
+    raw_curves: Sequence[Mapping[str, Any]],
+    words: Sequence[Word],
+) -> ExtractedDiagram:
+    padded = (
+        fig_box[0] - _BOX_PAD_PT,
+        fig_box[1] - _BOX_PAD_PT,
+        fig_box[2] + _BOX_PAD_PT,
+        fig_box[3] + _BOX_PAD_PT,
+    )
+    clip = clip_box(padded, page_box) or fig_box
+
+    shapes, arrow_polys, line_segs, open_polys = _collect_primitives(
+        fig_box, page_box, clip, raw_rects, raw_lines, raw_curves
+    )
+    connectors, matched_chevrons = _resolve_connectors(line_segs, open_polys)
+    fig_words = [
+        w
+        for w in words
+        if fig_box[0] <= (w.bbox[0] + w.bbox[2]) * 0.5 <= fig_box[2]
+        and fig_box[1] <= (w.bbox[1] + w.bbox[3]) * 0.5 <= fig_box[3]
+    ]
+    return _build_diagram_from_parts(fig_box, shapes, connectors, arrow_polys, matched_chevrons, fig_words)
+
+
+def _has_raster_image_in_box(
+    raw_images: Sequence[Mapping[str, Any]],
+    clip: BBox,
+    page_h: float,
+) -> bool:
+    clip_area = max(1.0, _bbox_area(clip))
+    for img in raw_images:
+        ib = _obj_bbox(img, page_h)
+        if ib[2] - ib[0] < _MIN_SHAPE_DIM_PT or ib[3] - ib[1] < _MIN_SHAPE_DIM_PT:
+            continue
+        inter = _inter_area(ib, clip)
+        if inter >= 0.15 * min(clip_area, max(1.0, _bbox_area(ib))):
+            return True
+    return False
+
+
+def _pt_box_to_px_int(box: BBox, crop_box: BBox, img_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    px_box = pt_to_px(box, crop_box, img_size)
+    iw, ih = img_size
+    x0 = max(0, min(iw, int(round(px_box[0]))))
+    y0 = max(0, min(ih, int(round(px_box[1]))))
+    x1 = max(0, min(iw, int(round(px_box[2]))))
+    y1 = max(0, min(ih, int(round(px_box[3]))))
+    return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _shares_edge_with(a: BBox, b: BBox, tol: float = 3.5) -> bool:
+    ov_x = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    ov_y = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    aw = max(1.0, a[2] - a[0])
+    ah = max(1.0, a[3] - a[1])
+    if ov_x >= 0.35 * aw and (abs(a[1] - b[3]) <= tol or abs(a[3] - b[1]) <= tol):
+        return True
+    if ov_y >= 0.35 * ah and (abs(a[0] - b[2]) <= tol or abs(a[2] - b[0]) <= tol):
+        return True
+    return False
+
+
+def _filter_visual_shapes(
+    candidates: Sequence[tuple[_RawShape, bool]],
+    fig_words: Sequence[Word],
+    page_box: BBox,
+    fig_box: BBox,
+) -> list[_RawShape]:
+    # Prefer clean inner-hole boxes when an outer contour wraps a single box plus attached arrowheads.
+    hole_boxes = [sh.bbox for sh, is_hole in candidates if is_hole]
+    kept_pairs: list[tuple[_RawShape, bool]] = []
+    for sh, is_hole in candidates:
+        if not is_hole:
+            enclosed_holes = [hb for hb in hole_boxes if _strictly_encloses(sh.bbox, hb)]
+            if len(enclosed_holes) == 1 and _bbox_area(enclosed_holes[0]) >= 0.65 * max(1.0, _bbox_area(sh.bbox)):
+                continue
+        kept_pairs.append((sh, is_hole))
+
+    def _has_words(b: BBox) -> bool:
+        return any(
+            b[0] - 1.5 <= (w.bbox[0] + w.bbox[2]) * 0.5 <= b[2] + 1.5
+            and b[1] - 1.5 <= (w.bbox[1] + w.bbox[3]) * 0.5 <= b[3] + 1.5
+            for w in fig_words
+        )
+
+    all_boxes = [sh.bbox for sh, _ in kept_pairs]
+    support = [
+        _has_words(sh.bbox) or any(j != idx and _strictly_encloses(sh.bbox, ob) for j, ob in enumerate(all_boxes))
+        for idx, (sh, _) in enumerate(kept_pairs)
+    ]
+
+    filtered: list[_RawShape] = []
+    for idx, (sh, is_hole) in enumerate(kept_pairs):
+        if is_hole and not support[idx]:
+            if any(
+                j != idx and support[j] and _shares_edge_with(sh.bbox, kept_pairs[j][0].bbox)
+                for j in range(len(kept_pairs))
+            ):
+                continue
+        filtered.append(sh)
+
+    return _filter_border_frames(_dedup_shapes(filtered), page_box, fig_box)
+
+
+def _merge_collinear_visual_segs(
+    segs: Sequence[tuple[tuple[float, float], tuple[float, float]]],
+    leaf_boxes: Sequence[BBox],
+    *,
+    angle_tol_deg: float = 6.0,
+    dist_tol_pt: float = 4.0,
+    gap_tol_pt: float = 7.0,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if not segs:
+        return []
+    work = sorted(segs, key=lambda s: _dist(s[0], s[1]), reverse=True)
+    used = [False] * len(work)
+    merged: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    cos_tol = math.cos(math.radians(angle_tol_deg))
+
+    for i in range(len(work)):
+        if used[i]:
+            continue
+        used[i] = True
+        p0, p1 = work[i]
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        seg_len = math.hypot(dx, dy)
+        if seg_len < 1e-6:
+            continue
+        ux, uy = dx / seg_len, dy / seg_len
+        nx, ny = -uy, ux
+        min_t, max_t = 0.0, seg_len
+        changed = True
+        while changed:
+            changed = False
+            for j in range(len(work)):
+                if used[j]:
+                    continue
+                q0, q1 = work[j]
+                qdx, qdy = q1[0] - q0[0], q1[1] - q0[1]
+                q_len = math.hypot(qdx, qdy)
+                if q_len < 1e-6:
+                    used[j] = True
+                    continue
+                if abs((qdx / q_len) * ux + (qdy / q_len) * uy) < cos_tol:
+                    continue
+                d0 = abs((q0[0] - p0[0]) * nx + (q0[1] - p0[1]) * ny)
+                d1 = abs((q1[0] - p0[0]) * nx + (q1[1] - p0[1]) * ny)
+                if max(d0, d1) > dist_tol_pt:
+                    continue
+                t0 = (q0[0] - p0[0]) * ux + (q0[1] - p0[1]) * uy
+                t1 = (q1[0] - p0[0]) * ux + (q1[1] - p0[1]) * uy
+                lo, hi = min(t0, t1), max(t0, t1)
+                if hi < min_t - gap_tol_pt or lo > max_t + gap_tol_pt:
+                    continue
+                if hi < min_t or lo > max_t:
+                    mid_t = 0.5 * (max(min_t, lo) + min(max_t, hi))
+                    mid_pt = (p0[0] + mid_t * ux, p0[1] + mid_t * uy)
+                    if any(lb[0] + 1.0 <= mid_pt[0] <= lb[2] - 1.0 and lb[1] + 1.0 <= mid_pt[1] <= lb[3] - 1.0 for lb in leaf_boxes):
+                        continue
+                min_t = min(min_t, lo)
+                max_t = max(max_t, hi)
+                used[j] = True
+                changed = True
+        merged.append(((p0[0] + min_t * ux, p0[1] + min_t * uy), (p0[0] + max_t * ux, p0[1] + max_t * uy)))
+    return merged
+
+
+def _binarize_visual_crop(crop: Any) -> Any | None:
+    import cv2
+    import numpy as np
+
+    rgb = np.asarray(crop, dtype=np.uint8)
+    ih, iw = rgb.shape[:2]
+    if iw < 8 or ih < 8:
+        return None
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    if int(gray.max()) - int(gray.min()) < 20:
+        return None
+    ink_adapt = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 8
+    )
+    bg_val = float(np.percentile(gray, 95))
+    dark_mask = (gray < max(40, int(bg_val - 120.0))).astype(np.uint8) * 255
+    ink = cv2.bitwise_or(ink_adapt, dark_mask)
+    if int(cv2.countNonZero(ink)) < 16:
+        return None
+    return ink
+
+
+def _collect_visual_words(
+    crop: Any,
+    crop_box: BBox,
+    fig_box: BBox,
+    page_words: Sequence[Word],
+    ink: Any,
+    *,
+    is_raster: bool,
+    get_ocr: Any,
+) -> tuple[list[Word], list[tuple[int, int, int, int]], Any]:
+    import cv2
+    import numpy as np
+
+    ih, iw = ink.shape[:2]
+    native_fig_words = [
+        w
+        for w in page_words
+        if fig_box[0] <= (w.bbox[0] + w.bbox[2]) * 0.5 <= fig_box[2]
+        and fig_box[1] <= (w.bbox[1] + w.bbox[3]) * 0.5 <= fig_box[3]
+    ]
+    text_boxes_px: list[tuple[int, int, int, int]] = []
+    if not is_raster and native_fig_words:
+        fig_words = native_fig_words
+        for w in fig_words:
+            text_boxes_px.append(_pt_box_to_px_int(w.bbox, crop_box, (iw, ih)))
+    else:
+        ocr_rec = get_ocr()
+        ocr_lines = ocr_rec.recognize(crop) if ocr_rec is not None else []
+        # Reject low-confidence 1-2 char OCR hits on thick filled blobs (arrowheads).
+        pre_dist = cv2.distanceTransform(ink, cv2.DIST_L2, 5) if ocr_lines else None
+        fig_words = []
+        for ln in ocr_lines:
+            txt = str(ln.text).strip()
+            if not txt:
+                continue
+            x0, y0, x1, y1 = (int(round(v)) for v in ln.bbox)
+            bx0, by0, bx1, by1 = max(0, min(iw, x0)), max(0, min(ih, y0)), max(0, min(iw, x1)), max(0, min(ih, y1))
+            if (
+                pre_dist is not None
+                and len(txt) <= 2
+                and float(getattr(ln, "confidence", 1.0)) < 0.85
+                and bx1 > bx0
+                and by1 > by0
+                and bool(np.any(pre_dist[by0:by1, bx0:bx1] >= 2.2))
+            ):
+                continue
+            b_pt = px_to_pt(ln.bbox, crop_box, (iw, ih))
+            font_sz = max(6.0, round(b_pt[3] - b_pt[1], 2))
+            fig_words.append(Word(text=txt, bbox=b_pt, font_size=font_sz, bold=False))
+            text_boxes_px.append((bx0, by0, bx1, by1))
+
+    text_mask = np.zeros((ih, iw), dtype=np.uint8)
+    for x0, y0, x1, y1 in text_boxes_px:
+        if x1 - x0 >= 6 and y1 - y0 >= 6:
+            text_mask[y0 + 1 : y1 - 1, x0 + 1 : x1 - 1] = 255
+        elif x1 > x0 and y1 > y0:
+            text_mask[y0:y1, x0:x1] = 255
+    return fig_words, text_boxes_px, cv2.bitwise_and(ink, cv2.bitwise_not(text_mask))
+
+
+def _detect_visual_shapes(
+    ink: Any,
+    ink_notext: Any,
+    text_boxes_px: Sequence[tuple[int, int, int, int]],
+    crop_box: BBox,
+    img_size: tuple[int, int],
+    pt_per_px: float,
+    fig_words: Sequence[Word],
+    page_box: BBox,
+    fig_box: BBox,
+) -> tuple[list[_RawShape], Any]:
+    import cv2
+    import numpy as np
+
+    iw, ih = img_size
+    shape_cands: list[tuple[_RawShape, bool]] = []
+    ink_shape = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    cnts, hier = cv2.findContours(ink_shape, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is not None:
+        h_arr = hier[0]
+        for idx, cnt in enumerate(cnts):
+            depth = 0
+            parent = int(h_arr[idx][3])
+            while parent != -1:
+                depth += 1
+                parent = int(h_arr[parent][3])
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            c_area = float(cv2.contourArea(cnt))
+            peri = float(cv2.arcLength(cnt, True))
+            if peri <= 1e-3 or bw <= 0 or bh <= 0:
+                continue
+            b_px = (float(x), float(y), float(x + bw), float(y + bh))
+            if any(_bbox_iou(b_px, (float(tx0), float(ty0), float(tx1), float(ty1))) >= 0.60 for tx0, ty0, tx1, ty1 in text_boxes_px):
+                continue
+            b_pt = px_to_pt(b_px, crop_box, img_size)
+            w_pt, h_pt = b_pt[2] - b_pt[0], b_pt[3] - b_pt[1]
+            if max(w_pt, h_pt) <= _MIN_SHAPE_DIM_PT or min(w_pt, h_pt) < 8.0:
+                continue
+            extent = c_area / float(bw * bh)
+            if extent < 0.35:
+                continue
+            approx = cv2.approxPolyDP(cnt, 0.025 * peri, True)
+            shape_type: str | None = None
+            if extent >= 0.80 and 4 <= len(approx) <= 8:
+                mr_w, mr_h = cv2.minAreaRect(cnt)[1]
+                if c_area / max(1.0, float(mr_w * mr_h)) >= 0.85:
+                    shape_type = "rect" if len(approx) == 4 else "round_rect"
+            elif len(approx) == 4 and 0.38 <= extent <= 0.65 and cv2.isContourConvex(approx):
+                shape_type = "diamond"
+            elif 0.62 <= extent <= 0.88 and len(approx) >= 6 and cv2.isContourConvex(approx):
+                if (4.0 * math.pi * c_area / (peri * peri)) >= 0.65:
+                    shape_type = "ellipse"
+            if shape_type is not None:
+                shape_cands.append((_RawShape(bbox=b_pt, shape_type=shape_type, dashed=False), (depth % 2 == 1)))
+
+    # Reconstruct solid or dashed rectangles via directional morphology so dashed containers are recovered.
+    dash_gap_px = max(5, int(round(6.0 / pt_per_px)))
+    min_line_px = max(12, int(round(12.0 / pt_per_px)))
+    h_bridge = cv2.morphologyEx(ink_notext, cv2.MORPH_CLOSE, np.ones((1, dash_gap_px), np.uint8))
+    v_bridge = cv2.morphologyEx(ink_notext, cv2.MORPH_CLOSE, np.ones((dash_gap_px, 1), np.uint8))
+    h_mask = cv2.morphologyEx(h_bridge, cv2.MORPH_OPEN, np.ones((1, min_line_px), np.uint8))
+    v_mask = cv2.morphologyEx(v_bridge, cv2.MORPH_OPEN, np.ones((min_line_px, 1), np.uint8))
+
+    hv_segs: list[tuple[tuple[float, float], tuple[float, float], bool]] = []
+    nh, _, hstats, _ = cv2.connectedComponentsWithStats(h_mask)
+    for k in range(1, nh):
+        hx, hy, hw, hh, _ = (int(v) for v in hstats[k])
+        if hh <= 8 and hw >= min_line_px:
+            cov = float(np.any(ink_notext[max(0, hy - 1) : min(ih, hy + hh + 1), hx : hx + hw] > 0, axis=0).mean())
+            p0 = px_to_pt((float(hx), float(hy) + hh * 0.5), crop_box, img_size)
+            p1 = px_to_pt((float(hx + hw), float(hy) + hh * 0.5), crop_box, img_size)
+            hv_segs.append((p0, p1, cov < 0.82))
+    nv, _, vstats, _ = cv2.connectedComponentsWithStats(v_mask)
+    for k in range(1, nv):
+        vx, vy, vw, vh, _ = (int(v) for v in vstats[k])
+        if vw <= 8 and vh >= min_line_px:
+            cov = float(np.any(ink_notext[vy : vy + vh, max(0, vx - 1) : min(iw, vx + vw + 1)] > 0, axis=1).mean())
+            p0 = px_to_pt((float(vx) + vw * 0.5, float(vy)), crop_box, img_size)
+            p1 = px_to_pt((float(vx) + vw * 0.5, float(vy + vh)), crop_box, img_size)
+            hv_segs.append((p0, p1, cov < 0.82))
+
+    loop_shapes, _ = _reconstruct_rect_loops(hv_segs, loop_eps=_VISUAL_LOOP_EPS_PT)
+    for lsh in loop_shapes:
+        shape_cands.append((lsh, False))
+
+    shapes = _filter_visual_shapes(shape_cands, fig_words, page_box, fig_box)
+    shape_border_mask = np.zeros((ih, iw), dtype=np.uint8)
+    for sh in shapes:
+        px0, py0, px1, py1 = _pt_box_to_px_int(sh.bbox, crop_box, img_size)
+        cx, cy = (px0 + px1) // 2, (py0 + py1) // 2
+        if sh.shape_type == "diamond":
+            pts = np.array([[cx, py0], [px1, cy], [cx, py1], [px0, cy]], dtype=np.int32)
+            cv2.polylines(shape_border_mask, [pts], True, 255, thickness=5)
+        elif sh.shape_type == "ellipse":
+            cv2.ellipse(shape_border_mask, (cx, cy), (max(1, (px1 - px0) // 2), max(1, (py1 - py0) // 2)), 0, 0, 360, 255, thickness=5)
+        else:
+            cv2.rectangle(shape_border_mask, (px0, py0), (px1, py1), 255, thickness=4)
+    return shapes, shape_border_mask
+
+
+def _has_visual_chevron(
+    conn_mask: Any,
+    end_pt: tuple[float, float],
+    prev_pt: tuple[float, float],
+    crop_box: BBox,
+    img_size: tuple[int, int],
+) -> bool:
+    out_dir = _unit_vec(prev_pt, end_pt)
+    if out_dir is None:
+        return False
+    iw, ih = img_size
+    ux, uy = out_dir
+    nx, ny = -uy, ux
+    pos_hits = 0
+    neg_hits = 0
+    perp_90_hits = 0
+    for back in (2.5, 4.5, 6.5):
+        for side in (2.5, 4.0):
+            for sign in (1.0, -1.0):
+                px_pt = (end_pt[0] - back * ux + sign * side * nx, end_pt[1] - back * uy + sign * side * ny)
+                px_x, px_y = pt_to_px(px_pt, crop_box, img_size)
+                ix, iy = int(round(px_x)), int(round(px_y))
+                if 1 <= ix < iw - 1 and 1 <= iy < ih - 1 and int(conn_mask[iy - 1 : iy + 2, ix - 1 : ix + 2].max()) > 0:
+                    if sign > 0:
+                        pos_hits += 1
+                    else:
+                        neg_hits += 1
+    for side in (5.0, 7.0):
+        for sign in (1.0, -1.0):
+            px_x, px_y = pt_to_px((end_pt[0] + sign * side * nx, end_pt[1] + sign * side * ny), crop_box, img_size)
+            ix, iy = int(round(px_x)), int(round(px_y))
+            if 0 <= ix < iw and 0 <= iy < ih and int(conn_mask[iy, ix]) > 0:
+                perp_90_hits += 1
+    return pos_hits >= 2 and neg_hits >= 2 and perp_90_hits == 0
+
+
+def _detect_visual_arrows_and_connectors(
+    conn_mask: Any,
+    leaf_boxes: Sequence[BBox],
+    crop_box: BBox,
+    img_size: tuple[int, int],
+    pt_per_px: float,
+) -> tuple[list[_Polyline], list[tuple[tuple[float, float], BBox]]]:
+    import cv2
+    import numpy as np
+
+    iw, ih = img_size
+    # Distance transform separates thick filled arrowhead blobs from 1-3px connector stems.
+    dist = cv2.distanceTransform(conn_mask, cv2.DIST_L2, 5)
+    nz = dist[dist > 0]
+    line_r = float(np.median(nz)) if nz.size else 1.0
+    raw_arr = (dist >= max(2.2, line_r + 1.0)).astype(np.uint8) * 255
+    arr_mask = cv2.dilate(raw_arr, np.ones((5, 5), np.uint8))
+
+    visual_arrows: list[tuple[tuple[float, float], BBox]] = []
+    arr_points: list[list[tuple[float, float]]] = []
+    na, labels, astats, acent = cv2.connectedComponentsWithStats(arr_mask)
+    for k in range(1, na):
+        ax, ay, aw, ah, _ = (int(v) for v in astats[k])
+        abox_pt = px_to_pt((float(ax), float(ay), float(ax + aw), float(ay + ah)), crop_box, img_size)
+        if max(abox_pt[2] - abox_pt[0], abox_pt[3] - abox_pt[1]) <= 18.0:
+            cent_pt = px_to_pt((float(acent[k][0]), float(acent[k][1])), crop_box, img_size)
+            ys_px, xs_px = np.where((labels == k) & (conn_mask > 0))
+            pts_pt = [px_to_pt((float(px_i), float(py_i)), crop_box, img_size) for py_i, px_i in zip(ys_px, xs_px)]
+            visual_arrows.append((cent_pt, abox_pt))
+            arr_points.append(pts_pt or [cent_pt])
+
+    stem_mask = cv2.bitwise_and(conn_mask, cv2.bitwise_not(arr_mask))
+    raw_h = cv2.HoughLinesP(
+        stem_mask,
+        1.0,
+        np.pi / 180.0,
+        threshold=max(10, int(round(8.0 / pt_per_px))),
+        minLineLength=max(8, int(round(8.0 / pt_per_px))),
+        maxLineGap=max(5, int(round(6.0 / pt_per_px))),
+    )
+    raw_segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    if raw_h is not None:
+        for hx0, hy0, hx1, hy1 in raw_h.reshape(-1, 4):
+            p0 = px_to_pt((float(hx0), float(hy0)), crop_box, img_size)
+            p1 = px_to_pt((float(hx1), float(hy1)), crop_box, img_size)
+            if _dist(p0, p1) >= 4.0:
+                raw_segs.append((p0, p1))
+
+    merged_segs = _merge_collinear_visual_segs(raw_segs, leaf_boxes)
+
+    def _extend_to_arrow(end_pt: tuple[float, float], prev_pt: tuple[float, float]) -> tuple[float, float]:
+        out_dir = _unit_vec(prev_pt, end_pt)
+        if out_dir is None:
+            return end_pt
+        best_pt = end_pt
+        best_proj = 0.0
+        for (cent, abox), pts_pt in zip(visual_arrows, arr_points):
+            if _point_to_box_dist(end_pt, abox) > _ARROW_MATCH_DIST_PT:
+                continue
+            vec = _unit_vec(prev_pt, cent)
+            if vec is None or (out_dir[0] * vec[0] + out_dir[1] * vec[1]) <= 0.35:
+                continue
+            for q in pts_pt:
+                proj = (q[0] - end_pt[0]) * out_dir[0] + (q[1] - end_pt[1]) * out_dir[1]
+                if 0.0 < proj <= 16.0 and proj > best_proj:
+                    best_proj = proj
+                    best_pt = (end_pt[0] + proj * out_dir[0], end_pt[1] + proj * out_dir[1])
+        return best_pt
+
+    def _is_seg_dashed(p0: tuple[float, float], p1: tuple[float, float]) -> bool:
+        n_samples = max(10, int(round(_dist(p0, p1) / pt_per_px)))
+        px0, py0 = pt_to_px(p0, crop_box, img_size)
+        px1, py1 = pt_to_px(p1, crop_box, img_size)
+        trim = min(0.15, 4.0 / max(1.0, float(n_samples)))
+        hits: list[bool] = []
+        for s_idx in range(n_samples):
+            t = trim + (1.0 - 2.0 * trim) * (s_idx / max(1, n_samples - 1))
+            ix = max(0, min(iw - 1, int(round(px0 + t * (px1 - px0)))))
+            iy = max(0, min(ih - 1, int(round(py0 + t * (py1 - py0)))))
+            hits.append(bool(np.any(stem_mask[max(0, iy - 1) : min(ih, iy + 2), max(0, ix - 1) : min(iw, ix + 2)] > 0)))
+        if not hits:
+            return False
+        cov = sum(1 for h in hits if h) / len(hits)
+        runs, gap_run, in_run = 0, 0, False
+        for h in hits:
+            if h:
+                if not in_run:
+                    runs += 1
+                    in_run = True
+                gap_run = 0
+            else:
+                gap_run += 1
+                if gap_run >= 2:
+                    in_run = False
+        return 0.20 <= cov <= 0.80 and runs >= 2
+
+    polylines: list[_Polyline] = []
+    for p0, p1 in merged_segs:
+        dashed = _is_seg_dashed(p0, p1)
+        ep0 = _extend_to_arrow(p0, p1)
+        ep1 = _extend_to_arrow(p1, p0)
+        if ep0 == p0 and _has_visual_chevron(conn_mask, p0, p1, crop_box, img_size):
+            visual_arrows.append((p0, (p0[0] - 2.0, p0[1] - 2.0, p0[0] + 2.0, p0[1] + 2.0)))
+        if ep1 == p1 and _has_visual_chevron(conn_mask, p1, p0, crop_box, img_size):
+            visual_arrows.append((p1, (p1[0] - 2.0, p1[1] - 2.0, p1[0] + 2.0, p1[1] + 2.0)))
+        polylines.append(_Polyline(pts=[ep0, ep1], dashed=dashed))
+    return _chain_polylines(polylines, joint_eps=_VISUAL_JOINT_EPS_PT), visual_arrows
+
+
+def _extract_visual_diagram_from_box(
+    page: Any,
+    fig_box: BBox,
+    page_box: BBox,
+    *,
+    page_words: Sequence[Word],
+    is_raster: bool,
+    get_ocr: Any,
+    dpi: int,
+) -> ExtractedDiagram:
+    import cv2
+
+    crop, crop_box = crop_page_rgb_with_bbox(page, fig_box, dpi, pad_pt=_BOX_PAD_PT)
+    ink = _binarize_visual_crop(crop)
+    if ink is None:
+        return ExtractedDiagram(bbox=fig_box, diagram_type="unknown", source="vector_graph", confidence=0.0)
+
+    ih, iw = ink.shape[:2]
+    pt_per_px = max((crop_box[2] - crop_box[0]) / float(iw), (crop_box[3] - crop_box[1]) / float(ih), 1e-4)
+    fig_words, text_boxes_px, ink_notext = _collect_visual_words(
+        crop, crop_box, fig_box, page_words, ink, is_raster=is_raster, get_ocr=get_ocr
+    )
+    shapes, shape_border_mask = _detect_visual_shapes(
+        ink, ink_notext, text_boxes_px, crop_box, (iw, ih), pt_per_px, fig_words, page_box, fig_box
+    )
+    leaf_boxes = [shapes[idx].bbox for idx in range(len(shapes)) if not _is_group_container(idx, shapes)]
+    conn_mask = cv2.bitwise_and(ink_notext, cv2.bitwise_not(shape_border_mask))
+    connectors, visual_arrows = _detect_visual_arrows_and_connectors(
+        conn_mask, leaf_boxes, crop_box, (iw, ih), pt_per_px
+    )
+    return _build_diagram_from_parts(
+        fig_box,
+        shapes,
+        connectors,
+        (),
+        (),
+        fig_words,
+        visual_arrows=visual_arrows,
+        joint_eps=_VISUAL_JOINT_EPS_PT,
+        is_visual=True,
     )
 
 
@@ -1204,7 +1764,12 @@ def _classify_diagram_type(
     return "block_diagram"
 
 
-def _estimate_confidence(nodes: Sequence[DiagramNode], edges: Sequence[DiagramEdge]) -> float:
+def _estimate_confidence(
+    nodes: Sequence[DiagramNode],
+    edges: Sequence[DiagramEdge],
+    *,
+    is_visual: bool = False,
+) -> float:
     labeled_ratio = (
         sum(1 for n in nodes if n.label.strip()) / len(nodes)
         if nodes
@@ -1215,6 +1780,9 @@ def _estimate_confidence(nodes: Sequence[DiagramNode], edges: Sequence[DiagramEd
         if edges
         else 1.0
     )
+    if is_visual:
+        score = 0.55 + 0.15 * labeled_ratio + 0.12 * snapped_ratio
+        return _round_conf(max(0.55, min(0.85, score)))
     score = 0.65 + 0.15 * labeled_ratio + 0.15 * snapped_ratio
     return _round_conf(max(0.5, min(0.95, score)))
 
@@ -1247,27 +1815,38 @@ class VectorFirstDiagramExtractor:
         device: str | None = None,
         dpi: int = 150,
     ) -> list[ExtractedDiagram]:
-        del ocr_backend, device, dpi
         t0 = time.perf_counter()
         if not diagram_boxes_pt:
             self.last_stats = _make_run_stats(t0, infer_sec=0.0)
             return []
 
+        eff_device = "auto" if device is None else device
+        ocr_rec: Any = None
+        ocr_checked = False
+
+        def _get_ocr() -> Any:
+            nonlocal ocr_rec, ocr_checked
+            if not ocr_checked:
+                ocr_checked = True
+                ocr_rec = get_backend("ocr", ocr_backend, device=eff_device)
+            return ocr_rec
+
+        pbox = page_bbox(page)
         if is_raster:
-            out = [
-                ExtractedDiagram(
-                    bbox=tuple(float(v) for v in box),  # type: ignore[arg-type]
-                    diagram_type="unknown",
-                    nodes=(),
-                    edges=(),
-                    groups=(),
-                    source="vector_graph",
-                    confidence=0.0,
+            results = [
+                _extract_visual_diagram_from_box(
+                    page,
+                    (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    pbox,
+                    page_words=(),
+                    is_raster=True,
+                    get_ocr=_get_ocr,
+                    dpi=dpi,
                 )
                 for box in diagram_boxes_pt
             ]
             self.last_stats = _make_run_stats(t0)
-            return out
+            return results
 
         if words is None:
             from .text import extract_words
@@ -1276,22 +1855,34 @@ class VectorFirstDiagramExtractor:
         else:
             page_words = list(words)
 
-        pbox = page_bbox(page)
         raw_rects = tuple(getattr(page, "rects", ()) or ())
         raw_lines = tuple(getattr(page, "lines", ()) or ())
         raw_curves = tuple(getattr(page, "curves", ()) or ())
+        raw_images = tuple(getattr(page, "images", ()) or ())
 
-        results = [
-            _extract_diagram_from_box(
-                (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
-                pbox,
-                raw_rects,
-                raw_lines,
-                raw_curves,
-                page_words,
-            )
-            for box in diagram_boxes_pt
-        ]
+        results: list[ExtractedDiagram] = []
+        for box in diagram_boxes_pt:
+            fig_box: BBox = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+            diag = _extract_diagram_from_box(fig_box, pbox, raw_rects, raw_lines, raw_curves, page_words)
+            if not (diag.nodes or diag.edges or diag.groups):
+                padded = (
+                    fig_box[0] - _BOX_PAD_PT,
+                    fig_box[1] - _BOX_PAD_PT,
+                    fig_box[2] + _BOX_PAD_PT,
+                    fig_box[3] + _BOX_PAD_PT,
+                )
+                clip = clip_box(padded, pbox) or fig_box
+                if _has_raster_image_in_box(raw_images, clip, pbox[3]):
+                    diag = _extract_visual_diagram_from_box(
+                        page,
+                        fig_box,
+                        pbox,
+                        page_words=page_words,
+                        is_raster=False,
+                        get_ocr=_get_ocr,
+                        dpi=dpi,
+                    )
+            results.append(diag)
         self.last_stats = _make_run_stats(t0)
         return results
 
@@ -1375,6 +1966,16 @@ def diagram_to_ir_dict(
         }
         for g in diagram.groups
     ]
+    meta: dict[str, Any] = {
+        "element_id": element_id,
+        "source": diagram.source,
+        "confidence": conf,
+    }
+    extra_meta = getattr(diagram, "metadata", None)
+    if isinstance(extra_meta, Mapping):
+        for k, v in extra_meta.items():
+            if k not in meta:
+                meta[k] = v
     return {
         "id": diagram_id,
         "element_id": element_id,
@@ -1387,9 +1988,5 @@ def diagram_to_ir_dict(
         "edges": edges,
         "groups": groups,
         "source_ref": {"file": source_file, "page": page, "bbox": bbox},
-        "metadata": {
-            "element_id": element_id,
-            "source": diagram.source,
-            "confidence": conf,
-        },
+        "metadata": meta,
     }

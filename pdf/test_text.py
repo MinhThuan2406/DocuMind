@@ -315,6 +315,42 @@ def test_rotated_words_upright_column_digits_multiline_vert_and_xy_cut_top_overl
     ]
 
 
+def test_xy_cut_centered_gutter_footer_and_split_header():
+    two_col_with_footer = [
+        ("L1", (50.0, 90.0, 270.0, 140.0)),
+        ("L2", (50.0, 160.0, 270.0, 240.0)),
+        ("L3", (50.0, 260.0, 270.0, 340.0)),
+        ("R1", (320.0, 90.0, 540.0, 140.0)),
+        ("R2", (320.0, 160.0, 540.0, 240.0)),
+        ("R3", (320.0, 260.0, 540.0, 340.0)),
+        ("PageNum", (288.0, 380.0, 302.0, 394.0)),
+    ]
+    assert [n for n, _ in xy_cut_order(two_col_with_footer, lambda it: it[1])] == [
+        "L1",
+        "L2",
+        "L3",
+        "R1",
+        "R2",
+        "R3",
+        "PageNum",
+    ]
+
+    single_col_split_hdr = [
+        ("Header", (90.0, 80.0, 340.0, 96.0)),
+        ("PageNum", (480.0, 80.0, 505.0, 96.0)),
+        ("ShortIntro", (90.0, 120.0, 130.0, 136.0)),
+        ("Formula", (160.0, 150.0, 420.0, 210.0)),
+        ("Body", (90.0, 225.0, 505.0, 290.0)),
+    ]
+    assert [n for n, _ in xy_cut_order(single_col_split_hdr, lambda it: it[1])] == [
+        "Header",
+        "PageNum",
+        "ShortIntro",
+        "Formula",
+        "Body",
+    ]
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

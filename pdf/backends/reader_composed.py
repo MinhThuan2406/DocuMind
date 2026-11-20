@@ -104,6 +104,68 @@ def _is_heading_or_list_line(text: str) -> bool:
     return bool(_LIST_OR_HEADING_RE.match(text.strip()))
 
 
+def _overlaps_excluded(box: BBox, excluded_boxes_pt: Sequence[BBox]) -> bool:
+    if not excluded_boxes_pt:
+        return False
+    cand_area = bbox_area(box)
+    for ex in excluded_boxes_pt:
+        ex_area = bbox_area(ex)
+        if ex_area > 0.0 and bbox_inter_area(box, ex) > 0.25 * min(ex_area, cand_area):
+            return True
+    return False
+
+
+def _inline_pair_connected(a: tuple[OcrLine, BBox], b: tuple[OcrLine, BBox]) -> bool:
+    la, ba = a
+    lb, bb = b
+    if _SECTION_HEADING_RE.match(la.text.strip()) or _SECTION_HEADING_RE.match(lb.text.strip()):
+        return False
+    ah = max(1.0, ba[3] - ba[1])
+    bh = max(1.0, bb[3] - bb[1])
+    ratio = max(ah, bh) / min(ah, bh)
+    x_ov = min(ba[2], bb[2]) - max(ba[0], bb[0])
+    y_ov = min(ba[3], bb[3]) - max(ba[1], bb[1])
+    same_row = y_ov >= 0.40 * min(ah, bh)
+    if not same_row and (_is_heading_or_list_line(la.text) or _is_heading_or_list_line(lb.text)):
+        return False
+    if x_ov > -2.0 and y_ov > -2.0 and ratio <= 3.0:
+        return True
+    x_gap = max(ba[0] - bb[2], bb[0] - ba[2])
+    return same_row and ratio <= 2.2 and x_gap <= min(0.65 * max(ah, bh), 18.0)
+
+
+def _merge_inline_orphan_items(
+    items: list[tuple[OcrLine, BBox]],
+    excluded_boxes_pt: Sequence[BBox],
+) -> list[tuple[list[tuple[OcrLine, BBox]], BBox]]:
+    n = len(items)
+    parent = list(range(n))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    comp_boxes = [it[1] for it in items]
+    for i in range(n):
+        for j in range(i + 1, n):
+            ri, rj = _find(i), _find(j)
+            if ri == rj or not _inline_pair_connected(items[i], items[j]):
+                continue
+            bi, bj = comp_boxes[ri], comp_boxes[rj]
+            merged_box = (min(bi[0], bj[0]), min(bi[1], bj[1]), max(bi[2], bj[2]), max(bi[3], bj[3]))
+            if _overlaps_excluded(merged_box, excluded_boxes_pt):
+                continue
+            parent[rj] = ri
+            comp_boxes[ri] = merged_box
+
+    grouped: dict[int, list[tuple[OcrLine, BBox]]] = defaultdict(list)
+    for i, it in enumerate(items):
+        grouped[_find(i)].append(it)
+    return [(members, comp_boxes[root]) for root, members in grouped.items()]
+
+
 def _can_merge_orphan(
     group: list[tuple[OcrLine, BBox]],
     grp_box: BBox,
@@ -139,19 +201,13 @@ def _can_merge_orphan(
         if min(cur_box[2], grp_box[2]) <= max(cur_box[0], grp_box[0]):
             return False
 
-    if excluded_boxes_pt:
-        cand_box = (
-            min(grp_box[0], cur_box[0]),
-            min(grp_box[1], cur_box[1]),
-            max(grp_box[2], cur_box[2]),
-            max(grp_box[3], cur_box[3]),
-        )
-        cand_area = bbox_area(cand_box)
-        for ex in excluded_boxes_pt:
-            ex_area = bbox_area(ex)
-            if ex_area > 0.0 and bbox_inter_area(cand_box, ex) > 0.25 * min(ex_area, cand_area):
-                return False
-    return True
+    cand_box = (
+        min(grp_box[0], cur_box[0]),
+        min(grp_box[1], cur_box[1]),
+        max(grp_box[2], cur_box[2]),
+        max(grp_box[3], cur_box[3]),
+    )
+    return not _overlaps_excluded(cand_box, excluded_boxes_pt)
 
 
 def _cluster_orphan_lines(
@@ -165,18 +221,22 @@ def _cluster_orphan_lines(
     items = [(ln, _scale_box(ln.bbox, sx, sy)) for ln in orphans if ln.text and ln.text.strip()]
     if not items:
         return []
-    ordered = xy_cut_order(items, lambda item: item[1])
+    units = _merge_inline_orphan_items(items, excluded_boxes_pt)
+    ordered_units = xy_cut_order(units, lambda unit: unit[1])
     groups: list[list[tuple[OcrLine, BBox]]] = []
     group_boxes: list[BBox] = []
-    for item in ordered:
-        if groups and _can_merge_orphan(groups[-1], group_boxes[-1], item[0], item[1], excluded_boxes_pt):
-            groups[-1].append(item)
+    for members, ubox in ordered_units:
+        if (
+            len(members) == 1
+            and groups
+            and _can_merge_orphan(groups[-1], group_boxes[-1], members[0][0], ubox, excluded_boxes_pt)
+        ):
+            groups[-1].append(members[0])
             gb = group_boxes[-1]
-            ib = item[1]
-            group_boxes[-1] = (min(gb[0], ib[0]), min(gb[1], ib[1]), max(gb[2], ib[2]), max(gb[3], ib[3]))
+            group_boxes[-1] = (min(gb[0], ubox[0]), min(gb[1], ubox[1]), max(gb[2], ubox[2]), max(gb[3], ubox[3]))
         else:
-            groups.append([item])
-            group_boxes.append(item[1])
+            groups.append(list(members))
+            group_boxes.append(ubox)
 
     blocks: list[TextBlock] = []
     for grp in groups:
@@ -398,7 +458,9 @@ class ComposedReader:
                 "fallback": None,
             })
 
-        ordered_blocks = tuple(xy_cut_order(blocks, lambda b: b.bbox))
+        sizes = sorted(b.font_size for b in blocks if b.font_size > 0.0)
+        med_fs = sizes[len(sizes) // 2] if sizes else 0.0
+        ordered_blocks = tuple(xy_cut_order(blocks, lambda b: b.bbox, page_rect=target_box, font_size=med_fs))
         return (
             RasterPage(
                 blocks=ordered_blocks,

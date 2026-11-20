@@ -14,7 +14,7 @@ pdf/
   grouping.py         FigureGrouper implementations: v1_anchor (OpenCV + DSU), v2_vector_vision (vector + layout + Table-Barrier), and raw_picture -> GroupedFigure
   figures.py          lazy layout backend + cache + grouper + semantic_regions_out + layout_table boxes
   tables.py           lazy table extractor dispatch, continuation linking (link_table_continuations), table_to_ir_dict (cells[].confidence, HTML)
-  diagrams.py         vector-first diagram node-edge-group recovery (VectorFirstDiagramExtractor, diagram_to_ir_dict)
+  diagrams.py         vector-first + OpenCV visual-fallback diagram node-edge-group recovery (`VectorFirstDiagramExtractor`, `diagram_to_ir_dict`)
   raster.py           lazy PageReader dispatch for full raster pages and hybrid partial_raster_regions
   assemble.py         overlap filter, innermost-box word assignment, atomic XY-cut assembly, running header/footer tagging
   hierarchy.py        heading detection, section tree builder (apply_structure, build_section_tree), caption linking
@@ -45,11 +45,12 @@ pdf/
     types.py          OcrLine
   eval/
     gt.py             AUTOSAR figure & OmniDocBench GT loaders, shared split/logging helpers
-    metrics.py        strict/lenient figure matching, PRF, character counts, markup stripping
+    metrics.py        strict/lenient figure matching, PRF, ECE/calibration summaries, character counts, markup stripping
+    calibration.py    confidence calibration & monotonicity invariants evaluator (`figures`, `tables`, `monotonicity`)
     compare.py        CLI comparing N backends with --split dev|test (--final guard on test)
     compare_hierarchy.py CLI comparing heading hierarchy modes (no_toc vs with_toc) against PDF bookmarks
     tables.py         table TEDS / merged-cell span F1 evaluator (oracle and e2e modes)
-    diagrams.py       diagram node/edge/graph F1, integrity checks, and synthetic vector diagram suite
+    diagrams.py       diagram node/edge/graph F1, integrity checks, and synthetic vector/visual diagram suites
     reading_order.py  reading order Kendall's tau evaluator (synthetic and OmniDocBench splits)
   fixtures/
     layout_dumps/     12 recorded AUTOSAR pages (raw and post-processed layout clusters, boxes only, captured once from Docling 2.150.0) used by test_layout.py
@@ -94,8 +95,9 @@ Run tests and comparisons from the repository root (PowerShell / cmd):
 .\.venv\Scripts\python -B -m pdf.eval.compare --task figures --backends heron,heron-onnx --split dev --no-cache
 .\.venv\Scripts\python -B -m pdf.eval.compare --task raster --backends heron-onnx+rapidocr-onnx,heron-onnx+rapidocr-torch
 .\.venv\Scripts\python -B -m pdf.eval.tables --task omnidoc --mode e2e --split dev
-.\.venv\Scripts\python -B -m pdf.eval.diagrams --task synthetic --split dev
+.\.venv\Scripts\python -B -m pdf.eval.diagrams --task all --split dev
 .\.venv\Scripts\python -B -m pdf.eval.reading_order --task all --mode e2e --split dev
+.\.venv\Scripts\python -B -m pdf.eval.calibration --split dev
 ```
 
 Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/OmniDocBench/`) or an isolated MinerU venv print `SKIP` when those files are absent.
@@ -186,7 +188,7 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
   - `grouper="v1_anchor"`: strict `28/3/2` (`F1 = 0.918`), lenient `27/4/3` (`F1 = 0.885`), `neg_fp = 2` (`0.1769 s/p`, `987.84 MB`).
   - `grouper="v2_vector_vision"`: strict **`29/2/1`** (**`F1 = 0.9508`**), lenient **`28/3/2`** (**`F1 = 0.918`**), `neg_fp = 2` (`0.1803 s/p`, `988.74 MB`).
 - **Raster OCR (`pdf.eval.compare --task raster --split dev --pages 15`, `ComposedReader` `heron-onnx` + `rapidocr-onnx`, report-only OmniDoc sample subset):** `pooled_R = 0.9335`, `pooled_P = 0.9355`, `mean_R = 0.9279`, `mean_P = 0.9041` (`1.9063 s/p`, `1991.45 MB`).
-- **Tables `dev` (`pdf.eval.tables --task omnidoc --split dev`, post-fix `#105`):**
+- **Tables (`dev`, post-fix `#105`):**
   - `oracle` (`--limit 0`, `124` tables, `40` merged): `teds_struct = 0.8811` (`merged = 0.8517`), `teds_full = 0.8062`, `merged_cell_span_f1 = 0.4108` (`121.89 ms/table`, `1930.02 MB`).
   - `e2e` (`--limit 25`, `20` pages, `25` GT tables, `24` matched): `det_F1 = 0.9796` (`P=1.0, R=0.96`), `teds_struct = 0.7979` (`matched = 0.8312`), `teds_full = 0.7093`, `merged_cell_span_f1 = 0.2981` (`102.70 s`, `1781.34 MB`).
 - **Hierarchy `dev` (`pdf.eval.compare_hierarchy --split dev`, `with_toc`):** `VFB` `119/118 (0.965/1.000)`, `SWS_OS` `415/414 (0.976/1.000)`, `SWS_ECUStateManager` `819/813 (0.996/0.996)`, `Layered` `597` outline items.
@@ -194,10 +196,27 @@ Tests that depend on local untracked datasets (`datasets/AUTOSAR/`, `datasets/Om
   - `oracle` (`--limit 25`): `synthetic` (`3` pages) `1.0 / 1.0`; `OmniDocBench` (`25` pages) `mean_tau_matched = 0.9794`, `mean_tau_penalized = 0.9794` (`0.0048 s`).
   - `e2e` (`--limit 25`): `synthetic` (`3` pages) `1.0 / 1.0`; `OmniDocBench` (`25` pages) `mean_tau_matched = 0.9744`, `mean_tau_penalized = 0.0251` (`median_matched = 1.0`, `45.48 s`, `1600.77 MB`).
 
+### Step-4 conditional expansion, calibration & final checks (2026-11-20, Google Colab Pro Tesla T4 / Python 3.13)
+
+- **Unit & integration test suite (`pdf/test_*.py`, `10` files):** **`163/163` passed** (`2` internal skips logged in `test_figures.py` for missing `docling`/MinerU venv).
+- **Reading order (`pdf.eval.reading_order`, `--split dev`):**
+  - `oracle` (`--limit 25`): `synthetic` `1.0 / 1.0`; `OmniDocBench` (`25` pages) `mean_tau_matched = 0.9918`, `mean_tau_penalized = 0.9918` (`median = 1.0 / 1.0`).
+  - `e2e` (`--limit 25`): `synthetic` `1.0 / 1.0`; `OmniDocBench` (`25` pages) `mean_tau_matched = 0.9914`, **`mean_tau_penalized = 0.9548`** (`median = 1.0 / 1.0`).
+- **Diagrams (`pdf.eval.diagrams --task all --split dev`):** `synthetic_diagrams` (`6` fixtures) `1.0 / 1.0 / 1.0`, `visual` (`6` fallback fixtures, `extraction_mode="visual_fallback"`, `confidence=0.82`) `1.0 / 1.0 / 1.0`, `integrity_violations = 0`.
+- **Tables (`pdf.eval.tables --task omnidoc --split dev`):**
+  - `oracle` (`--limit 0`, `124` tables, `40` merged): `teds_struct = 0.9012`, `teds_struct_merged = 0.8759`, `teds_full = 0.8294`, `merged_cell_span_f1 = 0.4931` (`87.29 ms/table`, `2891.38 MB`).
+  - `e2e` (`--limit 25`, `20` pages, `25` GT / `24` matched): `det_F1 = 0.9796`, `teds_struct = 0.8492` (`matched = 0.8845`), `teds_struct_merged = 0.7462`, `teds_full = 0.7672`, `merged_cell_span_f1 = 0.3226`.
+- **Calibration (`pdf.eval.calibration --split dev`):** `monotonicity_invariants` **`invariant_ok = true`** (`native = 1.0`, `suspect_ocr = 0.85 <= 0.85`); `tables_calibration` `ece_10 = 0.073017`, `paired_violations = 0`, `source_mean_monotonicity_ok = true`, `fp_ge_095 = 0`; `figures_calibration` (`44p`, `30` GT, `heron-onnx`/`v1_anchor`) `tp/fp/fn = 27/3/3` (`F1 = 0.9`), `ece_10 = 0.11952`, `mean_conf_tp = 0.8688`, `mean_conf_fp = 0.8744`.
+- **Final held-out evaluation (`--split test --final`, 2026-11-20):**
+  - **Figures `test` (`108` pages, `57` neg, `61` GT):** `heron-onnx` & `heron` (`v1_anchor` and `v2_vector_vision`) `strict = 55/5/6` (**`sF1 = 0.9091`**), `lenient = 53/7/8` (`lF1 = 0.8760`), **`neg_fp = 0`**; `figures_calibration` `ece_10 = 0.06405`, `mean_conf_tp = 0.9458 > mean_conf_fp = 0.9243`.
+  - **Reading order `test` (`OmniDocBench_en_reading_order`):** `oracle` (`354` pages) `mean_tau_matched = 0.9508`, `mean_tau_penalized = 0.9508` (`median = 1.0`); `e2e` (`--limit 50`, `50` pages) `mean_tau_matched = 0.9464`, `mean_tau_penalized = 0.7913` (`median = 1.0 / 1.0`).
+  - **Tables `test` (`OmniDocBench_en_tables`):** `oracle` (`119` tables, `47` merged, `119/119` non-empty) `teds_struct = 0.8731`, `teds_struct_merged = 0.8322`, `teds_full = 0.8071`, `merged_cell_span_f1 = 0.3474`; `e2e` (`--limit 50`, `38` pages, `50` GT / `48` matched) `det_F1 = 0.9697`, `teds_struct = 0.8483` (`matched = 0.8837`), `teds_struct_merged = 0.7980`, `teds_full = 0.7888`, `merged_cell_span_f1 = 0.3002`.
+  - **Calibration `test` (`pdf.eval.calibration --split test --final`):** `monotonicity_invariants` **`invariant_ok = true`** (`native = 1.0`, `suspect_ocr = 0.85`); `tables_calibration` (`22p`, `29` GT / `28` pred, `det_F1 = 0.9474`) `ece_10 = 0.051714`, `paired_violations = 0`, `source_mean_monotonicity_ok = true`.
+
 ## 5. Known limits
 
-- **Default full-pipeline execution (`heron-onnx` + `rapidocr-onnx`)** uses `onnxruntime`, avoiding `torch` and `transformers`; the PyTorch `heron` and `rapidocr-torch` backends remain available by name.
-- **Table cell extraction** requires `tables=True` (default `False` on `extract_ir()`) and relies on `table` regions detected via `figures=True` or `ocr=True` (with `figures=False, ocr=False, tables=True`, `tables` stays `[]`). Borderless/TATR `merged_cell_span_f1` (`0.2981–0.4108`) and E2E `teds_full` (`0.7093`) on OmniDocBench still trail the `0.88` KPI target.
-- **Diagram extraction** requires `diagrams=True` (default `False`) and `figures=True`; the current engine is vector-first only (bitmap/raster figure diagrams emit `diagram_parse_empty` warnings with `confidence=0.0`, no visual contour/skeleton fallback yet), and golden vector-diagram GT on real `AUTOSAR` documents has not yet been annotated beyond synthetic fixtures.
+- **Default full-pipeline execution (`heron-onnx` + `rapidocr-onnx`)** uses `onnxruntime`, avoiding `torch` and `transformers`; the PyTorch `heron` and `rapidocr-torch` backends remain available by name. (`pdf/_pdf_io.py` still imports `cv2` at top level.)
+- **Table cell extraction** requires `tables=True` (default `False` on `extract_ir()`) and relies on `table` regions detected via `figures=True` or `ocr=True` (with `figures=False, ocr=False, tables=True`, `tables` stays `[]`). While Step 4 raised `oracle` `teds_struct` to `0.9012` (`dev`) / `0.8731` (`test`), OmniDocBench `e2e` `teds_full` (`0.7672` `dev` / `0.7888` `test`) and `merged_cell_span_f1` (`0.3226` `dev` / `0.3002` `test`) still trail `0.88`.
+- **Diagram extraction** requires `diagrams=True` (default `False`) and `figures=True`; OpenCV contour/line/OCR `visual_fallback` handles bitmap diagrams when vector primitives are absent (`confidence=0.82`), while figures that yield no recovered graph emit `diagram_parse_empty` warnings (`confidence=0.0`), and real `AUTOSAR` golden diagram GT remains unannotated beyond synthetic fixtures.
 - **Running furniture & watermarks:** repeating running headers/footers are tagged (`metadata.role`), not dropped, and sub-visible watermarks (e.g., 2 pt text) are not filtered by default (`min_font_size=0.0`) so word parity with `get_text("words")` holds.
 - **Figure vs. table overlap:** with `grouper="v1_anchor"`, an adjacent `table` within `<= 45 px` can still be partially overlapped, though bordered native tables now clip the grouper figure box rather than being dropped. Use `grouper="v2_vector_vision"` for strict Table-Barrier separation.

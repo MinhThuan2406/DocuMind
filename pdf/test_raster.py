@@ -541,6 +541,55 @@ def test_orphan_merge_blocks_headings_lists_and_narrow_gutters():
     ], [b.text for b in blocks]
 
 
+def test_orphan_inline_math_fragments_merge_without_crossing_gutters():
+    from pdf.backends.reader_composed import _cluster_orphan_lines
+
+    orphans = [
+        OcrLine("A =", (120.0, 200.0, 160.0, 230.0), 0.88),
+        OcrLine("f(x)", (173.0, 200.0, 205.0, 219.0), 0.94),
+        OcrLine("dx", (172.0, 212.0, 212.0, 236.0), 0.91),
+        OcrLine("+ B", (218.0, 202.0, 260.0, 230.0), 0.90),
+        OcrLine("Col L", (120.0, 300.0, 180.0, 312.0), 0.95),
+        OcrLine("Col R", (196.0, 300.0, 260.0, 312.0), 0.95),
+    ]
+    blocks = _cluster_orphan_lines(orphans, 1.0, 1.0)
+    assert len(blocks) == 3, [b.text for b in blocks]
+    assert "A =" in blocks[0].text and "+ B" in blocks[0].text
+    assert [b.text for b in blocks[1:]] == ["Col L", "Col R"]
+
+
+def test_reading_order_one_to_many_containment_and_no_gt_order_leak():
+    from pdf.eval.gt import PT_PER_PX_150DPI
+    from pdf.eval.reading_order import _match_elements_to_gt, kendall_tau_matched, kendall_tau_penalized
+
+    scale = 1.0 / PT_PER_PX_150DPI
+    gt_stack = [
+        {"id": "g0", "order": 0, "bbox": [100.0 * scale, 50.0 * scale, 450.0 * scale, 80.0 * scale]},
+        {"id": "g1", "order": 1, "bbox": [120.0 * scale, 100.0 * scale, 420.0 * scale, 130.0 * scale]},
+        {"id": "g2", "order": 2, "bbox": [120.0 * scale, 138.0 * scale, 420.0 * scale, 168.0 * scale]},
+        {"id": "g3", "order": 3, "bbox": [120.0 * scale, 176.0 * scale, 420.0 * scale, 206.0 * scale]},
+    ]
+    pred_stack = [
+        {"type": "text", "level": 1, "bbox": [100.0, 50.0, 450.0, 80.0], "text": "Intro"},
+        {"type": "text", "level": 1, "bbox": [115.0, 98.0, 425.0, 208.0], "text": "Eq1 Eq2 Eq3"},
+    ]
+    matched = _match_elements_to_gt(pred_stack, gt_stack)
+    assert matched == ["g0", "g1", "g2", "g3"], matched
+    assert kendall_tau_penalized(matched, ["g0", "g1", "g2", "g3"]) == 1.0
+
+    # A single box spanning two columns must sort covered GTs geometrically (y, x), not by gt["order"].
+    gt_two_col = [
+        {"id": "l1", "order": 0, "bbox": [40.0 * scale, 100.0 * scale, 200.0 * scale, 130.0 * scale]},
+        {"id": "l2", "order": 1, "bbox": [40.0 * scale, 150.0 * scale, 200.0 * scale, 180.0 * scale]},
+        {"id": "r1", "order": 2, "bbox": [300.0 * scale, 100.0 * scale, 460.0 * scale, 130.0 * scale]},
+        {"id": "r2", "order": 3, "bbox": [300.0 * scale, 150.0 * scale, 460.0 * scale, 180.0 * scale]},
+    ]
+    giant_box = [{"type": "text", "level": 1, "bbox": [35.0, 95.0, 465.0, 185.0], "text": "merged"}]
+    giant_matched = _match_elements_to_gt(giant_box, gt_two_col)
+    assert giant_matched == ["l1", "r1", "l2", "r2"], giant_matched
+    assert kendall_tau_matched(giant_matched, ["l1", "l2", "r1", "r2"]) < 1.0
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

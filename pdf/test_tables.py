@@ -1216,6 +1216,190 @@ def test_tatr_1d_clustering_and_snap_intervals_boundaries():
                 assert snapped[idx - 1][1] <= lo
 
 
+def test_tatr_projected_header_filter_and_multiline_row_collapse():
+    # Reject projected row header when tokens span >=2 separated columns; collapse over-segmented multi-line body row.
+    objects = [
+        ("table", (0.0, 0.0, 300.0, 180.0), 0.99),
+        ("table column", (0.0, 0.0, 100.0, 180.0), 0.95),
+        ("table column", (100.0, 0.0, 200.0, 180.0), 0.95),
+        ("table column", (200.0, 0.0, 300.0, 180.0), 0.95),
+        ("table row", (0.0, 0.0, 300.0, 40.0), 0.96),
+        ("table row", (0.0, 40.0, 300.0, 80.0), 0.94),
+        ("table row", (0.0, 80.0, 300.0, 120.0), 0.94),
+        ("table row", (0.0, 120.0, 300.0, 180.0), 0.95),
+        ("table column header", (0.0, 0.0, 300.0, 40.0), 0.96),
+        ("table spanning cell", (0.0, 40.0, 100.0, 120.0), 0.92),
+        ("table spanning cell", (200.0, 40.0, 300.0, 120.0), 0.91),
+        ("table projected row header", (0.0, 120.0, 300.0, 180.0), 0.88),
+    ]
+    tokens = [
+        ("Study", (10.0, 10.0, 60.0, 28.0)),
+        ("Notes", (110.0, 10.0, 160.0, 28.0)),
+        ("Result", (210.0, 10.0, 260.0, 28.0)),
+        ("S1", (15.0, 60.0, 45.0, 85.0)),
+        ("LineA", (110.0, 48.0, 160.0, 68.0)),
+        ("LineB", (110.0, 88.0, 160.0, 108.0)),
+        ("Pass", (215.0, 60.0, 260.0, 85.0)),
+        ("S2", (15.0, 140.0, 45.0, 160.0)),
+        ("Mid", (115.0, 140.0, 155.0, 160.0)),
+        ("Fail", (215.0, 140.0, 255.0, 160.0)),
+    ]
+    tbl = objects_to_table(objects, (300, 180), (0.0, 0.0, 300.0, 180.0), tokens)
+    assert tbl.num_rows == 3 and tbl.num_cols == 3
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(1, 0)].rowspan == 1 and by_rc[(1, 0)].text == "S1"
+    assert by_rc[(1, 1)].text == "LineA LineB"
+    assert by_rc[(2, 0)].colspan == 1 and by_rc[(2, 0)].text == "S2"
+    assert by_rc[(2, 1)].text == "Mid"
+    assert by_rc[(2, 2)].text == "Fail"
+
+
+def test_tatr_undersegmented_splits_dot_leaders_and_vertical_headers():
+    # Column 1 splits via body gutter; row 1 splits via aligned Y-bands; dot-leader splits across cols; vertical header sorts bottom-to-top.
+    objects = [
+        ("table", (0.0, 0.0, 300.0, 220.0), 0.99),
+        ("table column", (0.0, 0.0, 100.0, 220.0), 0.95),
+        ("table column", (100.0, 0.0, 300.0, 220.0), 0.95),
+        ("table row", (0.0, 0.0, 300.0, 70.0), 0.96),
+        ("table row", (0.0, 70.0, 300.0, 220.0), 0.94),
+        ("table column header", (0.0, 0.0, 300.0, 70.0), 0.95),
+    ]
+    tokens = [
+        ("generation", (20.0, 5.0, 40.0, 35.0)),
+        ("Key", (20.0, 38.0, 40.0, 65.0)),
+        ("Pts", (130.0, 20.0, 160.0, 42.0)),
+        ("Team", (230.0, 20.0, 275.0, 42.0)),
+        ("Alpha", (15.0, 80.0, 70.0, 100.0)),
+        ("7½.....Coastal Carolina", (125.0, 80.0, 290.0, 100.0)),
+        ("Beta", (15.0, 130.0, 65.0, 150.0)),
+        ("3", (135.0, 130.0, 150.0, 150.0)),
+        ("Miami", (230.0, 130.0, 280.0, 150.0)),
+        ("Gamma", (15.0, 180.0, 70.0, 200.0)),
+        ("5", (135.0, 180.0, 150.0, 200.0)),
+        ("Duke", (230.0, 180.0, 275.0, 200.0)),
+    ]
+    tbl = objects_to_table(objects, (300, 220), (0.0, 0.0, 300.0, 220.0), tokens)
+    assert tbl.num_rows == 4 and tbl.num_cols == 3
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 0)].text == "Key generation"
+    assert by_rc[(1, 1)].text == "7½....."
+    assert by_rc[(1, 2)].text == "Coastal Carolina"
+    assert by_rc[(2, 1)].text == "3" and by_rc[(2, 2)].text == "Miami"
+    assert by_rc[(3, 1)].text == "5" and by_rc[(3, 2)].text == "Duke"
+
+
+def test_tatr_rotated_90_orientation_calibration_and_auto_1xn():
+    import pdfplumber
+    from pdf.backends.tatr_onnx import TatrOnnxTableExtractor
+
+    # 90deg CCW rotated 2x2 table in a (120x200) crop; vertical tokens trigger CW 90deg rotation before TATR.
+    class _RotTatr(TatrOnnxTableExtractor):
+        def __init__(self):
+            super().__init__()
+            self.seen_sizes = []
+
+        def ensure_loaded(self) -> bool:
+            return False
+
+        def detect_objects(self, crop: Image.Image):
+            self.seen_sizes.append(crop.size)
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.9999),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.99),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.99),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.99),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.99),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.99),
+            ]
+
+    ext = _RotTatr()
+    img = Image.new("RGB", (120, 200), (255, 255, 255))
+    # Vertical tokens in original (120x200) -> after CW 90deg in (200x120): (200-y1, x0, 200-y0, x1).
+    rot_tokens = [
+        ("HdrA", (15.0, 140.0, 45.0, 190.0)),
+        ("HdrB", (15.0, 10.0, 45.0, 70.0)),
+        ("Val1", (75.0, 140.0, 105.0, 190.0)),
+        ("Val2", (75.0, 10.0, 105.0, 70.0)),
+        ("Extra", (75.0, 145.0, 105.0, 185.0)),
+    ]
+    tbl = ext.extract(img, (0.0, 0.0, 120.0, 200.0), rot_tokens)
+    assert ext.seen_sizes == [(200, 120)]
+    assert tbl.num_rows == 2 and tbl.num_cols == 2
+    assert tbl.confidence <= 0.96 and all(c.confidence <= 0.96 for c in tbl.cells)
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 0)].text == "HdrA" and by_rc[(0, 1)].text == "HdrB"
+    assert by_rc[(0, 0)].bbox == (0.0, 100.0, 60.0, 200.0)
+
+    # Low-confidence grid scores strictly lower than clean high-confidence grid.
+    degraded = objects_to_table(
+        [
+            ("table", (0.0, 0.0, 100.0, 80.0), 0.99),
+            ("table row", (0.0, 0.0, 100.0, 40.0), 0.62),
+            ("table row", (0.0, 40.0, 100.0, 80.0), 0.62),
+            ("table column", (0.0, 0.0, 50.0, 80.0), 0.64),
+            ("table column", (50.0, 0.0, 100.0, 80.0), 0.64),
+        ],
+        (100, 80),
+        (0.0, 0.0, 100.0, 80.0),
+        (),
+    )
+    assert degraded.confidence < tbl.confidence
+
+    # AutoTableExtractor 1xN (1x2) falls back to TATR when TATR recovers >=2x2.
+    class _Mock1x2Plumber:
+        def extract_from_page(self, _page, table_boxes_pt, **_kw):
+            b = table_boxes_pt[0]
+            return [
+                ExtractedTable(
+                    bbox=b,
+                    num_rows=1,
+                    num_cols=2,
+                    cells=(
+                        TableCell(0, 0, 1, 1, "H1 R1", (b[0], b[1], (b[0] + b[2]) * 0.5, b[3]), True),
+                        TableCell(0, 1, 1, 1, "H2 V1", ((b[0] + b[2]) * 0.5, b[1], b[2], b[3]), True),
+                    ),
+                    source="pdfplumber",
+                    confidence=1.0,
+                )
+            ]
+
+    class _Mock2x2Tatr:
+        def _objs(self, cw: float, ch: float):
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.93),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.91),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.91),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.91),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.91),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.91),
+            ]
+
+        def detect_objects(self, crop: Image.Image):
+            return self._objs(float(crop.width), float(crop.height))
+
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            return objects_to_table(self._objs(float(image.width), float(image.height)), image.size, table_bbox_pt, tokens)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "one_row.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=300, height=200)
+        p.insert_text((50, 60), "H1", fontsize=10)
+        p.insert_text((170, 60), "H2", fontsize=10)
+        p.insert_text((50, 100), "R1", fontsize=10)
+        p.insert_text((170, 100), "V1", fontsize=10)
+        b.save(pdf_path)
+        with pdfplumber.open(str(pdf_path)) as doc:
+            out = extract_tables_on_page(
+                doc.pages[0],
+                [(35.0, 40.0, 240.0, 125.0)],
+                extractor=AutoTableExtractor(pdfplumber_extractor=_Mock1x2Plumber(), tatr_extractor=_Mock2x2Tatr()),
+            )[0]
+    assert out.source == "auto_tatr" and out.num_rows == 2 and out.num_cols == 2
+    assert [c.text for c in out.cells] == ["H1", "H2", "R1", "V1"]
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -23,7 +23,7 @@ from pdf.eval.gt import (  # noqa: E402
     build_raster_pdf,
     omnidoc_image_split,
 )
-from pdf.eval.metrics import iou, median  # noqa: E402
+from pdf.eval.metrics import area, inter, iou, median  # noqa: E402
 
 _BLK_TAG_RE = re.compile(r"\bBLK_\d{2}\b")
 _EXCLUDED_SAMPLE_PAGES = frozenset(OMNIDOC_SAMPLE_PAGES)
@@ -247,6 +247,7 @@ def _match_elements_to_gt(
     gt_blocks: Sequence[dict[str, Any]],
     *,
     min_iou: float = 0.1,
+    min_containment: float = 0.6,
 ) -> list[Any]:
     top_elems = [el for el in pred_elems if int(el.get("level", 1)) == 1]
     gt_boxes_pt = [[v * PT_PER_PX_150DPI for v in b["bbox"]] for b in gt_blocks]
@@ -261,18 +262,45 @@ def _match_elements_to_gt(
     )
     used_e: set[int] = set()
     used_g: set[int] = set()
-    elem_to_gt: dict[int, Any] = {}
+    elem_to_gts: dict[int, list[int]] = defaultdict(list)
     for _, ei, gi in candidates:
         if ei in used_e or gi in used_g:
             continue
         used_e.add(ei)
         used_g.add(gi)
-        elem_to_gt[ei] = gt_blocks[gi]["id"]
+        elem_to_gts[ei].append(gi)
+
+    # Allow a single coarser element (e.g. multi-line formula or figure) to cover multiple GT blocks.
+    for gi, gb in enumerate(gt_boxes_pt):
+        if gi in used_g:
+            continue
+        g_area = area(gb)
+        if g_area <= 0.0:
+            continue
+        best_ei: int | None = None
+        best_key: tuple[float, float, float] | None = None
+        for ei, el in enumerate(top_elems):
+            if el.get("type") not in ("figure", "table") and not str(el.get("text", "")).strip():
+                continue
+            ioa = inter(el["bbox"], gb) / g_area
+            if ioa < min_containment:
+                continue
+            key = (area(el["bbox"]), -ioa, -iou(el["bbox"], gb))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_ei = ei
+        if best_ei is not None:
+            used_g.add(gi)
+            elem_to_gts[best_ei].append(gi)
 
     ordered_pred: list[Any] = []
     for ei in range(len(top_elems)):
-        if ei in elem_to_gt:
-            ordered_pred.append(elem_to_gt[ei])
+        if ei in elem_to_gts:
+            gis = sorted(
+                elem_to_gts[ei],
+                key=lambda gi: (round(gt_boxes_pt[gi][1] / 6.0), round(gt_boxes_pt[gi][0], 1), gi),
+            )
+            ordered_pred.extend(gt_blocks[gi]["id"] for gi in gis)
         else:
             ordered_pred.append(("unmatched", ei))
     return ordered_pred

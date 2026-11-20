@@ -15,6 +15,7 @@ _FOOTER_BAND_FRAC = 0.90
 _MIN_MULTI_PAGE_DOCS = 3
 _MIN_REPEAT_PAGES = 3
 _MIN_REPEAT_FRAC = 0.5
+_SUSPECT_OCR_MAX_CONF = 0.85
 _GROUPER_SOURCES = frozenset({"v1_group", "v2_vector_vision"})
 _ROMAN_NUMERAL_RE = re.compile(
     r"(?<![A-Za-z])(?:(?=[IVXLCD]+(?![A-Za-z]))D?C{0,3}(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))(?![A-Za-z])",
@@ -183,13 +184,20 @@ def merge_hybrid_region_ocr(
     return kept_words, kept_ocr
 
 
-def _text_item(blk: TextBlock, *, level: int, parent_index: int | None) -> AssembledItem:
+def _text_item(
+    blk: TextBlock,
+    *,
+    level: int,
+    parent_index: int | None,
+    max_conf: float | None = None,
+) -> AssembledItem:
+    conf = blk.confidence if max_conf is None else round(min(float(blk.confidence), max_conf), 4)
     return AssembledItem(
         kind="text",
         bbox=blk.bbox,
         text=blk.text,
         source=blk.source,
-        confidence=blk.confidence,
+        confidence=conf,
         level=level,
         parent_index=parent_index,
         font_size=blk.font_size,
@@ -235,7 +243,7 @@ def _assign_blocks_to_tables(
     return body_blocks, table_children
 
 
-def _assemble_raster(raster_page: RasterPage) -> list[AssembledItem]:
+def _assemble_raster(raster_page: RasterPage, *, max_text_conf: float | None = None) -> list[AssembledItem]:
     body_blocks, table_children = _assign_blocks_to_tables(raster_page.blocks, raster_page.figures)
     top_nodes: list[tuple[str, BBox, TextBlock | tuple[int, FigureBox]]] = [
         ("text", blk.bbox, blk) for blk in body_blocks
@@ -249,7 +257,7 @@ def _assemble_raster(raster_page: RasterPage) -> list[AssembledItem]:
         if kind == "text":
             blk = payload
             assert isinstance(blk, TextBlock)
-            items.append(_text_item(blk, level=1, parent_index=None))
+            items.append(_text_item(blk, level=1, parent_index=None, max_conf=max_text_conf))
             continue
 
         fig_idx, fig = payload  # type: ignore[misc]
@@ -267,7 +275,7 @@ def _assemble_raster(raster_page: RasterPage) -> list[AssembledItem]:
         )
         if fig.kind == "table":
             for child in xy_cut_order(table_children.get(fig_idx, ()), lambda b: b.bbox):
-                items.append(_text_item(child, level=2, parent_index=parent_idx))
+                items.append(_text_item(child, level=2, parent_index=parent_idx, max_conf=max_text_conf))
     return items
 
 
@@ -283,7 +291,7 @@ def assemble_page(
             return []
         return _assemble_raster(raster_page)
     if profile.kind == "hybrid" and profile.suspect_ocr_layer and raster_page is not None:
-        return _assemble_raster(raster_page)
+        return _assemble_raster(raster_page, max_text_conf=_SUSPECT_OCR_MAX_CONF)
 
     kept_figures = filter_overlapping_figures(figures)
     body_words, box_words = _assign_words_to_boxes(words, kept_figures)

@@ -198,6 +198,7 @@ def test_assemble_page_hybrid_suspect_ocr_fallback():
     ocr_items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), raster_page=rp)
     assert len(ocr_items) == 1
     assert ocr_items[0].text == "OCR clean text" and ocr_items[0].source == "ocr"
+    assert 0.0 <= ocr_items[0].confidence <= 0.85
 
     layer_items = assemble_page(profile, words, (0.0, 0.0, 600.0, 800.0), raster_page=None)
     assert len(layer_items) == 1
@@ -538,6 +539,36 @@ def test_tag_running_headers_footers_preserves_appendix_letters():
     ]
     tag_running_headers_footers(elems, page_heights)
     assert all("role" not in e["metadata"] for e in elems), elems
+
+
+def test_ir_low_confidence_warning_emitted():
+    from PIL import Image
+
+    class _FakeReader:
+        last_stats = None
+
+        def read(self, pdf_path, pages, **kwargs):
+            del pdf_path, kwargs
+            return {
+                p: RasterPage(
+                    blocks=(TextBlock("Blurry text", (50.0, 60.0, 220.0, 80.0), 0.0, False, "ocr", 0.62, label="text"),),
+                    figures=(),
+                    reading_order=(0,),
+                )
+                for p in pages
+            }
+
+    buf = io.BytesIO()
+    Image.new("RGB", (600, 800), (255, 255, 255)).save(buf, format="PNG")
+    b = TestPdfBuilder()
+    b.new_page(width=600, height=800).insert_image((0, 0, 600, 800), stream=buf.getvalue())
+    b.new_page(width=600, height=800).insert_text((72, 120), "Clean native body text " * 4, fontsize=11)
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "low_conf.pdf"
+        b.save(pdf_path)
+        ir = ir_mod.extract_ir(pdf_path, figures=False, ocr=True, reader=_FakeReader(), structure=False)
+    low_warnings = [w for w in ir["metadata"]["warnings"] if w.get("code") == "low_confidence"]
+    assert len(low_warnings) == 1 and low_warnings[0]["page"] == 1
 
 
 def main():

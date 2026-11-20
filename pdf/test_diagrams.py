@@ -15,6 +15,7 @@ from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.backends import registered  # noqa: E402
 from pdf.eval.diagrams import (  # noqa: E402
     bench_synthetic_diagrams,
+    bench_synthetic_visual_diagrams,
     build_diagram_fixtures,
     check_diagram_integrity,
     diagram_graph_metrics,
@@ -506,6 +507,187 @@ def test_bench_gt_diagrams_ignores_unrelated_zero_iou_diagram_and_checks_integri
         finally:
             figures_mod.detect_figures = orig_detect
         assert res["fixtures"][0]["node_fp"] == 0 and res["fixtures"][0]["node_fn"] == 1
+
+
+def _render_pdf_page_to_raster_pdf(src_pdf: Path, dst_pdf: Path, tmp_dir: Path, *, dpi: int = 150) -> tuple[float, float]:
+    from pdf._pdf_io import page_bbox
+
+    with pdfplumber.open(str(src_pdf)) as doc:
+        p0 = doc.pages[0]
+        pb = page_bbox(p0)
+        img = p0.to_image(resolution=dpi).original.convert("RGB")
+    img_path = tmp_dir / f"{dst_pdf.stem}.png"
+    img.save(img_path)
+    rb = TestPdfBuilder()
+    rp = rb.new_page(width=pb[2], height=pb[3])
+    rp.insert_image((0.0, 0.0, pb[2], pb[3]), filename=img_path)
+    rb.save(dst_pdf)
+    return pb[2], pb[3]
+
+
+def test_visual_fallback_lazy_ocr_and_bitmap_on_native_page():
+    import pdf.diagrams as diag_mod
+    from pdf._pdf_io import page_bbox
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fixtures = build_diagram_fixtures(tmp_path)
+        flow = next(f for f in fixtures if f["name"] == "flowchart")
+
+        # 1. Vector path must never invoke OCR backend.
+        orig_get_backend = diag_mod.get_backend
+        ocr_calls = 0
+
+        def _spy_get_backend(kind: str, name: str, **opts):
+            nonlocal ocr_calls
+            if kind == "ocr":
+                ocr_calls += 1
+            return orig_get_backend(kind, name, **opts)
+
+        diag_mod.get_backend = _spy_get_backend
+        try:
+            with pdfplumber.open(str(flow["pdf_path"])) as doc:
+                vec_out = diag_mod.extract_diagrams_on_page(doc.pages[0], [tuple(flow["figure_bbox"])], is_raster=False)
+            assert len(vec_out) == 1 and vec_out[0].nodes
+            assert getattr(vec_out[0], "metadata", None) is None
+            assert ocr_calls == 0
+        finally:
+            diag_mod.get_backend = orig_get_backend
+
+        # 2. Bitmap figure embedded on a native page triggers visual fallback when vectors are absent.
+        with pdfplumber.open(str(flow["pdf_path"])) as doc:
+            p0 = doc.pages[0]
+            pb = page_bbox(p0)
+            cropped = p0.crop(tuple(flow["figure_bbox"])).to_image(resolution=150).original.convert("RGB")
+        bmp_path = tmp_path / "flow_crop.png"
+        cropped.save(bmp_path)
+
+        hybrid_pdf = tmp_path / "hybrid_bitmap_fig.pdf"
+        hb = TestPdfBuilder()
+        hp = hb.new_page(width=pb[2], height=pb[3])
+        hp.insert_text((45.0, 40.0), "Native surrounding paragraph text.", fontsize=11.0)
+        hp.insert_image(tuple(flow["figure_bbox"]), filename=bmp_path)
+        hb.save(hybrid_pdf)
+
+        fig_box = FigureBox(tuple(flow["figure_bbox"]), "figure", "layout_picture", 0.92)
+        ir = _extract_ir_with_fig_boxes(hybrid_pdf, [fig_box], diagrams=True)
+        assert len(ir["diagrams"]) == 1
+        d = ir["diagrams"][0]
+        assert check_diagram_integrity(d) == []
+        assert d["source"] == "vector_graph"
+        assert d["metadata"]["extraction_mode"] == "visual_fallback"
+        assert 0.55 <= d["confidence"] < 0.90 < 1.0
+        m = diagram_graph_metrics(d, flow["gt_diagram"])
+        assert m["node_f1"] >= 0.85 and m["edge_f1"] >= 0.80 and m["text_to_shape_acc"] >= 0.90, m
+
+
+def test_visual_raster_diagram_e2e_extract_ir_with_ocr():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fixtures = build_diagram_fixtures(tmp_path)
+        swim = next(f for f in fixtures if f["name"] == "swimlane_dag")
+        raster_pdf = tmp_path / "swim_raster.pdf"
+        _render_pdf_page_to_raster_pdf(swim["pdf_path"], raster_pdf, tmp_path)
+
+        fig_box = FigureBox(tuple(swim["figure_bbox"]), "figure", "layout_picture", 0.91)
+
+        class _FakeReader:
+            name = "fake_reader"
+            last_stats = None
+
+            def read(self, _path, pages):
+                return {
+                    pno: RasterPage(blocks=(), figures=(fig_box,), reading_order=(0,))
+                    for pno in pages
+                }
+
+        ir = ir_mod.extract_ir(
+            raster_pdf,
+            figures=True,
+            ocr=True,
+            tables=False,
+            diagrams=True,
+            reader=_FakeReader(),
+        )
+        assert json.loads(json.dumps(ir)) == ir
+        assert len(ir["diagrams"]) == 1
+        d = ir["diagrams"][0]
+        assert check_diagram_integrity(d) == []
+        assert d["source"] == "vector_graph"
+        assert d["metadata"]["extraction_mode"] == "visual_fallback"
+        assert 0.55 <= d["confidence"] < 0.90
+        assert len(d["groups"]) >= 2
+        assert any(g["parent_group_id"] is not None for g in d["groups"])
+        m = diagram_graph_metrics(d, swim["gt_diagram"])
+        assert m["node_f1"] == 1.0 and m["edge_f1"] == 1.0 and m["text_to_shape_acc"] == 1.0, m
+
+
+def test_visual_diamond_ellipse_and_chevron_shapes():
+    import cv2
+    import numpy as np
+    from pdf.diagrams import diagram_to_ir_dict, extract_diagrams_on_page
+
+    img = np.full((360, 760, 3), 255, dtype=np.uint8)
+    # Ellipse ("Start") -> Diamond ("Check") -> Rect ("Finish") with open V-chevron arrowheads.
+    cv2.ellipse(img, (110, 180), (70, 42), 0, 0, 360, (0, 0, 0), 2)
+    cv2.putText(img, "Start", (78, 187), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 2, cv2.LINE_AA)
+
+    diamond_pts = np.array([[380, 120], [455, 180], [380, 240], [305, 180]], dtype=np.int32)
+    cv2.polylines(img, [diamond_pts], True, (0, 0, 0), 2)
+    cv2.putText(img, "Check", (345, 187), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 0, 0), 2, cv2.LINE_AA)
+
+    cv2.rectangle(img, (560, 140), (700, 220), (0, 0, 0), 2)
+    cv2.putText(img, "Finish", (594, 187), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 2, cv2.LINE_AA)
+
+    cv2.line(img, (180, 180), (305, 180), (0, 0, 0), 2)
+    cv2.line(img, (292, 172), (305, 180), (0, 0, 0), 2)
+    cv2.line(img, (292, 188), (305, 180), (0, 0, 0), 2)
+
+    cv2.line(img, (455, 180), (560, 180), (0, 0, 0), 2)
+    cv2.line(img, (547, 172), (560, 180), (0, 0, 0), 2)
+    cv2.line(img, (547, 188), (560, 180), (0, 0, 0), 2)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        img_path = tmp_path / "shapes.png"
+        Image.fromarray(img).save(img_path)
+        pdf_path = tmp_path / "shapes_raster.pdf"
+        rb = TestPdfBuilder()
+        rp = rb.new_page(width=400.0, height=200.0)
+        rp.insert_image((0.0, 0.0, 400.0, 200.0), filename=img_path)
+        rb.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            parsed = extract_diagrams_on_page(doc.pages[0], [(5.0, 5.0, 395.0, 195.0)], is_raster=True)
+        assert len(parsed) == 1
+        d = diagram_to_ir_dict("diag_0001", "elem_0001", 1, pdf_path.name, parsed[0])
+        assert check_diagram_integrity(d) == []
+        assert d["metadata"]["extraction_mode"] == "visual_fallback"
+        assert 0.55 <= d["confidence"] < 0.90
+        by_type = {n["shape_type"]: n["label"].lower() for n in d["nodes"]}
+        assert "ellipse" in by_type and "start" in by_type["ellipse"], d["nodes"]
+        assert "diamond" in by_type and "check" in by_type["diamond"], d["nodes"]
+        assert "rect" in by_type and "finish" in by_type["rect"], d["nodes"]
+        assert sum(1 for e in d["edges"] if e["direction"] == "directed") >= 2, d["edges"]
+
+
+def test_visual_synthetic_diagram_benchmark_passes_kpis():
+    res = bench_synthetic_visual_diagrams()
+    assert res["diagrams"] == 6
+    assert res["integrity_violations"] == 0, res["fixtures"]
+    assert res["node_f1"] >= 0.85, res
+    assert res["edge_f1"] >= 0.80, res
+    assert res["text_to_shape_acc"] >= 0.90, res
+    for row in res["fixtures"]:
+        assert row.get("extraction_mode") == "visual_fallback", row
+        assert 0.55 <= row["confidence"] < 0.90, row
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log_path = Path(tmp) / "eval_runs.jsonl"
+        assert diagrams_main(["--task", "visual", "--split", "dev", "--log-file", str(log_path)]) == 0
+        lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(lines) == 1
+        assert lines[0]["task"] == "diagrams:visual"
 
 
 def main():

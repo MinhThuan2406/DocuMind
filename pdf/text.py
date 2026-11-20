@@ -517,6 +517,20 @@ def xy_cut_order(
                 return cols
         return None
 
+    def _has_multi_row_cols(group: list[tuple[T, BBox]]) -> bool:
+        cols = _split_x(group)
+        if cols is None:
+            return False
+        for idx in range(len(cols) - 1):
+            col_a, col_b = cols[idx], cols[idx + 1]
+            min_ya, max_ya = min(p[1][1] for p in col_a), max(p[1][3] for p in col_a)
+            min_yb, max_yb = min(p[1][1] for p in col_b), max(p[1][3] for p in col_b)
+            na = sum(1 for p in col_a if min(p[1][3], max_yb) - max(p[1][1], min_yb) > y_overlap_min)
+            nb = sum(1 for p in col_b if min(p[1][3], max_ya) - max(p[1][1], min_ya) > y_overlap_min)
+            if na >= 1 and nb >= 1 and (na + nb) >= 3:
+                return True
+        return False
+
     def _find_mid_span(
         group: list[tuple[T, BBox]],
         group_w: float,
@@ -584,16 +598,16 @@ def xy_cut_order(
 
         if len(group) >= 3 and group_w > 0.0:
             top_item = min(group, key=lambda p: (p[1][1], p[1][0]))
-            if (top_item[1][2] - top_item[1][0]) >= 0.55 * group_w:
-                rest = [p for p in group if p is not top_item]
-                if len(rest) < len(group) and top_item[1][3] <= min(p[1][1] for p in rest) + y_gap_tol:
-                    return [top_item] + _recurse(rest, depth + 1)
+            rest_top = [p for p in group if p is not top_item]
+            if len(rest_top) < len(group) and top_item[1][3] <= min(p[1][1] for p in rest_top) + y_gap_tol:
+                if _has_multi_row_cols(rest_top):
+                    return [top_item] + _recurse(rest_top, depth + 1)
 
             bot_item = max(group, key=lambda p: (p[1][3], -p[1][0]))
-            if (bot_item[1][2] - bot_item[1][0]) >= 0.55 * group_w:
-                rest = [p for p in group if p is not bot_item]
-                if len(rest) < len(group) and bot_item[1][1] >= max(p[1][3] for p in rest) - y_gap_tol:
-                    return _recurse(rest, depth + 1) + [bot_item]
+            rest_bot = [p for p in group if p is not bot_item]
+            if len(rest_bot) < len(group) and bot_item[1][1] >= max(p[1][3] for p in rest_bot) - y_gap_tol:
+                if _has_multi_row_cols(rest_bot):
+                    return _recurse(rest_bot, depth + 1) + [bot_item]
 
             mid_split = _find_mid_span(group, group_w)
             if mid_split is not None:
@@ -628,12 +642,36 @@ def xy_cut_order(
             bands.append(cur_band)
 
         if len(bands) >= 2 and all(len(band) < len(group) for band in bands):
+            # Peel top/bottom margin bands first when doing so unlocks a column split on the body.
+            rest_after_top = [p for b in bands[1:] for p in b]
+            if len(rest_after_top) >= 2 and _has_multi_row_cols(rest_after_top):
+                return _recurse(bands[0], depth + 1) + _recurse(rest_after_top, depth + 1)
+            rest_before_bot = [p for b in bands[:-1] for p in b]
+            if len(rest_before_bot) >= 2 and _has_multi_row_cols(rest_before_bot):
+                return _recurse(rest_before_bot, depth + 1) + _recurse(bands[-1], depth + 1)
+            if len(bands) >= 3:
+                mid_items = [p for b in bands[1:-1] for p in b]
+                if len(mid_items) >= 2 and _has_multi_row_cols(mid_items):
+                    return (
+                        _recurse(bands[0], depth + 1)
+                        + _recurse(mid_items, depth + 1)
+                        + _recurse(bands[-1], depth + 1)
+                    )
+
             out = []
             for band in bands:
                 out.extend(_recurse(band, depth + 1))
             return out
 
         if len(group) >= 3 and group_w > 0.0:
+            if (top_item[1][2] - top_item[1][0]) >= 0.55 * group_w:
+                if len(rest_top) < len(group) and top_item[1][3] <= min(p[1][1] for p in rest_top) + y_gap_tol:
+                    return [top_item] + _recurse(rest_top, depth + 1)
+
+            if (bot_item[1][2] - bot_item[1][0]) >= 0.55 * group_w:
+                if len(rest_bot) < len(group) and bot_item[1][1] >= max(p[1][3] for p in rest_bot) - y_gap_tol:
+                    return _recurse(rest_bot, depth + 1) + [bot_item]
+
             mid_split = _find_mid_span(group, group_w)
             if mid_split is not None:
                 upper, middle, lower = mid_split

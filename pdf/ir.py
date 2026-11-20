@@ -399,7 +399,8 @@ def extract_ir(
                         tbl_id = f"tbl_{tbl_counter:04d}"
                         tbl_elem["metadata"]["table_id"] = tbl_id
                         tbl_elem["text"] = f"[Table {tbl_id}: {parsed.num_rows}x{parsed.num_cols}]"
-                        extracted_tables.append(table_to_ir_dict(tbl_id, tbl_elem["id"], prof.page, source_file, parsed))
+                        tbl_dict = table_to_ir_dict(tbl_id, tbl_elem["id"], prof.page, source_file, parsed)
+                        extracted_tables.append(tbl_dict)
 
             if diagrams:
                 fig_elems = [e for e in page_elems if e["type"] == "figure" and e["level"] == 1]
@@ -440,6 +441,18 @@ def extract_ir(
                         _link_diagram_text_elements(diag_dict, fig_elem["id"], page_elems)
                         extracted_diagrams.append(diag_dict)
 
+            if (
+                any(float(e["confidence"]) < 0.70 for e in page_elems)
+                or any(float(t["confidence"]) < 0.70 for t in extracted_tables if t["page"] == prof.page)
+                or any(float(d["confidence"]) < 0.70 for d in extracted_diagrams if d["page"] == prof.page)
+            ):
+                warnings.append({
+                    "page": prof.page,
+                    "code": "low_confidence",
+                    "severity": "warning",
+                    "reason": "confidence_below_0.70",
+                    "fallback": None,
+                })
             elements.extend(page_elems)
 
     toc_titles = [title for _, title, _ in toc] if structure else ()

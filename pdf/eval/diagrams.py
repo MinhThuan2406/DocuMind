@@ -586,48 +586,97 @@ def _aggregate_diagram_scores(rows: Sequence[dict[str, Any]], *, wall_sec: float
     }
 
 
-def bench_synthetic_diagrams(*, device: str = "auto") -> dict[str, Any]:
+def _evaluate_diagram_fixture(
+    fix: dict[str, Any],
+    *,
+    is_raster: bool,
+    device: str,
+    dpi: int,
+    tmp_dir: Path,
+) -> dict[str, Any]:
     import pdfplumber
 
+    from pdf._pdf_io import page_bbox
     from pdf.diagrams import diagram_to_ir_dict, extract_diagrams_on_page
     from pdf.text import extract_words
 
+    pdf_path = fix["pdf_path"]
+    fig_box = tuple(float(v) for v in fix["figure_bbox"])
+    if is_raster:
+        with pdfplumber.open(str(pdf_path)) as doc:
+            p0 = doc.pages[0]
+            pb = page_bbox(p0)
+            img = p0.to_image(resolution=dpi).original.convert("RGB")
+        img_path = tmp_dir / f"{fix['name']}_raster.png"
+        img.save(img_path)
+        builder = TestPdfBuilder()
+        rpage = builder.new_page(width=pb[2], height=pb[3])
+        rpage.insert_image((0.0, 0.0, pb[2], pb[3]), filename=img_path)
+        eval_pdf = tmp_dir / f"{fix['name']}_raster.pdf"
+        builder.save(eval_pdf)
+    else:
+        eval_pdf = pdf_path
+
+    with pdfplumber.open(str(eval_pdf)) as doc:
+        page = doc.pages[0]
+        words = () if is_raster else extract_words(page)
+        parsed = extract_diagrams_on_page(
+            page,
+            [fig_box],
+            words=words,
+            is_raster=is_raster,
+            extractor="vector_first",
+            device=device,
+            dpi=dpi,
+        )
+    pred_dict = (
+        diagram_to_ir_dict("diag_0001", "elem_0001", 1, eval_pdf.name, parsed[0])
+        if parsed
+        else {"nodes": [], "edges": [], "groups": []}
+    )
+    violations = check_diagram_integrity(pred_dict)
+    metrics = diagram_graph_metrics(pred_dict, fix["gt_diagram"])
+    row: dict[str, Any] = {
+        "name": fix["name"],
+        "diagram_type": pred_dict.get("diagram_type", ""),
+        "confidence": pred_dict.get("confidence", 0.0),
+        "integrity_violations": len(violations),
+        "violations": violations,
+        **metrics,
+    }
+    mode = (pred_dict.get("metadata") or {}).get("extraction_mode")
+    if mode is not None:
+        row["extraction_mode"] = mode
+    return row
+
+
+def bench_synthetic_diagrams(*, device: str = "auto") -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     t0 = time.perf_counter()
     with tempfile.TemporaryDirectory() as tmp:
-        fixtures = build_diagram_fixtures(Path(tmp))
-        for fix in fixtures:
-            pdf_path = fix["pdf_path"]
-            fig_box = tuple(float(v) for v in fix["figure_bbox"])
-            with pdfplumber.open(str(pdf_path)) as doc:
-                page = doc.pages[0]
-                words = extract_words(page)
-                parsed = extract_diagrams_on_page(
-                    page,
-                    [fig_box],
-                    words=words,
-                    is_raster=False,
-                    extractor="vector_first",
-                    device=device,
-                )
-            pred_dict = (
-                diagram_to_ir_dict("diag_0001", "elem_0001", 1, pdf_path.name, parsed[0])
-                if parsed
-                else {"nodes": [], "edges": [], "groups": []}
-            )
-            violations = check_diagram_integrity(pred_dict)
-            metrics = diagram_graph_metrics(pred_dict, fix["gt_diagram"])
-            rows.append({
-                "name": fix["name"],
-                "diagram_type": pred_dict.get("diagram_type", ""),
-                "integrity_violations": len(violations),
-                "violations": violations,
-                **metrics,
-            })
+        tmp_path = Path(tmp)
+        for fix in build_diagram_fixtures(tmp_path):
+            rows.append(_evaluate_diagram_fixture(fix, is_raster=False, device=device, dpi=150, tmp_dir=tmp_path))
     return _aggregate_diagram_scores(
         rows,
         wall_sec=time.perf_counter() - t0,
         dataset="synthetic_diagrams",
+        split="synthetic",
+        device=device,
+    )
+
+
+def bench_synthetic_visual_diagrams(*, device: str = "auto", dpi: int = 150) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    t0 = time.perf_counter()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        for fix in build_diagram_fixtures(tmp_path / "vec"):
+            rows.append(_evaluate_diagram_fixture(fix, is_raster=True, device=device, dpi=dpi, tmp_dir=tmp_path))
+    return _aggregate_diagram_scores(
+        rows,
+        wall_sec=time.perf_counter() - t0,
+        dataset="synthetic_visual_diagrams",
         split="synthetic",
         device=device,
     )
@@ -725,8 +774,8 @@ def bench_gt_diagrams(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Benchmark vector diagram node-edge extraction.")
-    ap.add_argument("--task", default="synthetic", choices=["synthetic", "gt", "all"])
+    ap = argparse.ArgumentParser(description="Benchmark vector and visual diagram node-edge extraction.")
+    ap.add_argument("--task", default="synthetic", choices=["synthetic", "visual", "gt", "all"])
     ap.add_argument("--split", default="dev", choices=["dev", "test"])
     ap.add_argument("--final", action="store_true", help="Required when --split test")
     ap.add_argument("--gt", default=None, help="Path to golden diagram GT JSON")
@@ -743,6 +792,10 @@ def main(argv: list[str] | None = None) -> int:
         syn = bench_synthetic_diagrams(device=args.device)
         print(json.dumps(syn, ensure_ascii=False))
         results.append(syn)
+    if args.task in ("visual", "all"):
+        vis = bench_synthetic_visual_diagrams(device=args.device)
+        print(json.dumps(vis, ensure_ascii=False))
+        results.append(vis)
     if args.task in ("gt", "all"):
         try:
             gt_res = bench_gt_diagrams(gt_path=args.gt, split=args.split, device=args.device)
