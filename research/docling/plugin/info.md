@@ -3,7 +3,7 @@
 
 ## Docling Plugins
 
-| Component | Default | Selected |
+| Component | Default | OmniDocBench |
 | --- | --- | --- |
 | OCR option | `OcrAutoOptions` | `PP-OCRv6-medium` |
 | Layout model | `docling-layout-heron` | `DocLayout-YOLO release-v2` |

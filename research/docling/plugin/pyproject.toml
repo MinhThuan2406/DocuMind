@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "documind-docling-plugins"
+version = "0.1.0"
+description = "Experimental Docling OCR, layout, and table-structure plugins for DocuMind."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "docling>=2.135,<3",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "paddleocr==3.7.0",
+    "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-win_amd64.whl",
+    # "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-linux_x86_64.whl",
+]
+layout = [
+    "doclayout-yolo @ git+https://github.com/opendatalab/DocLayout-YOLO.git@release-v2",
+]
+table = [
+    "rapid-table==3.0.2",
+    "rapidocr==3.10.0",
+]
+all = [
+    "paddleocr==3.7.0",
+    "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-win_amd64.whl",
+    # "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-linux_x86_64.whl",
+    "doclayout-yolo @ git+https://github.com/opendatalab/DocLayout-YOLO.git@release-v2",
+    "rapid-table==3.0.2",
+    "rapidocr==3.10.0",
+]
+
+[project.entry-points."docling"]
+documind_plugins = "factories"
+
+[tool.setuptools]
+py-modules = ["factories"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["_paddle_ocr*", "_doclayout_yolo*", "_rapid_table*"]
