@@ -30,6 +30,18 @@ DEFAULT_RASTER_DPI = 150
 DEFAULT_HIGH_DPI = 275
 _PASS2_CONF_THRESHOLD = 0.75
 _PASS2_PAD_PT = 4.0
+_TILE_MIN_CLUSTERS = 25
+_TILE_DENSE_MIN_CLUSTERS = 12
+_TILE_SMALL_LINE_RATIO = 0.009
+_TILE_SQUARE_MIN_CLUSTERS = 40
+_TILE_ASPECT_RATIO = 1.15
+_TILE_SEAM_1D_IOU = 0.75
+_TILE_NMS_IOU = 0.40
+_TILE_NMS_IOA = 0.70
+_TILE_NEW_MAX_IOU = 0.30
+_TILE_NEW_MAX_IOA = 0.50
+_TILE_NEW_MIN_SCORE = 0.55
+_TILE_NEW_MIN_AREA_FRAC = 0.005
 _LIST_OR_HEADING_RE = re.compile(
     r"^(?:[•●○◦▪▫‣⁃]|[-–—*+]\s|\(\d{1,3}\)\s|\d{1,3}(?:\.\d+)*[.)]?\s+\S|[a-zA-Z]\)\s|\[[A-Za-z0-9_.:-]{1,40}\]\s|"
     r"(?:chapter|section|appendix|part)\s+(?:\d+|[A-Z]|[IVXLCDM]+)\b)",
@@ -172,8 +184,12 @@ def _can_merge_orphan(
     cur_line: OcrLine,
     cur_box: BBox,
     excluded_boxes_pt: Sequence[BBox],
+    *,
+    last_unit: tuple[OcrLine, BBox] | None = None,
+    is_single_unit: bool | None = None,
 ) -> bool:
-    last_line, last_box = group[-1]
+    last_line, last_box = last_unit if last_unit is not None else group[-1]
+    single_unit = is_single_unit if is_single_unit is not None else (len(group) == 1)
     lh = max(1.0, cur_box[3] - cur_box[1])
     last_lh = max(1.0, last_box[3] - last_box[1])
     if max(lh, last_lh) / min(lh, last_lh) > 1.25:
@@ -192,7 +208,7 @@ def _can_merge_orphan(
         cur_text = cur_line.text.strip()
         if _SECTION_HEADING_RE.match(last_text) and (last_lh > lh * 1.1 or cur_text.endswith((".", "!", "?"))):
             return False
-        if len(group) == 1 and last_lh > lh * 1.15 and not last_text.endswith((",", ";", "-")):
+        if single_unit and last_lh > lh * 1.15 and not last_text.endswith((",", ";", "-")):
             return False
         gap_y = cur_box[1] - grp_box[3]
         max_gap = max(0.95 * max(lh, last_lh), 6.0)
@@ -210,6 +226,15 @@ def _can_merge_orphan(
     return not _overlaps_excluded(cand_box, excluded_boxes_pt)
 
 
+def _unit_repr(members: list[tuple[OcrLine, BBox]], ubox: BBox) -> tuple[OcrLine, BBox]:
+    if len(members) == 1:
+        return members[0]
+    ordered = sorted(members, key=lambda m: (m[1][1], m[1][0]))
+    text = _join_ocr_lines([ln for ln, _ in ordered])
+    avg_conf = sum(ln.confidence for ln, _ in ordered) / len(ordered)
+    return OcrLine(text, ubox, avg_conf), ubox
+
+
 def _cluster_orphan_lines(
     orphans: Sequence[OcrLine],
     sx: float,
@@ -225,18 +250,46 @@ def _cluster_orphan_lines(
     ordered_units = xy_cut_order(units, lambda unit: unit[1])
     groups: list[list[tuple[OcrLine, BBox]]] = []
     group_boxes: list[BBox] = []
+    group_last_units: list[tuple[OcrLine, BBox]] = []
+    group_unit_counts: list[int] = []
     for members, ubox in ordered_units:
-        if (
-            len(members) == 1
-            and groups
-            and _can_merge_orphan(groups[-1], group_boxes[-1], members[0][0], ubox, excluded_boxes_pt)
-        ):
-            groups[-1].append(members[0])
-            gb = group_boxes[-1]
-            group_boxes[-1] = (min(gb[0], ubox[0]), min(gb[1], ubox[1]), max(gb[2], ubox[2]), max(gb[3], ubox[3]))
+        cur_unit = _unit_repr(members, ubox)
+        merged_idx: int | None = None
+        for gi in range(len(groups) - 1, -1, -1):
+            if not _can_merge_orphan(
+                groups[gi],
+                group_boxes[gi],
+                cur_unit[0],
+                ubox,
+                excluded_boxes_pt,
+                last_unit=group_last_units[gi],
+                is_single_unit=(group_unit_counts[gi] == 1),
+            ):
+                continue
+            gb = group_boxes[gi]
+            cand_box = (min(gb[0], ubox[0]), min(gb[1], ubox[1]), max(gb[2], ubox[2]), max(gb[3], ubox[3]))
+            other_boxes = [group_boxes[k] for k in range(len(groups)) if k != gi]
+            if other_boxes and _overlaps_excluded(cand_box, other_boxes):
+                continue
+            merged_idx = gi
+            break
+
+        if merged_idx is not None:
+            groups[merged_idx].extend(members)
+            gb = group_boxes[merged_idx]
+            group_boxes[merged_idx] = (
+                min(gb[0], ubox[0]),
+                min(gb[1], ubox[1]),
+                max(gb[2], ubox[2]),
+                max(gb[3], ubox[3]),
+            )
+            group_last_units[merged_idx] = cur_unit
+            group_unit_counts[merged_idx] += 1
         else:
             groups.append(list(members))
             group_boxes.append(ubox)
+            group_last_units.append(cur_unit)
+            group_unit_counts.append(1)
 
     blocks: list[TextBlock] = []
     for grp in groups:
@@ -265,6 +318,13 @@ def _assign_lines_to_clusters(
                 if frac > best_frac:
                     best_frac = frac
                     best_cid = c.id
+            if best_cid is None:
+                for c in text_targets:
+                    padded = (c.bbox[0] - 2.0, c.bbox[1] - 2.0, c.bbox[2] + 2.0, c.bbox[3] + 2.0)
+                    frac = bbox_inter_area(line.bbox, padded) / l_area
+                    if frac > best_frac:
+                        best_frac = frac
+                        best_cid = c.id
         if best_cid is not None:
             by_cluster[best_cid].append(line)
             continue
@@ -290,6 +350,140 @@ def _line_matches_cluster_pt(line_pt: BBox, cluster_pt: BBox) -> bool:
     )
 
 
+def _iou_1d(a0: float, a1: float, b0: float, b1: float) -> float:
+    inter = max(0.0, min(a1, b1) - max(a0, b0))
+    if inter <= 0.0:
+        return 0.0
+    union = max(0.0, a1 - a0) + max(0.0, b1 - b0) - inter
+    return inter / union if union > 0.0 else 0.0
+
+
+def _box_iou_ioa(a: BBox, b: BBox) -> tuple[float, float]:
+    inter = bbox_inter_area(a, b)
+    if inter <= 0.0:
+        return 0.0, 0.0
+    aa = bbox_area(a)
+    ab = bbox_area(b)
+    union = aa + ab - inter
+    min_a = min(aa, ab)
+    return (inter / union if union > 0.0 else 0.0), (inter / min_a if min_a > 0.0 else 0.0)
+
+
+def _should_tile_for_tables(clusters: Sequence[Cluster], ocr_lines: Sequence[OcrLine], ih: int) -> bool:
+    if len(clusters) >= _TILE_MIN_CLUSTERS:
+        return True
+    if len(clusters) < _TILE_DENSE_MIN_CLUSTERS or ih <= 0:
+        return False
+    heights = sorted(
+        ln.bbox[3] - ln.bbox[1]
+        for ln in ocr_lines
+        if ln.text and ln.text.strip() and ln.bbox[3] > ln.bbox[1]
+    )
+    if not heights:
+        return False
+    mid = len(heights) // 2
+    med_h = heights[mid] if len(heights) % 2 == 1 else 0.5 * (heights[mid - 1] + heights[mid])
+    return (med_h / ih) < _TILE_SMALL_LINE_RATIO
+
+
+def _build_table_tiles(iw: int, ih: int, cluster_count: int) -> list[tuple[int, int, tuple[int, int, int, int]]]:
+    if iw < 2 or ih < 2:
+        return []
+    x_lo = max(0, min(iw - 1, int(round(0.45 * iw))))
+    x_hi = min(iw, max(1, int(round(0.55 * iw))))
+    y_lo = max(0, min(ih - 1, int(round(0.45 * ih))))
+    y_hi = min(ih, max(1, int(round(0.55 * ih))))
+    if ih >= _TILE_ASPECT_RATIO * iw:
+        return [(0, 0, (0, 0, iw, y_hi)), (1, 0, (0, y_lo, iw, ih))]
+    if iw >= _TILE_ASPECT_RATIO * ih:
+        return [(0, 0, (0, 0, x_hi, ih)), (0, 1, (x_lo, 0, iw, ih))]
+    if cluster_count >= _TILE_SQUARE_MIN_CLUSTERS:
+        return [
+            (0, 0, (0, 0, x_hi, y_hi)),
+            (0, 1, (x_lo, 0, iw, y_hi)),
+            (1, 0, (0, y_lo, x_hi, ih)),
+            (1, 1, (x_lo, y_lo, iw, ih)),
+        ]
+    return []
+
+
+def _seam_merge_tile_tables(
+    detections: Sequence[tuple[int, int, BBox, float]],
+    tiles_by_rc: Mapping[tuple[int, int], tuple[int, int, int, int]],
+) -> list[tuple[BBox, float]]:
+    n = len(detections)
+    if n == 0:
+        return []
+    parent = list(range(n))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        ri, ci, bi, _ = detections[i]
+        for j in range(i + 1, n):
+            rj, cj, bj, _ = detections[j]
+            merge = False
+            if ri == rj and abs(ci - cj) == 1:
+                left_col = min(ci, cj)
+                left_b, right_b = (bi, bj) if ci < cj else (bj, bi)
+                seam_x0 = float(tiles_by_rc[(ri, left_col + 1)][0])
+                seam_x1 = float(tiles_by_rc[(ri, left_col)][2])
+                seam_w = max(0.0, seam_x1 - seam_x0)
+                merge = (
+                    left_b[2] >= seam_x0
+                    and right_b[0] <= seam_x1
+                    and left_b[2] >= right_b[0] - 0.25 * seam_w
+                    and _iou_1d(left_b[1], left_b[3], right_b[1], right_b[3]) >= _TILE_SEAM_1D_IOU
+                )
+            elif ci == cj and abs(ri - rj) == 1:
+                top_row = min(ri, rj)
+                top_b, bot_b = (bi, bj) if ri < rj else (bj, bi)
+                seam_y0 = float(tiles_by_rc[(top_row + 1, ci)][1])
+                seam_y1 = float(tiles_by_rc[(top_row, ci)][3])
+                seam_h = max(0.0, seam_y1 - seam_y0)
+                merge = (
+                    top_b[3] >= seam_y0
+                    and bot_b[1] <= seam_y1
+                    and top_b[3] >= bot_b[1] - 0.25 * seam_h
+                    and _iou_1d(top_b[0], top_b[2], bot_b[0], bot_b[2]) >= _TILE_SEAM_1D_IOU
+                )
+            if merge:
+                ri_root, rj_root = _find(i), _find(j)
+                if ri_root != rj_root:
+                    parent[rj_root] = ri_root
+
+    grouped: dict[int, list[tuple[BBox, float]]] = defaultdict(list)
+    for idx, (_, _, box, score) in enumerate(detections):
+        grouped[_find(idx)].append((box, score))
+
+    merged_out: list[tuple[BBox, float]] = []
+    for members in grouped.values():
+        ux0 = min(b[0] for b, _ in members)
+        uy0 = min(b[1] for b, _ in members)
+        ux1 = max(b[2] for b, _ in members)
+        uy1 = max(b[3] for b, _ in members)
+        merged_out.append(((ux0, uy0, ux1, uy1), max(s for _, s in members)))
+    return merged_out
+
+
+def _nms_table_candidates(candidates: Sequence[tuple[BBox, float]]) -> list[tuple[BBox, float]]:
+    ordered = sorted(candidates, key=lambda item: (-item[1], -bbox_area(item[0])))
+    kept: list[tuple[BBox, float]] = []
+    for box, score in ordered:
+        if any(
+            iou >= _TILE_NMS_IOU or ioa >= _TILE_NMS_IOA
+            for kbox, _ in kept
+            for iou, ioa in (_box_iou_ioa(box, kbox),)
+        ):
+            continue
+        kept.append((box, score))
+    return kept
+
+
 class ComposedReader:
     name = "composed"
     isolated = False
@@ -301,12 +495,70 @@ class ComposedReader:
         *,
         dpi: int = DEFAULT_RASTER_DPI,
         high_dpi: int = DEFAULT_HIGH_DPI,
+        enable_table_tiling: bool = False,
     ) -> None:
         self.detector = detector
         self.ocr = ocr
         self.dpi = dpi
         self.high_dpi = high_dpi
+        self.enable_table_tiling = bool(enable_table_tiling)
         self.last_stats: RunStats | None = None
+
+    def _discover_tiled_tables(
+        self,
+        image: Image.Image,
+        pass1_clusters: Sequence[Cluster],
+    ) -> list[Cluster]:
+        iw, ih = image.size
+        tiles = _build_table_tiles(iw, ih, len(pass1_clusters))
+        if not tiles:
+            return []
+
+        tiles_by_rc = {(r, c): rect for r, c, rect in tiles}
+        detections: list[tuple[int, int, BBox, float]] = []
+        for row, col, (tx0, ty0, tx1, ty1) in tiles:
+            tile_img = image.crop((tx0, ty0, tx1, ty1))
+            tile_raw = self.detector.detect(tile_img)
+            tile_clusters = postprocess_layout(
+                tile_raw,
+                (float(tx1 - tx0), float(ty1 - ty0)),
+                keep_empty_clusters=True,
+            )
+            for tc in tile_clusters:
+                if tc.label != "table":
+                    continue
+                page_box = (
+                    max(0.0, min(float(iw), tc.bbox[0] + tx0)),
+                    max(0.0, min(float(ih), tc.bbox[1] + ty0)),
+                    max(0.0, min(float(iw), tc.bbox[2] + tx0)),
+                    max(0.0, min(float(ih), tc.bbox[3] + ty0)),
+                )
+                detections.append((row, col, page_box, float(tc.confidence)))
+
+        if not detections:
+            return []
+
+        merged = _seam_merge_tile_tables(detections, tiles_by_rc)
+        candidates = _nms_table_candidates(merged)
+        pass1_tables = [c.bbox for c in pass1_clusters if c.label == "table"]
+        page_area = float(iw * ih)
+        next_id = max((c.id for c in pass1_clusters), default=-1) + 1
+        added: list[Cluster] = []
+
+        for box, score in candidates:
+            if score < _TILE_NEW_MIN_SCORE or page_area <= 0.0:
+                continue
+            if bbox_area(box) < _TILE_NEW_MIN_AREA_FRAC * page_area:
+                continue
+            if any(
+                iou >= _TILE_NEW_MAX_IOU or ioa >= _TILE_NEW_MAX_IOA
+                for tbox in pass1_tables
+                for iou, ioa in (_box_iou_ioa(box, tbox),)
+            ):
+                continue
+            added.append(Cluster(id=next_id, label="table", bbox=box, confidence=score))
+            next_id += 1
+        return added
 
     def _refine_cluster_pass2(
         self,
@@ -380,6 +632,8 @@ class ComposedReader:
         pdf_page: pdfium.PdfPage,
         pno: int = 1,
         page_box: BBox | None = None,
+        *,
+        enable_table_tiling: bool = False,
     ) -> tuple[RasterPage, list[dict[str, Any]]]:
         target_box = page_box if page_box is not None else pdfium_page_box(pdf_page)
         page_w_pt, page_h_pt = pdf_page.get_size()
@@ -394,6 +648,19 @@ class ComposedReader:
         raw_items = self.detector.detect(image)
         clusters = postprocess_layout(raw_items, (float(iw), float(ih)), keep_empty_clusters=True)
         ocr_lines = self.ocr.recognize(image)
+
+        if enable_table_tiling and _should_tile_for_tables(clusters, ocr_lines, ih):
+            tiled_tables = self._discover_tiled_tables(image, clusters)
+            if tiled_tables:
+                special_labels = ("picture", "table", "document_index", "form", "key_value_region")
+                kept_clusters = [
+                    c
+                    for c in clusters
+                    if c.label in special_labels
+                    or bbox_area(c.bbox) <= 0.0
+                    or not any(bbox_inter_area(c.bbox, t.bbox) / bbox_area(c.bbox) > 0.8 for t in tiled_tables)
+                ]
+                clusters = sorted([*kept_clusters, *tiled_tables], key=lambda c: (c.bbox[1], c.bbox[0]))
 
         by_cluster, orphans = _assign_lines_to_clusters(ocr_lines, clusters)
         blocks: list[TextBlock] = []
@@ -441,7 +708,10 @@ class ComposedReader:
                 if blk is not None:
                     blocks.append(blk)
 
-        excluded_boxes_pt = [_scale_box(c.bbox, sx, sy) for c in clusters if c.label in ("picture", "table")]
+        excluded_boxes_pt = [
+            *(_scale_box(c.bbox, sx, sy) for c in clusters if c.label in ("picture", "table")),
+            *(b.bbox for b in blocks),
+        ]
         blocks.extend(_cluster_orphan_lines(orphans, sx, sy, excluded_boxes_pt=excluded_boxes_pt, source="ocr"))
 
         if target_box[0] != 0.0 or target_box[1] != 0.0:
@@ -477,10 +747,12 @@ class ComposedReader:
         *,
         pdfium_doc: Any = None,
         page_boxes: Mapping[int, BBox] | None = None,
+        enable_table_tiling: bool | None = None,
     ) -> dict[int, RasterPage]:
         page_list = list(pages)
         if not page_list:
             return {}
+        table_tiling = self.enable_table_tiling if enable_table_tiling is None else bool(enable_table_tiling)
         load_sec = 0.0
         for comp in (self.detector, self.ocr):
             ensure = getattr(comp, "ensure_loaded", None)
@@ -502,6 +774,7 @@ class ComposedReader:
                     doc_pdf[pno - 1],
                     pno=pno,
                     page_box=page_boxes.get(pno) if page_boxes else None,
+                    enable_table_tiling=table_tiling,
                 )
                 out[pno] = rp
                 warnings.extend(page_warns)

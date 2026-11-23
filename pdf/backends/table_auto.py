@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import replace
@@ -13,10 +14,123 @@ from ..tables import DEFAULT_TABLE_DPI, crop_page_region, ocr_crop_tokens, token
 from . import get as get_backend
 from .base import RunStats
 from .rss import peak_rss_mb
-from .tatr_onnx import _overlap_indices, objects_to_table
+from .tatr_onnx import _band_ink_runs, _crop_to_gray, _overlap_indices, objects_to_table
 
 _ROW_OR_HEADER_LABELS = frozenset({"table row", "table column header", "table projected row header"})
 _MIN_TOKEN_COVERAGE = 0.95
+_TIER2_MAX_CROPS = 8
+_TIER2_PAD_PX = 16
+
+
+def _split_unspaced_multicell_ocr(
+    ocr_rec: Any,
+    crop: Image.Image,
+    crop_box: BBox,
+    tokens: Sequence[tuple[str, BBox]],
+    table: ExtractedTable,
+) -> list[tuple[str, BBox]] | None:
+    if not tokens or table.num_cols < 2 or not table.cells:
+        return None
+    cw, ch = crop.size
+    if cw <= 0 or ch <= 0:
+        return None
+    sx = (crop_box[2] - crop_box[0]) / cw
+    sy = (crop_box[3] - crop_box[1]) / ch
+    if sx <= 0.0 or sy <= 0.0:
+        return None
+
+    crop_gray = None
+    updated_tokens: list[tuple[str, BBox]] = []
+    changed = False
+    crops_used = 0
+
+    for text, tb in tokens:
+        stripped = text.strip()
+        if not stripped or any(ch_t.isspace() for ch_t in stripped) or crops_used >= _TIER2_MAX_CROPS:
+            updated_tokens.append((text, tb))
+            continue
+        tcy = (tb[1] + tb[3]) * 0.5
+        row_cells = sorted(
+            (
+                c
+                for c in table.cells
+                if c.bbox is not None
+                and c.bbox[1] <= tcy <= c.bbox[3]
+                and min(tb[2], c.bbox[2]) - max(tb[0], c.bbox[0]) >= min(0.12 * max(1.0, c.bbox[2] - c.bbox[0]), 4.0)
+            ),
+            key=lambda c: c.col,
+        )
+        if len(row_cells) < 2:
+            updated_tokens.append((text, tb))
+            continue
+
+        if crop_gray is None:
+            crop_gray = _crop_to_gray(crop)
+        px0 = max(0, min(cw, int(math.floor((tb[0] - crop_box[0]) / sx))))
+        py0 = max(0, min(ch, int(math.floor((tb[1] - crop_box[1]) / sy))))
+        px1 = max(0, min(cw, int(math.ceil((tb[2] - crop_box[0]) / sx))))
+        py1 = max(0, min(ch, int(math.ceil((tb[3] - crop_box[1]) / sy))))
+        runs, line_h = _band_ink_runs(crop_gray, px0, py0, px1, py1)
+        max_gap = max((runs[k + 1][0] - runs[k][1] for k in range(len(runs) - 1)), default=0)
+        if len(runs) < 2 or max_gap < 1.5 * line_h:
+            updated_tokens.append((text, tb))
+            continue
+
+        sub_regions: list[tuple[int, int]] = []
+        for c in row_cells:
+            assert c.bbox is not None
+            cx0 = max(px0, int(math.floor((c.bbox[0] - crop_box[0]) / sx)))
+            cx1 = min(px1, int(math.ceil((c.bbox[2] - crop_box[0]) / sx)))
+            if cx1 <= cx0:
+                continue
+            c_runs = [(max(cx0, r0), min(cx1, r1)) for r0, r1 in runs if min(r1, cx1) - max(r0, cx0) >= 2]
+            if c_runs:
+                sub_regions.append((min(r0 for r0, _ in c_runs), max(r1 for _, r1 in c_runs)))
+
+        if len(sub_regions) < 2 or crops_used + len(sub_regions) > _TIER2_MAX_CROPS:
+            updated_tokens.append((text, tb))
+            continue
+
+        sub_tokens: list[tuple[str, BBox]] = []
+        all_ok = True
+        for sub_x0, sub_x1 in sub_regions:
+            sub_w = sub_x1 - sub_x0
+            sub_h = py1 - py0
+            if sub_w <= 0 or sub_h <= 0:
+                all_ok = False
+                break
+            padded = Image.new("RGB", (sub_w + 2 * _TIER2_PAD_PX, sub_h + 2 * _TIER2_PAD_PX), (255, 255, 255))
+            padded.paste(crop.crop((sub_x0, py0, sub_x1, py1)).convert("RGB"), (_TIER2_PAD_PX, _TIER2_PAD_PX))
+            crops_used += 1
+            ocr_lines = [ln for ln in ocr_rec.recognize(padded) if ln.text.strip()]
+            if not ocr_lines:
+                all_ok = False
+                break
+            for ln in ocr_lines:
+                lx0 = sub_x0 + max(0.0, min(float(sub_w), ln.bbox[0] - _TIER2_PAD_PX))
+                ly0 = py0 + max(0.0, min(float(sub_h), ln.bbox[1] - _TIER2_PAD_PX))
+                lx1 = sub_x0 + max(0.0, min(float(sub_w), ln.bbox[2] - _TIER2_PAD_PX))
+                ly1 = py0 + max(0.0, min(float(sub_h), ln.bbox[3] - _TIER2_PAD_PX))
+                if lx1 <= lx0 or ly1 <= ly0:
+                    lx0, ly0, lx1, ly1 = float(sub_x0), float(py0), float(sub_x1), float(py1)
+                sub_tokens.append(
+                    (
+                        ln.text.strip(),
+                        (
+                            crop_box[0] + lx0 * sx,
+                            crop_box[1] + ly0 * sy,
+                            crop_box[0] + lx1 * sx,
+                            crop_box[1] + ly1 * sy,
+                        ),
+                    )
+                )
+        if all_ok and sub_tokens:
+            updated_tokens.extend(sub_tokens)
+            changed = True
+        else:
+            updated_tokens.append((text, tb))
+
+    return updated_tokens if changed else None
 
 
 def _has_valid_grid(table: ExtractedTable) -> bool:
@@ -269,7 +383,11 @@ class AutoTableExtractor:
                         "reason": "ocr_returned_no_tokens_in_table_crop",
                         "fallback": "tatr_structure_only",
                     })
-                out.append(replace(tatr.extract(crop, crop_box, box_tokens), source="auto_tatr"))
+                tbl = tatr.extract(crop, crop_box, box_tokens)
+                refined_tokens = _split_unspaced_multicell_ocr(ocr_rec, crop, crop_box, box_tokens, tbl)
+                if refined_tokens is not None:
+                    tbl = tatr.extract(crop, crop_box, refined_tokens)
+                out.append(replace(tbl, source="auto_tatr"))
         else:
             pl_tables = self._get_plumber().extract_from_page(page, table_boxes_pt)
             cached_tokens: list[tuple[str, BBox]] | None = None if words is None else [(w.text, w.bbox) for w in words]
@@ -324,7 +442,7 @@ class AutoTableExtractor:
                         crop, crop_box = crop_page_region(page, box, dpi)
                         crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
                         objects = tatr.detect_objects(crop)
-                        tatr_tbl = objects_to_table(objects, crop.size, crop_box, crop_tokens)
+                        tatr_tbl = objects_to_table(objects, crop.size, crop_box, crop_tokens, crop=crop)
                         if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
                             out.append(replace(tatr_tbl, source="auto_tatr"))
                         else:

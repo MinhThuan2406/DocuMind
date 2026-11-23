@@ -4,6 +4,7 @@ import html
 import json
 import re
 import time
+import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ TATR_ONNX_REPO_ID = "Xenova/table-transformer-structure-recognition-v1.1-all"
 TATR_ONNX_REVISION = "76c3afa174a0f36bafa9438934f57dcdb6e486a5"
 DEFAULT_THRESHOLD = 0.60
 _SPAN_THRESHOLD = 0.72
+_SPAN_GUARD_MIN = 0.58
 _RESCUE_THRESHOLD = 0.30
 _SPAN_OVERLAP_FRAC = 0.55
 _LONGEST_EDGE = 800
@@ -224,12 +226,183 @@ def _sort_cell_tokens(tokens: list[tuple[str, BBox]]) -> str:
     return " ".join(p for p in parts if p).strip()
 
 
+def _char_display_width(ch: str) -> float:
+    return 2.0 if unicodedata.east_asian_width(ch) in ("W", "F") else 1.0
+
+
+def _crop_to_gray(crop: Image.Image) -> np.ndarray:
+    return np.asarray(crop.convert("L"), dtype=np.uint8)
+
+
+def _band_ink_runs(
+    crop_gray: np.ndarray,
+    px0: int,
+    py0: int,
+    px1: int,
+    py1: int,
+) -> tuple[list[tuple[int, int]], float]:
+    ch, cw = crop_gray.shape[:2]
+    x0 = max(0, min(cw, px0))
+    x1 = max(0, min(cw, px1))
+    y0 = max(0, min(ch, py0))
+    y1 = max(0, min(ch, py1))
+    line_h = float(max(1, y1 - y0))
+    if x1 - x0 < 4 or y1 - y0 < 2:
+        return [], line_h
+    band = crop_gray[y0:y1, x0:x1].astype(np.int16)
+    bg = int(round(float(np.median(band))))
+    ink = np.abs(band - bg) >= 35
+    keep_rows = ink.mean(axis=1) < 0.80
+    if int(keep_rows.sum()) >= max(2, int(0.3 * ink.shape[0])):
+        ink = ink[keep_rows]
+    # Mask thin continuous vertical border lines extending across row margins.
+    margin = max(3, int(round(0.5 * line_h)))
+    ey0, ey1 = max(0, y0 - margin), min(ch, y1 + margin)
+    if ey1 - ey0 > (y1 - y0) + 2:
+        ext_band = crop_gray[ey0:ey1, x0:x1].astype(np.int16)
+        ext_bg = np.median(ext_band, axis=1, keepdims=True)
+        ext_cols = (np.abs(ext_band - ext_bg) >= 35).mean(axis=0) >= 0.85
+        max_rule_w = max(3, int(round(0.2 * line_h)))
+        w = ink.shape[1]
+        i = 0
+        while i < w:
+            if ext_cols[i]:
+                j = i + 1
+                while j < w and ext_cols[j]:
+                    j += 1
+                if j - i <= max_rule_w:
+                    ink[:, i:j] = False
+                i = j
+            else:
+                i += 1
+    col_ink = ink.any(axis=0)
+    raw_runs: list[tuple[int, int]] = []
+    i = 0
+    w = len(col_ink)
+    while i < w:
+        if col_ink[i]:
+            j = i + 1
+            while j < w and col_ink[j]:
+                j += 1
+            raw_runs.append((x0 + i, x0 + j))
+            i = j
+        else:
+            i += 1
+    if not raw_runs:
+        return [], line_h
+    merge_gap = max(1, int(round(0.15 * line_h)))
+    merged: list[list[int]] = [[raw_runs[0][0], raw_runs[0][1]]]
+    for rx0, rx1 in raw_runs[1:]:
+        if rx0 - merged[-1][1] <= merge_gap:
+            merged[-1][1] = rx1
+        else:
+            merged.append([rx0, rx1])
+    return [(r[0], r[1]) for r in merged], line_h
+
+
+def _display_width_spans(text: str, pieces: Sequence[str], x0: float, x1: float) -> list[tuple[float, float]]:
+    cum_w = [0.0]
+    for ch in text:
+        cum_w.append(cum_w[-1] + _char_display_width(ch))
+    total_w = max(1.0, cum_w[-1])
+    tw = x1 - x0
+    spans: list[tuple[float, float]] = []
+    pos = 0
+    for piece in pieces:
+        start = text.find(piece, pos)
+        end = start + len(piece)
+        pos = end
+        wx0 = x0 + (cum_w[start] / total_w) * tw
+        wx1 = x0 + (cum_w[end] / total_w) * tw
+        spans.append((wx0, max(wx0 + 0.5, wx1)))
+    return spans
+
+
+def _assign_pieces_to_ink_runs(
+    text: str,
+    pieces: Sequence[str],
+    runs: Sequence[tuple[int, int]],
+    tb: BBox,
+    tx0: float,
+    sx: float,
+) -> list[tuple[float, float]] | None:
+    m, n = len(runs), len(pieces)
+    if m < 2 or n < 2 or sx <= 0.0:
+        return None
+    if m == n:
+        groups: list[tuple[int, int]] = [(r[0], r[1]) for r in runs]
+    elif m > n:
+        gaps = sorted(((runs[k + 1][0] - runs[k][1], k) for k in range(m - 1)), reverse=True)
+        splits = sorted(idx for _, idx in gaps[: n - 1])
+        groups = []
+        prev = 0
+        for sp in splits:
+            groups.append((runs[prev][0], runs[sp][1]))
+            prev = sp + 1
+        groups.append((runs[prev][0], runs[-1][1]))
+    else:
+        if n > 24:
+            return None
+        dws = [max(0.5, sum(_char_display_width(c) for c in p)) for p in pieces]
+        total_dw = sum(dws)
+        run_ws = [max(1.0, float(r1 - r0)) for r0, r1 in runs]
+        total_rw = sum(run_ws)
+        dw_pref = [0.0]
+        for w in dws:
+            dw_pref.append(dw_pref[-1] + w)
+        dp = [[float("inf")] * (n + 1) for _ in range(m + 1)]
+        back = [[-1] * (n + 1) for _ in range(m + 1)]
+        dp[0][0] = 0.0
+        for mi in range(1, m + 1):
+            rw_frac = run_ws[mi - 1] / total_rw
+            for ni in range(mi, n - (m - mi) + 1):
+                for prev_ni in range(mi - 1, ni):
+                    cost = dp[mi - 1][prev_ni] + abs(((dw_pref[ni] - dw_pref[prev_ni]) / total_dw) - rw_frac)
+                    if cost < dp[mi][ni]:
+                        dp[mi][ni] = cost
+                        back[mi][ni] = prev_ni
+        bounds: list[int] = [n]
+        cur_n = n
+        for mi in range(m, 0, -1):
+            cur_n = back[mi][cur_n]
+            bounds.append(cur_n)
+        bounds.reverse()
+        out_spans: list[tuple[float, float]] = []
+        for mi, (gx0, gx1) in enumerate(runs):
+            sub_pieces = pieces[bounds[mi] : bounds[mi + 1]]
+            px_lo = max(tb[0], min(tb[2], tx0 + gx0 * sx))
+            px_hi = max(px_lo + 0.5, min(tb[2], tx0 + gx1 * sx))
+            if len(sub_pieces) == 1:
+                out_spans.append((px_lo, px_hi))
+            else:
+                sub_text = " ".join(sub_pieces)
+                out_spans.extend(_display_width_spans(sub_text, sub_pieces, px_lo, px_hi))
+        return out_spans
+    out_pt: list[tuple[float, float]] = []
+    for gx0, gx1 in groups:
+        wx0 = max(tb[0], min(tb[2], tx0 + gx0 * sx))
+        wx1 = max(wx0 + 0.5, min(tb[2], tx0 + gx1 * sx))
+        out_pt.append((wx0, wx1))
+    return out_pt
+
+
 def _split_multicell_tokens(
     tokens: Sequence[tuple[str, BBox]],
     cell_defs: Sequence[tuple[int, int, int, int, BBox, bool, float]],
+    *,
+    crop_gray: np.ndarray | None = None,
+    table_bbox_pt: BBox | None = None,
 ) -> tuple[list[tuple[str, BBox]], set[tuple[str, BBox]]]:
     out: list[tuple[str, BBox]] = []
     split_pieces: set[tuple[str, BBox]] = set()
+    sx = 0.0
+    sy = 0.0
+    tx0 = ty0 = 0.0
+    if crop_gray is not None and table_bbox_pt is not None:
+        ch, cw = crop_gray.shape[:2]
+        tx0, ty0, tx1, ty1 = table_bbox_pt
+        sx = (tx1 - tx0) / cw if cw > 0 else 0.0
+        sy = (ty1 - ty0) / ch if ch > 0 else 0.0
     for text, tb in tokens:
         pieces = [p for p in _MULTICELL_SPLIT_RE.split(text) if p]
         if len(pieces) >= 2 and (tb[2] - tb[0]) > 0.0:
@@ -241,15 +414,17 @@ def _split_multicell_tokens(
                 and min(tb[2], cb[2]) - max(tb[0], cb[0]) >= min(0.12 * max(1.0, cb[2] - cb[0]), 4.0)
             )
             if row_hits >= 2:
-                total_len = max(1, len(text))
-                tw = tb[2] - tb[0]
-                pos = 0
-                for piece in pieces:
-                    start = text.find(piece, pos)
-                    end = start + len(piece)
-                    pos = end
-                    wx0 = tb[0] + (start / total_len) * tw
-                    wx1 = tb[0] + (end / total_len) * tw
+                piece_spans: list[tuple[float, float]] | None = None
+                if crop_gray is not None and sx > 0.0 and sy > 0.0:
+                    px0 = int(np.floor((tb[0] - tx0) / sx))
+                    py0 = int(np.floor((tb[1] - ty0) / sy))
+                    px1 = int(np.ceil((tb[2] - tx0) / sx))
+                    py1 = int(np.ceil((tb[3] - ty0) / sy))
+                    runs, _ = _band_ink_runs(crop_gray, px0, py0, px1, py1)
+                    piece_spans = _assign_pieces_to_ink_runs(text, pieces, runs, tb, tx0, sx)
+                if piece_spans is None:
+                    piece_spans = _display_width_spans(text, pieces, tb[0], tb[2])
+                for piece, (wx0, wx1) in zip(pieces, piece_spans):
                     item = (piece, (wx0, tb[1], max(wx0 + 0.5, wx1), tb[3]))
                     out.append(item)
                     split_pieces.add(item)
@@ -524,11 +699,127 @@ def _collapse_multiline_rows(
     return tuple(out), new_r
 
 
+def _has_internal_rule(
+    crop_gray: np.ndarray,
+    x_lo: float,
+    y_lo: float,
+    x_hi: float,
+    y_hi: float,
+    internal_xs: Sequence[float],
+    internal_ys: Sequence[float],
+) -> bool:
+    ch, cw = crop_gray.shape[:2]
+    ix0 = max(0, min(cw, int(round(x_lo))))
+    ix1 = max(0, min(cw, int(round(x_hi))))
+    iy0 = max(0, min(ch, int(round(y_lo))))
+    iy1 = max(0, min(ch, int(round(y_hi))))
+    if ix1 - ix0 < 4 or iy1 - iy0 < 4:
+        return False
+    tol_x = max(4, min(12, int(round(0.02 * cw))))
+    tol_y = max(4, min(12, int(round(0.02 * ch))))
+    if internal_xs:
+        patch = crop_gray[iy0:iy1, ix0:ix1].astype(np.int16)
+        row_bg = np.median(patch, axis=1, keepdims=True)
+        ink_v = np.abs(patch - row_bg) >= 35
+        for bx in internal_xs:
+            cx = int(round(bx))
+            sx0 = max(0, cx - tol_x - ix0)
+            sx1 = min(ix1 - ix0, cx + tol_x + 1 - ix0)
+            if sx1 > sx0 and float(ink_v[:, sx0:sx1].mean(axis=0).max()) >= 0.70:
+                return True
+    if internal_ys:
+        for by in internal_ys:
+            cy = int(round(by))
+            sy0 = max(0, cy - tol_y)
+            sy1 = min(ch, cy + tol_y + 1)
+            if sy1 <= sy0:
+                continue
+            above_y0, above_y1 = max(0, sy0 - 6), max(0, sy0 - 1)
+            below_y0, below_y1 = min(ch, sy1 + 1), min(ch, sy1 + 6)
+            strip = crop_gray[sy0:sy1, ix0:ix1].astype(np.int16)
+            if above_y1 > above_y0 and below_y1 > below_y0:
+                bg_above = int(round(float(np.median(crop_gray[above_y0:above_y1, ix0:ix1]))))
+                bg_below = int(round(float(np.median(crop_gray[below_y0:below_y1, ix0:ix1]))))
+                ink_h = (np.abs(strip - bg_above) >= 35) & (np.abs(strip - bg_below) >= 35)
+            else:
+                bg = int(round(float(np.median(crop_gray[iy0:iy1, ix0:ix1]))))
+                ink_h = np.abs(strip - bg) >= 35
+            if float(ink_h.mean(axis=1).max()) >= 0.70:
+                return True
+    return False
+
+
+def _passes_low_conf_span_guard(
+    crop_gray: np.ndarray | None,
+    row_intervals: Sequence[tuple[float, float]],
+    col_intervals: Sequence[tuple[float, float]],
+    tok_px: Sequence[BBox],
+    r0: int,
+    r1: int,
+    c0: int,
+    c1: int,
+) -> bool:
+    y_lo, y_hi = row_intervals[r0][0], row_intervals[r1][1]
+    x_lo, x_hi = col_intervals[c0][0], col_intervals[c1][1]
+    if crop_gray is not None:
+        internal_xs = [col_intervals[c][1] for c in range(c0, c1)]
+        internal_ys = [row_intervals[r][1] for r in range(r0, r1)]
+        if _has_internal_rule(crop_gray, x_lo, y_lo, x_hi, y_hi, internal_xs, internal_ys):
+            return False
+    span_toks = [
+        b
+        for b in tok_px
+        if x_lo <= (b[0] + b[2]) * 0.5 <= x_hi and y_lo <= (b[1] + b[3]) * 0.5 <= y_hi
+    ]
+    if len(span_toks) < 2:
+        return True
+    heights = sorted(max(4.0, b[3] - b[1]) for b in span_toks)
+    line_h = heights[len(heights) // 2]
+    if c1 > c0:
+        ordered_y = sorted(span_toks, key=lambda b: ((b[1] + b[3]) * 0.5, b[0]))
+        y_lines: list[list[BBox]] = []
+        for b in ordered_y:
+            if not y_lines or not any(
+                min(b[3], lb[3]) - max(b[1], lb[1]) >= 0.45 * min(max(1.0, b[3] - b[1]), max(1.0, lb[3] - lb[1]))
+                for lb in y_lines[-1]
+            ):
+                y_lines.append([b])
+            else:
+                y_lines[-1].append(b)
+        min_gap = 1.2 * line_h
+        for line in y_lines:
+            line.sort(key=lambda b: b[0])
+            x_clusters: list[list[float]] = []
+            for b in line:
+                if not x_clusters or b[0] - x_clusters[-1][1] >= min_gap:
+                    x_clusters.append([b[0], b[2]])
+                else:
+                    x_clusters[-1][1] = max(x_clusters[-1][1], b[2])
+            if len(x_clusters) >= 2:
+                for c in range(c0, c1):
+                    bx = col_intervals[c][1]
+                    left_cl = [cl for cl in x_clusters if (cl[0] + cl[1]) * 0.5 <= bx and cl[1] <= bx + 0.25 * line_h]
+                    right_cl = [cl for cl in x_clusters if (cl[0] + cl[1]) * 0.5 >= bx and cl[0] >= bx - 0.25 * line_h]
+                    if left_cl and right_cl and (right_cl[0][0] - left_cl[-1][1]) >= min_gap:
+                        return False
+    if r1 > r0:
+        active_rows = sum(
+            1
+            for r in range(r0, r1 + 1)
+            if any(row_intervals[r][0] <= (b[1] + b[3]) * 0.5 <= row_intervals[r][1] for b in span_toks)
+        )
+        if active_rows >= 2:
+            return False
+    return True
+
+
 def objects_to_table(
     objects: Sequence[tuple[str, BBox, float]],
     crop_size: tuple[int, int],
     table_bbox_pt: BBox,
     tokens: Sequence[tuple[str, BBox]] = (),
+    *,
+    crop: Image.Image | None = None,
 ) -> ExtractedTable:
     cw, ch = float(crop_size[0]), float(crop_size[1])
     if cw <= 0.0 or ch <= 0.0:
@@ -540,6 +831,9 @@ def objects_to_table(
             source="tatr_onnx",
             confidence=0.0,
         )
+    crop_gray: np.ndarray | None = None
+    if crop is not None and crop.size == (int(crop_size[0]), int(crop_size[1])):
+        crop_gray = _crop_to_gray(crop)
 
     tx0, ty0, tx1, ty1 = table_bbox_pt
     sx = (tx1 - tx0) / cw
@@ -586,7 +880,11 @@ def objects_to_table(
     col_scores = [item[2] for item in col_kept]
 
     col_headers = [b for lbl, b, _ in objects if lbl == "table column header"]
-    span_boxes = [b for lbl, b, _ in objects if lbl in ("table spanning cell", "table projected row header")]
+    span_boxes = [
+        b
+        for lbl, b, s in objects
+        if (lbl == "table spanning cell" and s >= _SPAN_THRESHOLD) or lbl == "table projected row header"
+    ]
     col_intervals, col_scores, did_split_cols = _split_undersegmented_cols(
         col_intervals, col_scores, tok_px, cw, col_headers, span_boxes
     )
@@ -625,7 +923,7 @@ def objects_to_table(
 
     # Claim merged regions in descending confidence order so higher-scoring spans win overlaps.
     spanning = sorted(
-        [(b, s, False) for lbl, b, s in objects if lbl == "table spanning cell" and s >= _SPAN_THRESHOLD]
+        [(b, s, False) for lbl, b, s in objects if lbl == "table spanning cell" and s >= _SPAN_GUARD_MIN]
         + [(b, s, True) for b, s in proj_headers],
         key=lambda item: item[1],
         reverse=True,
@@ -645,6 +943,9 @@ def objects_to_table(
         coords = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
         if any(rc in claimed for rc in coords):
             continue
+        if not is_proj and score < _SPAN_THRESHOLD:
+            if not _passes_low_conf_span_guard(crop_gray, row_intervals, col_intervals, tok_px, r0, r1, c0, c1):
+                continue
         claimed.update(coords)
         merged_specs.append((r0, c0, r1 - r0 + 1, c1 - c0 + 1, is_proj, float(score)))
 
@@ -681,7 +982,9 @@ def objects_to_table(
             cell_defs.append((r, c, 1, 1, pt_box, is_hdr, cell_conf))
 
     cell_defs.sort(key=lambda item: (item[0], item[1]))
-    expanded_tokens, split_pieces = _split_multicell_tokens(tokens, cell_defs)
+    expanded_tokens, split_pieces = _split_multicell_tokens(
+        tokens, cell_defs, crop_gray=crop_gray, table_bbox_pt=table_bbox_pt
+    )
     cell_tokens: list[list[tuple[str, BBox]]] = [[] for _ in cell_defs]
     assigned_nonempty = 0
     total_nonempty = sum(1 for txt, _ in expanded_tokens if txt.strip())
@@ -852,9 +1155,13 @@ class TatrOnnxTableExtractor:
         w, h = rgb.size
         if w <= 0 or h <= 0:
             return []
-        scale = _LONGEST_EDGE / max(w, h)
-        nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
-        resized = rgb if (w, h) == (nw, nh) else rgb.resize((nw, nh), resample=Image.Resampling.BILINEAR)
+        pad = max(8, min(48, round(0.04 * max(w, h))))
+        pw, ph = w + 2 * pad, h + 2 * pad
+        padded = Image.new("RGB", (pw, ph), (255, 255, 255))
+        padded.paste(rgb, (pad, pad))
+        scale = _LONGEST_EDGE / max(pw, ph)
+        nw, nh = max(1, round(pw * scale)), max(1, round(ph * scale))
+        resized = padded if (pw, ph) == (nw, nh) else padded.resize((nw, nh), resample=Image.Resampling.BILINEAR)
         arr = np.asarray(resized, dtype=np.float32) / 255.0
         tensor = ((arr.transpose(2, 0, 1) - _MEAN) / _STD)[None]
 
@@ -878,14 +1185,16 @@ class TatrOnnxTableExtractor:
             if label is None:
                 continue
             cx, cy, bw, bh = box
-            x0 = max(0.0, min(float(w), (cx - bw * 0.5) * w))
-            y0 = max(0.0, min(float(h), (cy - bh * 0.5) * h))
-            x1 = max(0.0, min(float(w), (cx + bw * 0.5) * w))
-            y1 = max(0.0, min(float(h), (cy + bh * 0.5) * h))
+            x0 = max(0.0, min(float(w), (cx - bw * 0.5) * pw - pad))
+            y0 = max(0.0, min(float(h), (cy - bh * 0.5) * ph - pad))
+            x1 = max(0.0, min(float(w), (cx + bw * 0.5) * pw - pad))
+            y1 = max(0.0, min(float(h), (cy + bh * 0.5) * ph - pad))
             if x1 <= x0 or y1 <= y0:
                 continue
             item = (label, (x0, y0, x1, y1), fscore)
-            if fscore >= self.score_threshold:
+            if fscore >= self.score_threshold or (
+                label == "table spanning cell" and fscore >= _SPAN_GUARD_MIN and self.score_threshold <= _SPAN_THRESHOLD
+            ):
                 out.append(item)
             elif label == "table row":
                 rescue_rows.append(item)
@@ -939,6 +1248,7 @@ class TatrOnnxTableExtractor:
                     rot_img.size,
                     (0.0, 0.0, float(rot_img.width), float(rot_img.height)),
                     rot_tokens,
+                    crop=rot_img,
                 )
                 mapped_cells = tuple(
                     TableCell(
@@ -971,7 +1281,7 @@ class TatrOnnxTableExtractor:
                     confidence=rot_tbl.confidence,
                 )
         objects = self.detect_objects(image)
-        return objects_to_table(objects, image.size, table_bbox_pt, tokens)
+        return objects_to_table(objects, image.size, table_bbox_pt, tokens, crop=image)
 
     def extract_from_page(
         self,

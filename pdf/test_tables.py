@@ -1447,6 +1447,238 @@ def test_pdfplumber_clipped_open_rowspan_slots_merge_and_backfill():
     assert by_rc[(0, 0)].text == "H1"
 
 
+def test_tatr_detect_objects_scale_invariant_white_padding():
+    import numpy as np
+    from pdf.backends.tatr_onnx import TatrOnnxTableExtractor
+
+    class _DummySession:
+        def __init__(self, expected_padded_hw):
+            self.expected_padded_hw = expected_padded_hw
+            self.seen_shapes = []
+
+        def run(self, _outputs, inputs):
+            arr = inputs["pixel_values"]
+            self.seen_shapes.append(arr.shape)
+            # Verify white border pixels remain white (normalized > 2.0 in all channels).
+            assert float(arr[0, :, 0, 0].min()) > 2.0
+            assert float(arr[0, :, -1, -1].min()) > 2.0
+            # Box covering the unpadded region [pad..w+pad, pad..h+pad] in padded space.
+            pw, ph = self.expected_padded_hw
+            pad = (pw - 400) // 2
+            logits = np.full((1, 2, 7), -10.0, dtype=np.float32)
+            logits[0, 0, 0] = 5.0  # table
+            logits[0, 1, 1] = 5.0  # table column
+            boxes = np.array(
+                [[
+                    [0.5, 0.5, 400.0 / pw, 200.0 / ph],
+                    [(pad + 45.0) / pw, 0.5, 100.0 / pw, 220.0 / ph],
+                ]],
+                dtype=np.float32,
+            )
+            return logits, boxes
+
+    ext = TatrOnnxTableExtractor()
+    ext.ensure_loaded = lambda: False
+    ext._id2label = {0: "table", 1: "table column"}
+    # 400x200 -> pad = max(8, min(48, round(0.04 * 400))) = 16 -> pw=432, ph=232 -> scaled longest edge 800 -> 800x430.
+    sess = _DummySession((432, 232))
+    ext._session = sess
+
+    img = Image.new("RGB", (400, 200), (10, 10, 10))
+    objs = ext.detect_objects(img)
+    assert sess.seen_shapes == [(1, 3, 430, 800)]
+    by_lbl = {lbl: box for lbl, box, _ in objs}
+    assert abs(by_lbl["table"][0] - 0.0) < 1e-3 and abs(by_lbl["table"][2] - 400.0) < 1e-3
+    assert abs(by_lbl["table"][1] - 0.0) < 1e-3 and abs(by_lbl["table"][3] - 200.0) < 1e-3
+    # Clamped back to [0, 400] x [0, 200].
+    assert by_lbl["table column"][0] == 0.0 and by_lbl["table column"][3] == 200.0
+    assert abs(by_lbl["table column"][2] - 95.0) < 1e-3
+
+
+def test_tatr_multicell_tier1_ink_projection_and_cjk_display_width():
+    from PIL import ImageDraw
+
+    objects = [
+        ("table", (0.0, 0.0, 300.0, 80.0), 0.96),
+        ("table row", (0.0, 0.0, 300.0, 40.0), 0.95),
+        ("table row", (0.0, 40.0, 300.0, 80.0), 0.95),
+        ("table column", (0.0, 0.0, 140.0, 80.0), 0.95),
+        ("table column", (140.0, 0.0, 300.0, 80.0), 0.95),
+        ("table column header", (0.0, 0.0, 300.0, 40.0), 0.95),
+    ]
+    # Case 1: With crop, "Col A" sits in [15..55] (col 0) and "100" sits in [220..260] (col 1),
+    # separated by a wide gap even with a thin vertical rule at x=140.
+    img = Image.new("RGB", (300, 80), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.line([(140, 0), (140, 80)], fill=(0, 0, 0), width=1)
+    draw.rectangle([15, 48, 35, 68], fill=(0, 0, 0))
+    draw.rectangle([42, 48, 55, 68], fill=(0, 0, 0))
+    draw.rectangle([220, 48, 260, 68], fill=(0, 0, 0))
+
+    tokens = [
+        ("Hdr0", (20.0, 10.0, 60.0, 30.0)),
+        ("Hdr1", (180.0, 10.0, 220.0, 30.0)),
+        ("Col A 100", (15.0, 48.0, 260.0, 68.0)),
+    ]
+    tbl_ink = objects_to_table(objects, (300, 80), (0.0, 0.0, 300.0, 80.0), tokens, crop=img)
+    by_rc = {(c.row, c.col): c for c in tbl_ink.cells}
+    assert by_rc[(1, 0)].text == "Col A"
+    assert by_rc[(1, 1)].text == "100"
+
+    # Case 2: Without crop, CJK characters use 2.0x display width vs 1.0x ASCII.
+    # "東京 1" has widths (2+2)=4 vs 1 vs 1 -> "東京" ends at 4/6 of [20..200] = 140, "1" starts at 5/6 = 170.
+    objects_cjk = [
+        ("table", (0.0, 0.0, 220.0, 60.0), 0.95),
+        ("table row", (0.0, 0.0, 220.0, 60.0), 0.95),
+        ("table column", (0.0, 0.0, 150.0, 60.0), 0.95),
+        ("table column", (150.0, 0.0, 220.0, 60.0), 0.95),
+    ]
+    tbl_cjk = objects_to_table(
+        objects_cjk,
+        (220, 60),
+        (0.0, 0.0, 220.0, 60.0),
+        [("東京 1", (20.0, 20.0, 200.0, 40.0))],
+    )
+    assert [c.text for c in tbl_cjk.cells] == ["東京", "1"]
+
+
+def test_auto_raster_tier2_unspaced_cjk_split_padded_and_capped():
+    import pdfplumber
+    from PIL import ImageDraw
+
+    class _Tier2Ocr:
+        def __init__(self, *, empty_sub: bool = False):
+            self.sub_calls = 0
+            self.sub_sizes = []
+            self.empty_sub = empty_sub
+
+        def recognize(self, image: Image.Image):
+            if image.width >= 200:
+                return [
+                    OcrLine("項目", (20.0, 8.0, 65.0, 28.0), 0.98),
+                    OcrLine("値", (180.0, 8.0, 210.0, 28.0), 0.98),
+                    # Single unspaced CJK token spanning both columns across a clear >1.5*line_h whitespace gap.
+                    OcrLine("東京大阪", (20.0, 46.0, 230.0, 66.0), 0.95),
+                ]
+            self.sub_calls += 1
+            self.sub_sizes.append(image.size)
+            # Verify +16 px white padding on all 4 sides.
+            assert image.getpixel((0, 0)) == (255, 255, 255)
+            assert image.getpixel((image.width - 1, image.height - 1)) == (255, 255, 255)
+            if self.empty_sub:
+                return []
+            txt = "東京" if self.sub_calls % 2 == 1 else "大阪"
+            return [OcrLine(txt, (16.0, 16.0, float(image.width - 16), float(image.height - 16)), 0.97)]
+
+    class _FakeTatr:
+        def extract(self, image: Image.Image, table_bbox_pt, tokens=()):
+            cw, ch = float(image.width), float(image.height)
+            objs = [
+                ("table", (0.0, 0.0, cw, ch), 0.93),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.92),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.92),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.92),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.92),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.92),
+            ]
+            return objects_to_table(objs, image.size, table_bbox_pt, tokens, crop=image)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "tier2.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=300, height=160)
+        b.save(pdf_path)
+
+        # Render synthetic crop with two dark ink blocks in row 1 separated by > 1.5 * line_h white gap.
+        crop_img = Image.new("RGB", (260, 80), (255, 255, 255))
+        draw = ImageDraw.Draw(crop_img)
+        draw.rectangle([20, 46, 70, 66], fill=(0, 0, 0))
+        draw.rectangle([180, 46, 230, 66], fill=(0, 0, 0))
+
+        import pdf.backends.table_auto as ta_mod
+
+        orig_crop = ta_mod.crop_page_region
+        ta_mod.crop_page_region = lambda _pg, box, _dpi=250: (crop_img, box)
+        try:
+            with pdfplumber.open(str(pdf_path)) as doc:
+                ocr_ok = _Tier2Ocr(empty_sub=False)
+                tbl_ok = AutoTableExtractor(tatr_extractor=_FakeTatr(), ocr_recognizer=ocr_ok).extract_from_page(
+                    doc.pages[0], [(20.0, 20.0, 280.0, 100.0)], is_raster=True
+                )[0]
+                assert ocr_ok.sub_calls == 2
+                assert all(w >= 32 and h >= 32 for w, h in ocr_ok.sub_sizes)
+                by_rc = {(c.row, c.col): c for c in tbl_ok.cells}
+                assert by_rc[(1, 0)].text == "東京" and by_rc[(1, 1)].text == "大阪"
+
+                # Empty sub-cell OCR retains original token rather than dropping text.
+                ocr_empty = _Tier2Ocr(empty_sub=True)
+                tbl_keep = AutoTableExtractor(tatr_extractor=_FakeTatr(), ocr_recognizer=ocr_empty).extract_from_page(
+                    doc.pages[0], [(20.0, 20.0, 280.0, 100.0)], is_raster=True
+                )[0]
+                assert ocr_empty.sub_calls == 1
+                assert any("東京大阪" in c.text for c in tbl_keep.cells)
+        finally:
+            ta_mod.crop_page_region = orig_crop
+
+
+def test_tatr_low_conf_span_guard_bordered_and_borderless():
+    from PIL import ImageDraw
+
+    base_grid = [
+        ("table", (0.0, 0.0, 200.0, 120.0), 0.96),
+        ("table row", (0.0, 0.0, 200.0, 40.0), 0.95),
+        ("table row", (0.0, 40.0, 200.0, 80.0), 0.95),
+        ("table row", (0.0, 80.0, 200.0, 120.0), 0.95),
+        ("table column", (0.0, 0.0, 100.0, 120.0), 0.95),
+        ("table column", (100.0, 0.0, 200.0, 120.0), 0.95),
+        ("table column header", (0.0, 0.0, 200.0, 40.0), 0.95),
+    ]
+
+    # 1. Bordered internal vertical line across x=100 rejects 0.65 colspan=2 (even with 1 token).
+    bordered_img = Image.new("RGB", (200, 120), (255, 255, 255))
+    ImageDraw.Draw(bordered_img).line([(100, 0), (100, 120)], fill=(0, 0, 0), width=2)
+    tbl_bordered = objects_to_table(
+        base_grid + [("table spanning cell", (0.0, 0.0, 200.0, 40.0), 0.65)],
+        (200, 120),
+        (0.0, 0.0, 200.0, 120.0),
+        [("Summary", (20.0, 12.0, 75.0, 28.0))],
+        crop=bordered_img,
+    )
+    assert all(c.colspan == 1 for c in tbl_bordered.cells)
+
+    # 2. Borderless colspan=2 with 2 independent token clusters (>= 1.2 * line_h gap) rejects 0.65 span.
+    borderless_img = Image.new("RGB", (200, 120), (255, 255, 255))
+    tbl_borderless_rej = objects_to_table(
+        base_grid + [("table spanning cell", (0.0, 40.0, 200.0, 80.0), 0.65)],
+        (200, 120),
+        (0.0, 0.0, 200.0, 120.0),
+        [("12.3", (25.0, 52.0, 60.0, 68.0)), ("45.6", (135.0, 52.0, 170.0, 68.0))],
+        crop=borderless_img,
+    )
+    assert all(c.colspan == 1 for c in tbl_borderless_rej.cells)
+
+    # 3. Borderless rowspan=2 with independent tokens in >= 2 sub-rows rejects 0.65 span.
+    tbl_rowspan_rej = objects_to_table(
+        base_grid + [("table spanning cell", (0.0, 40.0, 100.0, 120.0), 0.65)],
+        (200, 120),
+        (0.0, 0.0, 200.0, 120.0),
+        [("RowA", (20.0, 52.0, 60.0, 68.0)), ("RowB", (20.0, 92.0, 60.0, 108.0))],
+        crop=borderless_img,
+    )
+    assert all(c.rowspan == 1 for c in tbl_rowspan_rej.cells)
+
+    # 4. Clean [0.58, 0.72) span with NO internal line and single centered token cluster is accepted.
+    tbl_accept = objects_to_table(
+        base_grid + [("table spanning cell", (0.0, 0.0, 200.0, 40.0), 0.65)],
+        (200, 120),
+        (0.0, 0.0, 200.0, 120.0),
+        [("Total", (75.0, 12.0, 125.0, 28.0)), ("Metrics", (80.0, 12.0, 125.0, 28.0))],
+        crop=borderless_img,
+    )
+    by_rc = {(c.row, c.col): c for c in tbl_accept.cells}
+    assert by_rc[(0, 0)].colspan == 2
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -19,16 +19,16 @@ from pdf.models import FigureBox, PageProfile, RasterPage, TextBlock  # noqa: E4
 from pdf.ocr.types import OcrLine  # noqa: E402
 
 
-def _make_raster_pdf(path: Path, text: str = "RASTER OCR SAMPLE") -> None:
-    img = Image.new("RGB", (600, 300), color=(255, 255, 255))
+def _make_raster_pdf(path: Path, text: str = "RASTER OCR SAMPLE", width: int = 600, height: int = 300) -> None:
+    img = Image.new("RGB", (width, height), color=(255, 255, 255))
     draw = ImageDraw.Draw(img)
     draw.text((40, 80), text, fill=(0, 0, 0))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
 
     b = TestPdfBuilder()
-    page = b.new_page(width=600, height=300)
-    page.insert_image((0, 0, 600, 300), stream=buf.getvalue())
+    page = b.new_page(width=width, height=height)
+    page.insert_image((0, 0, width, height), stream=buf.getvalue())
     b.save(path)
 
 
@@ -675,6 +675,273 @@ def test_rapidocr_lang_option_and_ir_forwarding():
             assert any(e["text"] == "日本語テスト" for e in ir["elements"])
     finally:
         reset_cache()
+
+
+def test_orphan_merge_blocked_by_intervening_text_cluster_and_2px_fallback():
+    from pdf.backends.reader_composed import _assign_lines_to_clusters, _cluster_orphan_lines
+    from pdf.layout import Cluster
+
+    class _Det:
+        def detect(self, image):
+            sx, sy = image.width / 600.0, image.height / 300.0
+            return [LayoutItem("section_header", (30 * sx, 68 * sy, 280 * sx, 84 * sy), 0.94)]
+
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del regions
+            sx, sy = image.width / 600.0, image.height / 300.0
+            return [
+                OcrLine("Orphan above heading.", (30 * sx, 48 * sy, 240 * sx, 66 * sy), 0.92),
+                OcrLine("2.1 Intervening Heading", (32 * sx, 70 * sy, 260 * sx, 82 * sy), 0.95),
+                OcrLine("Orphan below heading.", (30 * sx, 86 * sy, 240 * sx, 104 * sy), 0.92),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "orphan_intervening.pdf"
+        _make_raster_pdf(pdf_path)
+        rp = ComposedReader(_Det(), _Ocr()).read(pdf_path, [1])[1]
+
+    assert [b.text for b in rp.blocks] == [
+        "Orphan above heading.",
+        "2.1 Intervening Heading",
+        "Orphan below heading.",
+    ], [b.text for b in rp.blocks]
+    assert [b.label for b in rp.blocks] == ["text", "section_header", "text"]
+
+    multi_unit_orphans = [
+        OcrLine("Left", (20.0, 20.0, 60.0, 34.0), 0.9),
+        OcrLine("part", (66.0, 20.0, 110.0, 34.0), 0.9),
+        OcrLine("Next", (20.0, 38.0, 60.0, 52.0), 0.9),
+        OcrLine("row", (66.0, 38.0, 100.0, 52.0), 0.9),
+    ]
+    merged_units = _cluster_orphan_lines(multi_unit_orphans, 1.0, 1.0)
+    assert len(merged_units) == 1 and merged_units[0].text == "Left part Next row", [b.text for b in merged_units]
+
+    clusters = [
+        Cluster(id=1, label="text", bbox=(50.0, 50.0, 200.0, 62.0), confidence=0.9),
+        Cluster(id=2, label="text", bbox=(50.0, 70.0, 200.0, 82.0), confidence=0.9),
+    ]
+    grazing_line = OcrLine("Edge line", (50.0, 61.5, 190.0, 63.5), 0.9)
+    exact_line = OcrLine("Exact line", (50.0, 71.0, 190.0, 81.0), 0.9)
+    by_cluster, orphans = _assign_lines_to_clusters([grazing_line, exact_line], clusters)
+    assert orphans == []
+    assert by_cluster[1] == [grazing_line]
+    assert by_cluster[2] == [exact_line]
+
+
+def test_table_tiling_density_gate_below_0009_and_ir_contract():
+    from pdf.backends import reset_cache
+
+    def _make_dense_det(cluster_count: int):
+        class _Det:
+            def __init__(self) -> None:
+                self.calls: list[tuple[int, int]] = []
+                self.full_size: tuple[int, int] | None = None
+                self.tile_idx = 0
+
+            def detect(self, image):
+                self.calls.append(image.size)
+                w, h = float(image.width), float(image.height)
+                if self.full_size is None:
+                    self.full_size = image.size
+                if image.size == self.full_size:
+                    self.tile_idx = 0
+                    step = h / max(cluster_count + 2, 1)
+                    return [
+                        LayoutItem("text", (20.0, 10.0 + i * step, 220.0, 10.0 + i * step + 10.0), 0.9)
+                        for i in range(cluster_count)
+                    ]
+                self.tile_idx += 1
+                if self.tile_idx == 1:
+                    return [LayoutItem("table", (0.15 * w, 0.2 * h, 0.85 * w, 0.8 * h), 0.82)]
+                return []
+
+        return _Det()
+
+    def _make_ocr_with_ratio(line_ratio: float):
+        class _Ocr:
+            def recognize(self, image, regions=None):
+                del regions
+                h = float(image.height)
+                lh = line_ratio * h
+                return [
+                    OcrLine(f"Line {i}", (25.0, 12.0 + i * 20.0, 200.0, 12.0 + i * 20.0 + lh), 0.92)
+                    for i in range(5)
+                ]
+
+        return _Ocr()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "portrait_gate.pdf"
+        _make_raster_pdf(pdf_path, width=595, height=842)
+
+        det_neg = _make_dense_det(15)
+        rp_neg = ComposedReader(det_neg, _make_ocr_with_ratio(0.0119), enable_table_tiling=True).read(pdf_path, [1])[1]
+        assert len(det_neg.calls) == 1, det_neg.calls
+        assert rp_neg.figures == ()
+
+        det_few = _make_dense_det(10)
+        ComposedReader(det_few, _make_ocr_with_ratio(0.006), enable_table_tiling=True).read(pdf_path, [1])
+        assert len(det_few.calls) == 1, det_few.calls
+
+        det_pos_small = _make_dense_det(15)
+        rp_pos_small = ComposedReader(det_pos_small, _make_ocr_with_ratio(0.007), enable_table_tiling=True).read(pdf_path, [1])[1]
+        assert len(det_pos_small.calls) == 3, det_pos_small.calls
+        assert len(rp_pos_small.figures) == 1 and rp_pos_small.figures[0].kind == "table"
+
+        det_pos_25 = _make_dense_det(25)
+        rp_pos_25 = ComposedReader(det_pos_25, _make_ocr_with_ratio(0.020), enable_table_tiling=True).read(pdf_path, [1])[1]
+        assert len(det_pos_25.calls) == 3, det_pos_25.calls
+        assert len(rp_pos_25.figures) == 1
+
+        det_disabled = _make_dense_det(26)
+        ComposedReader(det_disabled, _make_ocr_with_ratio(0.007), enable_table_tiling=False).read(pdf_path, [1])
+        assert len(det_disabled.calls) == 1
+
+        reset_cache()
+        try:
+            seen_dets = []
+
+            def _det_factory(**_kw):
+                d = _make_dense_det(26)
+                seen_dets.append(d)
+                return d
+
+            register("detector", "fake_tile_det", _det_factory)
+            register("ocr", "fake_tile_ocr", lambda **_kw: _make_ocr_with_ratio(0.007))
+
+            extract_ir(pdf_path, figures=False, ocr=True, tables=False, layout="fake_tile_det", ocr_backend="fake_tile_ocr")
+            assert len(seen_dets) == 1 and len(seen_dets[0].calls) == 1
+
+            class _EmptyTblBackend:
+                last_stats = None
+
+                def extract_from_page(self, _page, table_boxes_pt, **_kw):
+                    from pdf.models import ExtractedTable
+
+                    return [ExtractedTable(bbox=b, num_rows=0, num_cols=0, cells=(), source="auto_tatr", confidence=0.0) for b in table_boxes_pt]
+
+            seen_dets[0].calls.clear()
+            ir_tbl = extract_ir(
+                pdf_path,
+                figures=False,
+                ocr=True,
+                tables=True,
+                layout="fake_tile_det",
+                ocr_backend="fake_tile_ocr",
+                table_backend=_EmptyTblBackend(),
+            )
+            assert len(seen_dets[0].calls) == 3
+            assert any(e["type"] == "table" for e in ir_tbl["elements"])
+
+            seen_dets[0].calls.clear()
+            extract_ir(pdf_path, figures=False, ocr=True, tables=False, layout="fake_tile_det", ocr_backend="fake_tile_ocr")
+            assert len(seen_dets[0].calls) == 1
+
+            class _MinimalPageReader:
+                name = "minimal"
+                last_stats = None
+
+                def read(self, _pdf_path, pages):
+                    return {p: RasterPage(blocks=(), figures=(), reading_order=()) for p in pages}
+
+            ir_min = extract_ir(pdf_path, figures=False, ocr=True, tables=True, reader=_MinimalPageReader())
+            assert ir_min["elements"] == []
+        finally:
+            reset_cache()
+
+
+def test_table_tiling_portrait_landscape_square_seam_merge_and_filtering():
+    class _Ocr:
+        def recognize(self, image, regions=None):
+            del image, regions
+            return [OcrLine("Tiny", (10.0, 10.0, 80.0, 15.0), 0.9)]
+
+    class _PortraitDet:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def detect(self, image):
+            self.calls.append(image.size)
+            w, h = float(image.width), float(image.height)
+            idx = len(self.calls)
+            if idx == 1:
+                items = [LayoutItem("text", (20.0, 10.0 + i * 25.0, 180.0, 22.0 + i * 25.0), 0.9) for i in range(25)]
+                items.append(LayoutItem("table", (0.10 * w, 0.05 * h, 0.45 * w, 0.25 * h), 0.88))
+                return items
+            if idx == 2:
+                return [
+                    LayoutItem("table", (0.10 * w, 0.05 * h, 0.45 * w, 0.25 * h / 0.55), 0.85),
+                    LayoutItem("table", (0.20 * w, 0.70 * h, 0.80 * w, h), 0.80),
+                    LayoutItem("table", (0.10 * w, 0.30 * h, 0.14 * w, 0.34 * h), 0.90),
+                    LayoutItem("table", (0.55 * w, 0.25 * h, 0.90 * w, 0.45 * h), 0.52),
+                ]
+            return [
+                LayoutItem("table", (0.20 * w, 0.0, 0.80 * w, 0.35 * h), 0.84),
+                LayoutItem("table", (0.10 * w, 0.55 * h, 0.90 * w, 0.85 * h), 0.78),
+            ]
+
+    class _LandscapeDet:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def detect(self, image):
+            self.calls.append(image.size)
+            w, h = float(image.width), float(image.height)
+            idx = len(self.calls)
+            if idx == 1:
+                return [LayoutItem("text", (20.0, 10.0 + i * 18.0, 160.0, 20.0 + i * 18.0), 0.9) for i in range(26)]
+            if idx == 2:
+                return [LayoutItem("table", (0.72 * w, 0.20 * h, w, 0.70 * h), 0.83)]
+            return [LayoutItem("table", (0.0, 0.20 * h, 0.35 * w, 0.70 * h), 0.81)]
+
+    class _SquareDet:
+        def __init__(self, count: int) -> None:
+            self.count = count
+            self.calls: list[tuple[int, int]] = []
+
+        def detect(self, image):
+            self.calls.append(image.size)
+            w, h = float(image.width), float(image.height)
+            if len(self.calls) == 1:
+                return [
+                    LayoutItem("text", (20.0 + (i % 4) * 120.0, 10.0 + (i // 4) * 30.0, 120.0 + (i % 4) * 120.0, 25.0 + (i // 4) * 30.0), 0.9)
+                    for i in range(self.count)
+                ]
+            return [LayoutItem("table", (0.1 * w, 0.1 * h, 0.7 * w, 0.7 * h), 0.75)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p_pdf = Path(tmp) / "portrait.pdf"
+        _make_raster_pdf(p_pdf, width=600, height=900)
+        p_det = _PortraitDet()
+        rp_p = ComposedReader(p_det, _Ocr(), dpi=72, high_dpi=72, enable_table_tiling=True).read(p_pdf, [1])[1]
+        assert len(p_det.calls) == 3
+        assert p_det.calls[1][0] == 600 and p_det.calls[1][1] == round(0.55 * 900)
+        assert p_det.calls[2][0] == 600 and p_det.calls[2][1] == 900 - round(0.45 * 900)
+        assert len(rp_p.figures) == 3, rp_p.figures
+        seam_merged = [f for f in rp_p.figures if f.bbox[1] < 405.0 and f.bbox[3] > 495.0]
+        assert len(seam_merged) == 1
+        assert abs(seam_merged[0].bbox[0] - 120.0) <= 2.0 and abs(seam_merged[0].bbox[2] - 480.0) <= 2.0
+
+        l_pdf = Path(tmp) / "landscape.pdf"
+        _make_raster_pdf(l_pdf, width=900, height=600)
+        l_det = _LandscapeDet()
+        rp_l = ComposedReader(l_det, _Ocr(), dpi=72, high_dpi=72, enable_table_tiling=True).read(l_pdf, [1])[1]
+        assert len(l_det.calls) == 3
+        assert l_det.calls[1] == (round(0.55 * 900), 600)
+        assert l_det.calls[2] == (900 - round(0.45 * 900), 600)
+        assert len(rp_l.figures) == 1
+        assert rp_l.figures[0].bbox[0] < 405.0 and rp_l.figures[0].bbox[2] > 495.0
+
+        sq_pdf = Path(tmp) / "square.pdf"
+        _make_raster_pdf(sq_pdf, width=800, height=800)
+        sq_det_30 = _SquareDet(30)
+        ComposedReader(sq_det_30, _Ocr(), dpi=72, high_dpi=72, enable_table_tiling=True).read(sq_pdf, [1])
+        assert len(sq_det_30.calls) == 1
+
+        sq_det_40 = _SquareDet(40)
+        ComposedReader(sq_det_40, _Ocr(), dpi=72, high_dpi=72, enable_table_tiling=True).read(sq_pdf, [1])
+        assert len(sq_det_40.calls) == 5
 
 
 def main():

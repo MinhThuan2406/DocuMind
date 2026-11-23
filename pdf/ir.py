@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -349,17 +350,27 @@ def extract_ir(
                     from .raster import read_raster_pages
 
                     prev_reader_stats = getattr(resolved_reader, "last_stats", None)
-                    raster_by_page = read_raster_pages(
-                        pdf_path,
-                        raster_pages,
-                        reader=resolved_reader,
-                        layout=resolved_layout,
-                        ocr_backend=ocr_backend,
-                        ocr_lang=ocr_lang,
-                        device=device,
-                        pdfium_doc=ctx.pdfium,
-                        page_boxes={p: page_boxes[p] for p in raster_pages},
-                    )
+                    reader_params = inspect.signature(resolved_reader.read).parameters
+                    supports_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in reader_params.values())
+                    if tables and ("enable_table_tiling" in reader_params or supports_var_kw):
+                        read_kwargs: dict[str, Any] = {"enable_table_tiling": bool(tables)}
+                        if "pdfium_doc" in reader_params or supports_var_kw:
+                            read_kwargs["pdfium_doc"] = ctx.pdfium
+                        if "page_boxes" in reader_params or supports_var_kw:
+                            read_kwargs["page_boxes"] = {p: page_boxes[p] for p in raster_pages}
+                        raster_by_page = resolved_reader.read(pdf_path, raster_pages, **read_kwargs)
+                    else:
+                        raster_by_page = read_raster_pages(
+                            pdf_path,
+                            raster_pages,
+                            reader=resolved_reader,
+                            layout=resolved_layout,
+                            ocr_backend=ocr_backend,
+                            ocr_lang=ocr_lang,
+                            device=device,
+                            pdfium_doc=ctx.pdfium,
+                            page_boxes={p: page_boxes[p] for p in raster_pages},
+                        )
                     _collect_stats_warnings(resolved_reader, prev_reader_stats, warnings)
                 if partial_regions_by_page:
                     from .raster import read_raster_regions
