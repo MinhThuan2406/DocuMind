@@ -1,0 +1,5536 @@
+{
+  "_catalog_meta": {
+    "purpose": "Human-readable catalog for the installed DoclingDocument model",
+    "loadable_as_docling_document": false,
+    "docling_core_package_version": "2.101.1",
+    "docling_document_schema_version": "1.10.0",
+    "generated_from_runtime_models": true,
+    "source": {
+      "repository": "https://github.com/docling-project/docling-core",
+      "document_model": "docling_core.types.doc.DoclingDocument",
+      "official_reference": "https://docling-project.github.io/docling/reference/docling_document/"
+    },
+    "notes": [
+      "The sample file is the loadable artifact; this catalog is documentation.",
+      "Model fields and enum values are discovered from the installed runtime.",
+      "A component being supported by the schema does not guarantee every parser emits it."
+    ]
+  },
+  "docling_document": {
+    "top_level_fields": [
+      "schema_name",
+      "version",
+      "name",
+      "origin",
+      "furniture",
+      "body",
+      "groups",
+      "texts",
+      "pictures",
+      "tables",
+      "key_value_items",
+      "form_items",
+      "field_regions",
+      "field_items",
+      "pages"
+    ],
+    "content_collections": [
+      "texts",
+      "pictures",
+      "tables",
+      "key_value_items",
+      "form_items",
+      "field_regions",
+      "field_items"
+    ],
+    "structure_collections": [
+      "body",
+      "furniture",
+      "groups"
+    ],
+    "reference_mechanics": {
+      "object_identity": "self_ref, for example #/texts/0",
+      "links": "objects containing the $ref alias",
+      "reading_order": "order of children in the body/furniture trees",
+      "hierarchy": "parent and children references"
+    },
+    "coordinate_note": "Interpret bbox using bbox.coord_origin and the corresponding page size."
+  },
+  "component_families": {
+    "text": [
+      "TextItem",
+      "TitleItem",
+      "SectionHeaderItem",
+      "ListItem",
+      "FormulaItem",
+      "CodeItem",
+      "FieldHeadingItem",
+      "FieldValueItem"
+    ],
+    "structure": [
+      "GroupItem",
+      "ListGroup",
+      "InlineGroup",
+      "RefItem"
+    ],
+    "table": [
+      "TableItem",
+      "TableData",
+      "TableCell",
+      "RichTableCell"
+    ],
+    "picture": [
+      "PictureItem",
+      "PictureMeta",
+      "PictureClassificationData",
+      "PictureMoleculeData",
+      "PictureTabularChartData",
+      "PictureLineChartData",
+      "PictureBarChartData",
+      "PictureStackedBarChartData",
+      "PicturePieChartData",
+      "PictureScatterChartData"
+    ],
+    "key_value_and_form": [
+      "KeyValueItem",
+      "FormItem",
+      "GraphData",
+      "GraphCell",
+      "GraphLink",
+      "FieldRegionItem",
+      "FieldItem",
+      "FieldHeadingItem",
+      "FieldValueItem"
+    ],
+    "layout_and_assets": [
+      "PageItem",
+      "ProvenanceItem",
+      "BoundingBox",
+      "Size",
+      "ImageRef"
+    ],
+    "metadata": [
+      "BaseMeta",
+      "FloatingMeta",
+      "Formatting",
+      "DescriptionAnnotation",
+      "MiscAnnotation"
+    ]
+  },
+  "enums": {
+    "CaptionPlacement": [
+      "standard",
+      "layout"
+    ],
+    "CodeLanguageLabel": [
+      "Ada",
+      "Awk",
+      "Bash",
+      "bc",
+      "C",
+      "C#",
+      "C++",
+      "CMake",
+      "COBOL",
+      "CSS",
+      "Ceylon",
+      "Clojure",
+      "Crystal",
+      "Cuda",
+      "Cython",
+      "D",
+      "Dart",
+      "dc",
+      "Dockerfile",
+      "DocLang",
+      "Elixir",
+      "Erlang",
+      "FORTRAN",
+      "Forth",
+      "Go",
+      "HTML",
+      "Haskell",
+      "Haxe",
+      "Java",
+      "JavaScript",
+      "JSON",
+      "Julia",
+      "Kotlin",
+      "Latex",
+      "Lisp",
+      "Lua",
+      "Matlab",
+      "MoonScript",
+      "Nim",
+      "OCaml",
+      "ObjectiveC",
+      "Octave",
+      "PHP",
+      "Pascal",
+      "Perl",
+      "Prolog",
+      "Python",
+      "Racket",
+      "Ruby",
+      "Rust",
+      "SML",
+      "SQL",
+      "Scala",
+      "Scheme",
+      "Swift",
+      "Tikz",
+      "TypeScript",
+      "unknown",
+      "VisualBasic",
+      "XML",
+      "YAML"
+    ],
+    "ContentLayer": [
+      "body",
+      "furniture",
+      "background",
+      "invisible",
+      "notes"
+    ],
+    "CoordOrigin": [
+      "TOPLEFT",
+      "BOTTOMLEFT"
+    ],
+    "DocItemLabel": [
+      "caption",
+      "chart",
+      "footnote",
+      "formula",
+      "list_item",
+      "page_footer",
+      "page_header",
+      "picture",
+      "section_header",
+      "table",
+      "text",
+      "title",
+      "document_index",
+      "code",
+      "checkbox_selected",
+      "checkbox_unselected",
+      "form",
+      "key_value_region",
+      "grading_scale",
+      "handwritten_text",
+      "empty_value",
+      "paragraph",
+      "reference",
+      "field_region",
+      "field_heading",
+      "field_item",
+      "field_key",
+      "field_value",
+      "field_hint",
+      "marker"
+    ],
+    "DocumentToken": [
+      "doctag",
+      "otsl",
+      "chart",
+      "ordered_list",
+      "unordered_list",
+      "page_break",
+      "smiles",
+      "inline",
+      "caption",
+      "footnote",
+      "formula",
+      "list_item",
+      "page_footer",
+      "page_header",
+      "picture",
+      "table",
+      "text",
+      "title",
+      "document_index",
+      "code",
+      "checkbox_selected",
+      "checkbox_unselected",
+      "form",
+      "key_value_region",
+      "paragraph",
+      "reference",
+      "handwritten_text"
+    ],
+    "GraphCellLabel": [
+      "unspecified",
+      "key",
+      "value",
+      "checkbox"
+    ],
+    "GraphLinkLabel": [
+      "unspecified",
+      "to_value",
+      "to_key",
+      "to_parent",
+      "to_child"
+    ],
+    "GroupLabel": [
+      "unspecified",
+      "list",
+      "ordered_list",
+      "chapter",
+      "section",
+      "sheet",
+      "slide",
+      "form_area",
+      "key_value_area",
+      "comment_section",
+      "inline",
+      "picture_area"
+    ],
+    "HumanLanguageLabel": [
+      "aa",
+      "ab",
+      "ae",
+      "af",
+      "ak",
+      "am",
+      "an",
+      "ar",
+      "as",
+      "av",
+      "ay",
+      "az",
+      "ba",
+      "be",
+      "bg",
+      "bh",
+      "bi",
+      "bm",
+      "bn",
+      "bo",
+      "br",
+      "bs",
+      "ca",
+      "ce",
+      "ch",
+      "co",
+      "cr",
+      "cs",
+      "cu",
+      "cv",
+      "cy",
+      "da",
+      "de",
+      "dv",
+      "dz",
+      "ee",
+      "el",
+      "en",
+      "eo",
+      "es",
+      "et",
+      "eu",
+      "fa",
+      "ff",
+      "fi",
+      "fj",
+      "fo",
+      "fr",
+      "fy",
+      "ga",
+      "gd",
+      "gl",
+      "gn",
+      "gu",
+      "gv",
+      "ha",
+      "he",
+      "hi",
+      "ho",
+      "hr",
+      "ht",
+      "hu",
+      "hy",
+      "hz",
+      "ia",
+      "id",
+      "ie",
+      "ig",
+      "ii",
+      "ik",
+      "io",
+      "is",
+      "it",
+      "iu",
+      "ja",
+      "jv",
+      "ka",
+      "kg",
+      "ki",
+      "kj",
+      "kk",
+      "kl",
+      "km",
+      "kn",
+      "ko",
+      "kr",
+      "ks",
+      "ku",
+      "kv",
+      "kw",
+      "ky",
+      "la",
+      "lb",
+      "lg",
+      "li",
+      "ln",
+      "lo",
+      "lt",
+      "lu",
+      "lv",
+      "mg",
+      "mh",
+      "mi",
+      "mk",
+      "ml",
+      "mn",
+      "mr",
+      "ms",
+      "mt",
+      "my",
+      "na",
+      "nb",
+      "nd",
+      "ne",
+      "ng",
+      "nl",
+      "nn",
+      "no",
+      "nr",
+      "nv",
+      "ny",
+      "oc",
+      "oj",
+      "om",
+      "or",
+      "os",
+      "pa",
+      "pi",
+      "pl",
+      "ps",
+      "pt",
+      "qu",
+      "rm",
+      "rn",
+      "ro",
+      "ru",
+      "rw",
+      "sa",
+      "sc",
+      "sd",
+      "se",
+      "sg",
+      "sh",
+      "si",
+      "sk",
+      "sl",
+      "sm",
+      "sn",
+      "so",
+      "sq",
+      "sr",
+      "ss",
+      "st",
+      "su",
+      "sv",
+      "sw",
+      "ta",
+      "te",
+      "tg",
+      "th",
+      "ti",
+      "tk",
+      "tl",
+      "tn",
+      "to",
+      "tr",
+      "ts",
+      "tt",
+      "tw",
+      "ty",
+      "ug",
+      "uk",
+      "ur",
+      "uz",
+      "ve",
+      "vi",
+      "vo",
+      "wa",
+      "wo",
+      "xh",
+      "yi",
+      "yo",
+      "za",
+      "zh",
+      "zu"
+    ],
+    "ImageRefMode": [
+      "placeholder",
+      "embedded",
+      "referenced"
+    ],
+    "MetaFieldName": [
+      "summary",
+      "language",
+      "entities",
+      "keywords",
+      "topics",
+      "description",
+      "classification",
+      "molecule",
+      "tabular_chart"
+    ],
+    "Orientation": [
+      "rot_0",
+      "rot_90",
+      "rot_180",
+      "rot_270"
+    ],
+    "PdfCellRenderingMode": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      -1
+    ],
+    "PdfDestinationKind": [
+      "XYZ",
+      "FIT",
+      "FIT_H",
+      "FIT_V",
+      "FIT_R",
+      "FIT_B",
+      "FIT_BH",
+      "FIT_BV",
+      "UNKNOWN"
+    ],
+    "PdfPageBoundaryType": [
+      "art_box",
+      "bleed_box",
+      "crop_box",
+      "media_box",
+      "trim_box"
+    ],
+    "PictureClassificationLabel": [
+      "bar_chart",
+      "box_plot",
+      "flow_chart",
+      "line_chart",
+      "pie_chart",
+      "scatter_plot",
+      "table",
+      "other_chart",
+      "full_page_image",
+      "page_thumbnail",
+      "photograph",
+      "chemistry_structure",
+      "bar_code",
+      "icon",
+      "logo",
+      "qr_code",
+      "signature",
+      "stamp",
+      "engineering_drawing",
+      "screenshot_from_computer",
+      "screenshot_from_manual",
+      "geographical_map",
+      "topographical_map",
+      "calendar",
+      "crossword_puzzle",
+      "music",
+      "other",
+      "cad_drawing",
+      "electrical_diagram",
+      "map",
+      "heatmap",
+      "chemistry_markush_structure",
+      "chemistry_molecular_structure",
+      "natural_image",
+      "picture_group",
+      "remote_sensing",
+      "scatter_chart",
+      "screenshot",
+      "stacked_bar_chart",
+      "stratigraphic_chart"
+    ],
+    "PydanticSerCtxKey": [
+      "coord_prec",
+      "confid_prec"
+    ],
+    "Script": [
+      "baseline",
+      "sub",
+      "super"
+    ],
+    "TableCellLabel": [
+      "col_header",
+      "row_header",
+      "row_section",
+      "body"
+    ],
+    "TableToken": [
+      "<column_header>",
+      "<row_header>",
+      "<shed>",
+      "<data>",
+      "<ecel>",
+      "<fcel>",
+      "<lcel>",
+      "<ucel>",
+      "<xcel>",
+      "<nl>",
+      "<ched>",
+      "<rhed>",
+      "<srow>"
+    ],
+    "TextCellUnit": [
+      "char",
+      "word",
+      "line"
+    ],
+    "TextDirection": [
+      "left_to_right",
+      "right_to_left",
+      "unspecified"
+    ],
+    "WebVTTLineTerminator": [
+      "\r\n",
+      "\n",
+      "\r"
+    ]
+  },
+  "deprecated_or_legacy_values": {
+    "DocItemLabel": [
+      "chart"
+    ],
+    "GroupLabel": [
+      "ordered_list"
+    ],
+    "PictureClassificationLabel": [
+      "cad_drawing",
+      "electrical_diagram",
+      "map",
+      "heatmap",
+      "chemistry_markush_structure",
+      "chemistry_molecular_structure",
+      "natural_image",
+      "picture_group",
+      "remote_sensing",
+      "scatter_chart",
+      "screenshot",
+      "stacked_bar_chart",
+      "stratigraphic_chart"
+    ]
+  },
+  "models": {
+    "BaseAnnotation": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "BaseMeta": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "summary": {
+          "serialized_name": "summary",
+          "type": "docling_core.types.doc.common.meta.SummaryMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "language": {
+          "serialized_name": "language",
+          "type": "docling_core.types.doc.common.meta.LanguageMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "entities": {
+          "serialized_name": "entities",
+          "type": "docling_core.types.doc.common.meta.EntitiesMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "keywords": {
+          "serialized_name": "keywords",
+          "type": "docling_core.types.doc.common.meta.KeywordsMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "topics": {
+          "serialized_name": "topics",
+          "type": "docling_core.types.doc.common.meta.TopicsMetaField | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "BasePictureData": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "BasePrediction": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "BaseSource": {
+      "module": "docling_core.types.doc.common.source",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "BitmapResource": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "mode": {
+          "serialized_name": "mode",
+          "type": "<enum 'ImageRefMode'>",
+          "required": false,
+          "default": "placeholder"
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "uri": {
+          "serialized_name": "uri",
+          "type": "pydantic.networks.AnyUrl | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "BoundingBox": {
+      "module": "docling_core.types.doc.base",
+      "fields": {
+        "l": {
+          "serialized_name": "l",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "t": {
+          "serialized_name": "t",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r": {
+          "serialized_name": "r",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "b": {
+          "serialized_name": "b",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "coord_origin": {
+          "serialized_name": "coord_origin",
+          "type": "<enum 'CoordOrigin'>",
+          "required": false,
+          "default": "TOPLEFT"
+        }
+      }
+    },
+    "BoundingRectangle": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "r_x0": {
+          "serialized_name": "r_x0",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_y0": {
+          "serialized_name": "r_y0",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_x1": {
+          "serialized_name": "r_x1",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_y1": {
+          "serialized_name": "r_y1",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_x2": {
+          "serialized_name": "r_x2",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_y2": {
+          "serialized_name": "r_y2",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_x3": {
+          "serialized_name": "r_x3",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "r_y3": {
+          "serialized_name": "r_y3",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "coord_origin": {
+          "serialized_name": "coord_origin",
+          "type": "<enum 'CoordOrigin'>",
+          "required": false,
+          "default": "BOTTOMLEFT"
+        }
+      }
+    },
+    "ChartBar": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "values": {
+          "serialized_name": "values",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ChartLine": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "values": {
+          "serialized_name": "values",
+          "type": "list[tuple[float, float]]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ChartPoint": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "value": {
+          "serialized_name": "value",
+          "type": "tuple[float, float]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ChartSlice": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "value": {
+          "serialized_name": "value",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ChartStackedBar": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "list[str]",
+          "required": true,
+          "default": "<required>"
+        },
+        "values": {
+          "serialized_name": "values",
+          "type": "list[tuple[str, int]]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "CodeItem": {
+      "module": "docling_core.types.doc.items.code",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.FloatingMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.CODE: 'code'>]",
+          "required": false,
+          "default": "code"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "code_language": {
+          "serialized_name": "code_language",
+          "type": "<enum 'CodeLanguageLabel'>",
+          "required": false,
+          "default": "unknown"
+        }
+      }
+    },
+    "CodeMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "language": {
+          "serialized_name": "language",
+          "type": "docling_core.types.doc.labels.CodeLanguageLabel | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "ColorMixin": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "rgba": {
+          "serialized_name": "rgba",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        }
+      }
+    },
+    "ColorRGBA": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "r": {
+          "serialized_name": "r",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "g": {
+          "serialized_name": "g",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "b": {
+          "serialized_name": "b",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "a": {
+          "serialized_name": "a",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 255
+        }
+      }
+    },
+    "DescriptionAnnotation": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['description']",
+          "required": false,
+          "default": "description"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "provenance": {
+          "serialized_name": "provenance",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "DescriptionMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "DocItem": {
+      "module": "docling_core.types.doc.items.node",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "<enum 'DocItemLabel'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "DocTagsDocument": {
+      "module": "docling_core.types.doc.doctags",
+      "fields": {
+        "pages": {
+          "serialized_name": "pages",
+          "type": "list[docling_core.types.doc.doctags.DocTagsPage]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "DocTagsPage": {
+      "module": "docling_core.types.doc.doctags",
+      "fields": {
+        "tokens": {
+          "serialized_name": "tokens",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "PIL.Image.Image | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "DoclingDocument": {
+      "module": "docling_core.types.doc.document",
+      "fields": {
+        "schema_name": {
+          "serialized_name": "schema_name",
+          "type": "typing.Literal['DoclingDocument']",
+          "required": false,
+          "default": "DoclingDocument"
+        },
+        "version": {
+          "serialized_name": "version",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "1.10.0"
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "origin": {
+          "serialized_name": "origin",
+          "type": "docling_core.types.doc.common.origin.DocumentOrigin | None",
+          "required": false,
+          "default": null
+        },
+        "furniture": {
+          "serialized_name": "furniture",
+          "type": "<class 'docling_core.types.doc.items.group.GroupItem'>",
+          "required": false,
+          "default": {
+            "self_ref": "#/furniture",
+            "parent": null,
+            "children": [],
+            "content_layer": "furniture",
+            "meta": null,
+            "name": "_root_",
+            "label": "unspecified"
+          }
+        },
+        "body": {
+          "serialized_name": "body",
+          "type": "<class 'docling_core.types.doc.items.group.GroupItem'>",
+          "required": false,
+          "default": {
+            "self_ref": "#/body",
+            "parent": null,
+            "children": [],
+            "content_layer": "body",
+            "meta": null,
+            "name": "_root_",
+            "label": "unspecified"
+          }
+        },
+        "groups": {
+          "serialized_name": "groups",
+          "type": "list[docling_core.types.doc.items.group.ListGroup | docling_core.types.doc.items.group.InlineGroup | docling_core.types.doc.items.group.GroupItem]",
+          "required": false,
+          "default": []
+        },
+        "texts": {
+          "serialized_name": "texts",
+          "type": "list[docling_core.types.doc.items.text.TitleItem | docling_core.types.doc.items.text.SectionHeaderItem | docling_core.types.doc.items.text.ListItem | docling_core.types.doc.items.code.CodeItem | docling_core.types.doc.items.text.FormulaItem | docling_core.types.doc.items.form.FieldHeadingItem | docling_core.types.doc.items.form.FieldValueItem | docling_core.types.doc.items.text.TextItem]",
+          "required": false,
+          "default": []
+        },
+        "pictures": {
+          "serialized_name": "pictures",
+          "type": "list[docling_core.types.doc.items.picture.picture.PictureItem]",
+          "required": false,
+          "default": []
+        },
+        "tables": {
+          "serialized_name": "tables",
+          "type": "list[docling_core.types.doc.items.table.table.TableItem]",
+          "required": false,
+          "default": []
+        },
+        "key_value_items": {
+          "serialized_name": "key_value_items",
+          "type": "list[docling_core.types.doc.items.key_value.KeyValueItem]",
+          "required": false,
+          "default": []
+        },
+        "form_items": {
+          "serialized_name": "form_items",
+          "type": "list[docling_core.types.doc.items.key_value.FormItem]",
+          "required": false,
+          "default": []
+        },
+        "field_regions": {
+          "serialized_name": "field_regions",
+          "type": "list[docling_core.types.doc.items.form.FieldRegionItem]",
+          "required": false,
+          "default": []
+        },
+        "field_items": {
+          "serialized_name": "field_items",
+          "type": "list[docling_core.types.doc.items.form.FieldItem]",
+          "required": false,
+          "default": []
+        },
+        "pages": {
+          "serialized_name": "pages",
+          "type": "dict[int, docling_core.types.doc.common.reference.PageItem]",
+          "required": false,
+          "default": {}
+        }
+      }
+    },
+    "DocumentOrigin": {
+      "module": "docling_core.types.doc.common.origin",
+      "fields": {
+        "mimetype": {
+          "serialized_name": "mimetype",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "binary_hash": {
+          "serialized_name": "binary_hash",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "filename": {
+          "serialized_name": "filename",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "uri": {
+          "serialized_name": "uri",
+          "type": "pydantic.networks.AnyUrl | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "EntitiesMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "mentions": {
+          "serialized_name": "mentions",
+          "type": "list[docling_core.types.doc.common.meta.EntityMention]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "EntityMention": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "charspan": {
+          "serialized_name": "charspan",
+          "type": "typing.Annotated[tuple[int, int], FieldInfo(annotation=NoneType, required=True, description='Character span (0-indexed)')] | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "FieldHeadingItem": {
+      "module": "docling_core.types.doc.items.form",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FIELD_HEADING: 'field_heading'>]",
+          "required": false,
+          "default": "field_heading"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        },
+        "level": {
+          "serialized_name": "level",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        }
+      }
+    },
+    "FieldItem": {
+      "module": "docling_core.types.doc.items.form",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FIELD_ITEM: 'field_item'>]",
+          "required": false,
+          "default": "field_item"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "FieldRegionItem": {
+      "module": "docling_core.types.doc.items.form",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FIELD_REGION: 'field_region'>]",
+          "required": false,
+          "default": "field_region"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "FieldValueItem": {
+      "module": "docling_core.types.doc.items.form",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FIELD_VALUE: 'field_value'>]",
+          "required": false,
+          "default": "field_value"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        },
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['read_only', 'fillable']",
+          "required": false,
+          "default": "read_only"
+        }
+      }
+    },
+    "FineRef": {
+      "module": "docling_core.types.doc.common.reference",
+      "fields": {
+        "cref": {
+          "serialized_name": "$ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "range": {
+          "serialized_name": "range",
+          "type": "tuple[int, int] | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "FloatingItem": {
+      "module": "docling_core.types.doc.items.node",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.FloatingMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "<enum 'DocItemLabel'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "FloatingMeta": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "summary": {
+          "serialized_name": "summary",
+          "type": "docling_core.types.doc.common.meta.SummaryMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "language": {
+          "serialized_name": "language",
+          "type": "docling_core.types.doc.common.meta.LanguageMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "entities": {
+          "serialized_name": "entities",
+          "type": "docling_core.types.doc.common.meta.EntitiesMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "keywords": {
+          "serialized_name": "keywords",
+          "type": "docling_core.types.doc.common.meta.KeywordsMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "topics": {
+          "serialized_name": "topics",
+          "type": "docling_core.types.doc.common.meta.TopicsMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "description": {
+          "serialized_name": "description",
+          "type": "docling_core.types.doc.common.meta.DescriptionMetaField | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "FormItem": {
+      "module": "docling_core.types.doc.items.key_value",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.FloatingMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FORM: 'form'>]",
+          "required": false,
+          "default": "form"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "graph": {
+          "serialized_name": "graph",
+          "type": "<class 'docling_core.types.doc.items.key_value.GraphData'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "Formatting": {
+      "module": "docling_core.types.doc.common.formatting",
+      "fields": {
+        "bold": {
+          "serialized_name": "bold",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "italic": {
+          "serialized_name": "italic",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "underline": {
+          "serialized_name": "underline",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "strikethrough": {
+          "serialized_name": "strikethrough",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "script": {
+          "serialized_name": "script",
+          "type": "<enum 'Script'>",
+          "required": false,
+          "default": "baseline"
+        }
+      }
+    },
+    "FormulaItem": {
+      "module": "docling_core.types.doc.items.text",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.FORMULA: 'formula'>]",
+          "required": false,
+          "default": "formula"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "GraphCell": {
+      "module": "docling_core.types.doc.items.key_value",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "<enum 'GraphCellLabel'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "cell_id": {
+          "serialized_name": "cell_id",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "docling_core.types.doc.common.reference.ProvenanceItem | None",
+          "required": false,
+          "default": null
+        },
+        "item_ref": {
+          "serialized_name": "item_ref",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "GraphData": {
+      "module": "docling_core.types.doc.items.key_value",
+      "fields": {
+        "cells": {
+          "serialized_name": "cells",
+          "type": "list[docling_core.types.doc.items.key_value.GraphCell]",
+          "required": false,
+          "default": "<factory:list>"
+        },
+        "links": {
+          "serialized_name": "links",
+          "type": "list[docling_core.types.doc.items.key_value.GraphLink]",
+          "required": false,
+          "default": "<factory:list>"
+        }
+      }
+    },
+    "GraphLink": {
+      "module": "docling_core.types.doc.items.key_value",
+      "fields": {
+        "label": {
+          "serialized_name": "label",
+          "type": "<enum 'GraphLinkLabel'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "source_cell_id": {
+          "serialized_name": "source_cell_id",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "target_cell_id": {
+          "serialized_name": "target_cell_id",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "GroupItem": {
+      "module": "docling_core.types.doc.items.group",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "group"
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "<enum 'GroupLabel'>",
+          "required": false,
+          "default": "unspecified"
+        }
+      }
+    },
+    "ImageRef": {
+      "module": "docling_core.types.doc.common.reference",
+      "fields": {
+        "mimetype": {
+          "serialized_name": "mimetype",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "dpi": {
+          "serialized_name": "dpi",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "size": {
+          "serialized_name": "size",
+          "type": "<class 'docling_core.types.doc.base.Size'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "uri": {
+          "serialized_name": "uri",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "InlineGroup": {
+      "module": "docling_core.types.doc.items.group",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "group"
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<GroupLabel.INLINE: 'inline'>]",
+          "required": false,
+          "default": "inline"
+        }
+      }
+    },
+    "KeyValueItem": {
+      "module": "docling_core.types.doc.items.key_value",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.FloatingMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.KEY_VALUE_REGION: 'key_value_region'>]",
+          "required": false,
+          "default": "key_value_region"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "graph": {
+          "serialized_name": "graph",
+          "type": "<class 'docling_core.types.doc.items.key_value.GraphData'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "KeywordsMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "values": {
+          "serialized_name": "values",
+          "type": "list[str]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "LanguageMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "code": {
+          "serialized_name": "code",
+          "type": "<enum 'HumanLanguageLabel'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ListGroup": {
+      "module": "docling_core.types.doc.items.group",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "group"
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<GroupLabel.LIST: 'list'>]",
+          "required": false,
+          "default": "list"
+        }
+      }
+    },
+    "ListItem": {
+      "module": "docling_core.types.doc.items.text",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.LIST_ITEM: 'list_item'>]",
+          "required": false,
+          "default": "list_item"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        },
+        "enumerated": {
+          "serialized_name": "enumerated",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "marker": {
+          "serialized_name": "marker",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "-"
+        }
+      }
+    },
+    "MiscAnnotation": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['misc']",
+          "required": false,
+          "default": "misc"
+        },
+        "content": {
+          "serialized_name": "content",
+          "type": "dict[str, typing.Any]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "MoleculeMetaField": {
+      "module": "docling_core.types.doc.items.picture.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "smi": {
+          "serialized_name": "smi",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "NodeItem": {
+      "module": "docling_core.types.doc.items.node",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "OrderedElement": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        }
+      }
+    },
+    "OrderedList": {
+      "module": "docling_core.types.doc.items.group",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "group"
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<GroupLabel.ORDERED_LIST: 'ordered_list'>]",
+          "required": false,
+          "default": "ordered_list"
+        }
+      }
+    },
+    "PageGeometry": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "angle": {
+          "serialized_name": "angle",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PageItem": {
+      "module": "docling_core.types.doc.common.reference",
+      "fields": {
+        "size": {
+          "serialized_name": "size",
+          "type": "<class 'docling_core.types.doc.base.Size'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "page_no": {
+          "serialized_name": "page_no",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ParsedPdfDocument": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "pages": {
+          "serialized_name": "pages",
+          "type": "dict[typing.Annotated[int, FieldInfo(annotation=NoneType, required=True, metadata=[Ge(ge=1)])], docling_core.types.doc.page.SegmentedPdfPage]",
+          "required": false,
+          "default": {}
+        },
+        "meta_data": {
+          "serialized_name": "meta_data",
+          "type": "docling_core.types.doc.page.PdfMetaData | None",
+          "required": false,
+          "default": null
+        },
+        "table_of_contents": {
+          "serialized_name": "table_of_contents",
+          "type": "docling_core.types.doc.page.PdfTableOfContents | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "PdfDestination": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "page_no": {
+          "serialized_name": "page_no",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "kind": {
+          "serialized_name": "kind",
+          "type": "<enum 'PdfDestinationKind'>",
+          "required": false,
+          "default": "UNKNOWN"
+        },
+        "point": {
+          "serialized_name": "point",
+          "type": "docling_core.types.doc.page.Coord2D | None",
+          "required": false,
+          "default": null
+        },
+        "coord_origin": {
+          "serialized_name": "coord_origin",
+          "type": "<enum 'CoordOrigin'>",
+          "required": false,
+          "default": "BOTTOMLEFT"
+        },
+        "page_size": {
+          "serialized_name": "page_size",
+          "type": "<class 'docling_core.types.doc.base.Size'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PdfHyperlink": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "uri": {
+          "serialized_name": "uri",
+          "type": "pydantic.networks.AnyUrl | str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_text": {
+          "serialized_name": "widget_text",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_description": {
+          "serialized_name": "widget_description",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "PdfLine": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rgba": {
+          "serialized_name": "rgba",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        },
+        "parent_id": {
+          "serialized_name": "parent_id",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "points": {
+          "serialized_name": "points",
+          "type": "list[docling_core.types.doc.page.Coord2D]",
+          "required": true,
+          "default": "<required>"
+        },
+        "width": {
+          "serialized_name": "width",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 1.0
+        },
+        "coord_origin": {
+          "serialized_name": "coord_origin",
+          "type": "<enum 'CoordOrigin'>",
+          "required": false,
+          "default": "BOTTOMLEFT"
+        }
+      }
+    },
+    "PdfMetaData": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "xml": {
+          "serialized_name": "xml",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": ""
+        },
+        "data": {
+          "serialized_name": "data",
+          "type": "dict[str, str]",
+          "required": false,
+          "default": {}
+        }
+      }
+    },
+    "PdfPageGeometry": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "angle": {
+          "serialized_name": "angle",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "boundary_type": {
+          "serialized_name": "boundary_type",
+          "type": "<enum 'PdfPageBoundaryType'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "art_bbox": {
+          "serialized_name": "art_bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "bleed_bbox": {
+          "serialized_name": "bleed_bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "crop_bbox": {
+          "serialized_name": "crop_bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "media_bbox": {
+          "serialized_name": "media_bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "trim_bbox": {
+          "serialized_name": "trim_bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PdfShape": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "parent_id": {
+          "serialized_name": "parent_id",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "points": {
+          "serialized_name": "points",
+          "type": "list[docling_core.types.doc.page.Coord2D]",
+          "required": true,
+          "default": "<required>"
+        },
+        "coord_origin": {
+          "serialized_name": "coord_origin",
+          "type": "<enum 'CoordOrigin'>",
+          "required": false,
+          "default": "BOTTOMLEFT"
+        },
+        "has_graphics_state": {
+          "serialized_name": "has_graphics_state",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "line_width": {
+          "serialized_name": "line_width",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": -1.0
+        },
+        "miter_limit": {
+          "serialized_name": "miter_limit",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": -1.0
+        },
+        "line_cap": {
+          "serialized_name": "line_cap",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "line_join": {
+          "serialized_name": "line_join",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "dash_phase": {
+          "serialized_name": "dash_phase",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 0.0
+        },
+        "dash_array": {
+          "serialized_name": "dash_array",
+          "type": "list[float]",
+          "required": false,
+          "default": []
+        },
+        "flatness": {
+          "serialized_name": "flatness",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": -1.0
+        },
+        "rgb_stroking": {
+          "serialized_name": "rgb_stroking",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        },
+        "rgb_filling": {
+          "serialized_name": "rgb_filling",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        },
+        "rgba": {
+          "serialized_name": "rgba",
+          "type": "docling_core.types.doc.page.ColorRGBA | None",
+          "required": false,
+          "default": null
+        },
+        "width": {
+          "serialized_name": "width",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "PdfTableOfContents": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": ""
+        },
+        "marker": {
+          "serialized_name": "marker",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": ""
+        },
+        "destination": {
+          "serialized_name": "destination",
+          "type": "docling_core.types.doc.page.PdfDestination | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.page.PdfTableOfContents]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "PdfTextCell": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rgba": {
+          "serialized_name": "rgba",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text_direction": {
+          "serialized_name": "text_direction",
+          "type": "<enum 'TextDirection'>",
+          "required": false,
+          "default": "left_to_right"
+        },
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 1.0
+        },
+        "from_ocr": {
+          "serialized_name": "from_ocr",
+          "type": "typing.Literal[False]",
+          "required": false,
+          "default": false
+        },
+        "rendering_mode": {
+          "serialized_name": "rendering_mode",
+          "type": "<enum 'PdfCellRenderingMode'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "widget": {
+          "serialized_name": "widget",
+          "type": "<class 'bool'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "font_key": {
+          "serialized_name": "font_key",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "font_name": {
+          "serialized_name": "font_name",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PdfWidget": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "widget_text": {
+          "serialized_name": "widget_text",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_description": {
+          "serialized_name": "widget_description",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_field_name": {
+          "serialized_name": "widget_field_name",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_field_type": {
+          "serialized_name": "widget_field_type",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "widget_field_flags": {
+          "serialized_name": "widget_field_flags",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 0
+        },
+        "widget_appearance_state": {
+          "serialized_name": "widget_appearance_state",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "PictureBarChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['bar_chart_data']",
+          "required": false,
+          "default": "bar_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "x_axis_label": {
+          "serialized_name": "x_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "y_axis_label": {
+          "serialized_name": "y_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "bars": {
+          "serialized_name": "bars",
+          "type": "list[docling_core.types.doc.items.picture.charts.ChartBar]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureClassificationClass": {
+      "module": "docling_core.types.doc.items.picture.classification",
+      "fields": {
+        "class_name": {
+          "serialized_name": "class_name",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureClassificationData": {
+      "module": "docling_core.types.doc.items.picture.classification",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['classification']",
+          "required": false,
+          "default": "classification"
+        },
+        "provenance": {
+          "serialized_name": "provenance",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "predicted_classes": {
+          "serialized_name": "predicted_classes",
+          "type": "list[docling_core.types.doc.items.picture.classification.PictureClassificationClass]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureClassificationMetaField": {
+      "module": "docling_core.types.doc.items.picture.meta",
+      "fields": {
+        "predictions": {
+          "serialized_name": "predictions",
+          "type": "list[docling_core.types.doc.items.picture.meta.PictureClassificationPrediction]",
+          "required": false,
+          "default": "<factory:list>"
+        }
+      }
+    },
+    "PictureClassificationPrediction": {
+      "module": "docling_core.types.doc.items.picture.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "class_name": {
+          "serialized_name": "class_name",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureDescriptionData": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['description']",
+          "required": false,
+          "default": "description"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "provenance": {
+          "serialized_name": "provenance",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureItem": {
+      "module": "docling_core.types.doc.items.picture.picture",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.items.picture.meta.PictureMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.PICTURE: 'picture'>, <DocItemLabel.CHART: 'chart'>]",
+          "required": false,
+          "default": "picture"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "annotations": {
+          "serialized_name": "annotations",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.annotations.DescriptionAnnotation | docling_core.types.doc.common.annotations.MiscAnnotation | docling_core.types.doc.items.picture.classification.PictureClassificationData | docling_core.types.doc.items.picture.molecule.PictureMoleculeData | docling_core.types.doc.items.picture.charts.PictureTabularChartData | docling_core.types.doc.items.picture.charts.PictureLineChartData | docling_core.types.doc.items.picture.charts.PictureBarChartData | docling_core.types.doc.items.picture.charts.PictureStackedBarChartData | docling_core.types.doc.items.picture.charts.PicturePieChartData | docling_core.types.doc.items.picture.charts.PictureScatterChartData, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "PictureLineChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['line_chart_data']",
+          "required": false,
+          "default": "line_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "x_axis_label": {
+          "serialized_name": "x_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "y_axis_label": {
+          "serialized_name": "y_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "lines": {
+          "serialized_name": "lines",
+          "type": "list[docling_core.types.doc.items.picture.charts.ChartLine]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureMeta": {
+      "module": "docling_core.types.doc.items.picture.meta",
+      "fields": {
+        "summary": {
+          "serialized_name": "summary",
+          "type": "docling_core.types.doc.common.meta.SummaryMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "language": {
+          "serialized_name": "language",
+          "type": "docling_core.types.doc.common.meta.LanguageMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "entities": {
+          "serialized_name": "entities",
+          "type": "docling_core.types.doc.common.meta.EntitiesMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "keywords": {
+          "serialized_name": "keywords",
+          "type": "docling_core.types.doc.common.meta.KeywordsMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "topics": {
+          "serialized_name": "topics",
+          "type": "docling_core.types.doc.common.meta.TopicsMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "description": {
+          "serialized_name": "description",
+          "type": "docling_core.types.doc.common.meta.DescriptionMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "classification": {
+          "serialized_name": "classification",
+          "type": "docling_core.types.doc.items.picture.meta.PictureClassificationMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "molecule": {
+          "serialized_name": "molecule",
+          "type": "docling_core.types.doc.items.picture.meta.MoleculeMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "tabular_chart": {
+          "serialized_name": "tabular_chart",
+          "type": "docling_core.types.doc.items.picture.meta.TabularChartMetaField | None",
+          "required": false,
+          "default": null
+        },
+        "code": {
+          "serialized_name": "code",
+          "type": "docling_core.types.doc.common.meta.CodeMetaField | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "PictureMiscData": {
+      "module": "docling_core.types.doc.common.annotations",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['misc']",
+          "required": false,
+          "default": "misc"
+        },
+        "content": {
+          "serialized_name": "content",
+          "type": "dict[str, typing.Any]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureMoleculeData": {
+      "module": "docling_core.types.doc.items.picture.molecule",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['molecule_data']",
+          "required": false,
+          "default": "molecule_data"
+        },
+        "smi": {
+          "serialized_name": "smi",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "class_name": {
+          "serialized_name": "class_name",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "segmentation": {
+          "serialized_name": "segmentation",
+          "type": "list[tuple[float, float]]",
+          "required": true,
+          "default": "<required>"
+        },
+        "provenance": {
+          "serialized_name": "provenance",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PicturePieChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['pie_chart_data']",
+          "required": false,
+          "default": "pie_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "slices": {
+          "serialized_name": "slices",
+          "type": "list[docling_core.types.doc.items.picture.charts.ChartSlice]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureScatterChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['scatter_chart_data']",
+          "required": false,
+          "default": "scatter_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "x_axis_label": {
+          "serialized_name": "x_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "y_axis_label": {
+          "serialized_name": "y_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "points": {
+          "serialized_name": "points",
+          "type": "list[docling_core.types.doc.items.picture.charts.ChartPoint]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureStackedBarChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['stacked_bar_chart_data']",
+          "required": false,
+          "default": "stacked_bar_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "x_axis_label": {
+          "serialized_name": "x_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "y_axis_label": {
+          "serialized_name": "y_axis_label",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "stacked_bars": {
+          "serialized_name": "stacked_bars",
+          "type": "list[docling_core.types.doc.items.picture.charts.ChartStackedBar]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "PictureTabularChartData": {
+      "module": "docling_core.types.doc.items.picture.charts",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['tabular_chart_data']",
+          "required": false,
+          "default": "tabular_chart_data"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "chart_data": {
+          "serialized_name": "chart_data",
+          "type": "<class 'docling_core.types.doc.items.table.table_data.TableData'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "ProvenanceItem": {
+      "module": "docling_core.types.doc.common.reference",
+      "fields": {
+        "page_no": {
+          "serialized_name": "page_no",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "bbox": {
+          "serialized_name": "bbox",
+          "type": "<class 'docling_core.types.doc.base.BoundingBox'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "charspan": {
+          "serialized_name": "charspan",
+          "type": "tuple[int, int]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "RefItem": {
+      "module": "docling_core.types.doc.common.reference",
+      "fields": {
+        "cref": {
+          "serialized_name": "$ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "RichTableCell": {
+      "module": "docling_core.types.doc.items.table.table_data",
+      "fields": {
+        "bbox": {
+          "serialized_name": "bbox",
+          "type": "docling_core.types.doc.base.BoundingBox | None",
+          "required": false,
+          "default": null
+        },
+        "row_span": {
+          "serialized_name": "row_span",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        },
+        "col_span": {
+          "serialized_name": "col_span",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        },
+        "start_row_offset_idx": {
+          "serialized_name": "start_row_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end_row_offset_idx": {
+          "serialized_name": "end_row_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "start_col_offset_idx": {
+          "serialized_name": "start_col_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end_col_offset_idx": {
+          "serialized_name": "end_col_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "column_header": {
+          "serialized_name": "column_header",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "row_header": {
+          "serialized_name": "row_header",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "row_section": {
+          "serialized_name": "row_section",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "fillable": {
+          "serialized_name": "fillable",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "ref": {
+          "serialized_name": "ref",
+          "type": "<class 'docling_core.types.doc.common.reference.RefItem'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "SectionHeaderItem": {
+      "module": "docling_core.types.doc.items.text",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.SECTION_HEADER: 'section_header'>]",
+          "required": false,
+          "default": "section_header"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        },
+        "level": {
+          "serialized_name": "level",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        }
+      }
+    },
+    "SegmentedPage": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "dimension": {
+          "serialized_name": "dimension",
+          "type": "<class 'docling_core.types.doc.page.PageGeometry'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "bitmap_resources": {
+          "serialized_name": "bitmap_resources",
+          "type": "list[docling_core.types.doc.page.BitmapResource]",
+          "required": false,
+          "default": []
+        },
+        "char_cells": {
+          "serialized_name": "char_cells",
+          "type": "list[docling_core.types.doc.page.TextCell]",
+          "required": false,
+          "default": []
+        },
+        "word_cells": {
+          "serialized_name": "word_cells",
+          "type": "list[docling_core.types.doc.page.TextCell]",
+          "required": false,
+          "default": []
+        },
+        "textline_cells": {
+          "serialized_name": "textline_cells",
+          "type": "list[docling_core.types.doc.page.TextCell]",
+          "required": false,
+          "default": []
+        },
+        "has_chars": {
+          "serialized_name": "has_chars",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "has_words": {
+          "serialized_name": "has_words",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "has_lines": {
+          "serialized_name": "has_lines",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "widgets": {
+          "serialized_name": "widgets",
+          "type": "list[docling_core.types.doc.page.PdfWidget]",
+          "required": false,
+          "default": []
+        },
+        "hyperlinks": {
+          "serialized_name": "hyperlinks",
+          "type": "list[docling_core.types.doc.page.PdfHyperlink]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "SegmentedPdfPage": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "dimension": {
+          "serialized_name": "dimension",
+          "type": "<class 'docling_core.types.doc.page.PdfPageGeometry'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "bitmap_resources": {
+          "serialized_name": "bitmap_resources",
+          "type": "list[docling_core.types.doc.page.BitmapResource]",
+          "required": false,
+          "default": []
+        },
+        "char_cells": {
+          "serialized_name": "char_cells",
+          "type": "list[docling_core.types.doc.page.PdfTextCell | docling_core.types.doc.page.TextCell]",
+          "required": true,
+          "default": "<required>"
+        },
+        "word_cells": {
+          "serialized_name": "word_cells",
+          "type": "list[docling_core.types.doc.page.PdfTextCell | docling_core.types.doc.page.TextCell]",
+          "required": true,
+          "default": "<required>"
+        },
+        "textline_cells": {
+          "serialized_name": "textline_cells",
+          "type": "list[docling_core.types.doc.page.PdfTextCell | docling_core.types.doc.page.TextCell]",
+          "required": true,
+          "default": "<required>"
+        },
+        "has_chars": {
+          "serialized_name": "has_chars",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "has_words": {
+          "serialized_name": "has_words",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "has_lines": {
+          "serialized_name": "has_lines",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "widgets": {
+          "serialized_name": "widgets",
+          "type": "list[docling_core.types.doc.page.PdfWidget]",
+          "required": false,
+          "default": []
+        },
+        "hyperlinks": {
+          "serialized_name": "hyperlinks",
+          "type": "list[docling_core.types.doc.page.PdfHyperlink]",
+          "required": false,
+          "default": []
+        },
+        "lines": {
+          "serialized_name": "lines",
+          "type": "list[docling_core.types.doc.page.PdfLine]",
+          "required": false,
+          "default": []
+        },
+        "shapes": {
+          "serialized_name": "shapes",
+          "type": "list[docling_core.types.doc.page.PdfShape]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "Size": {
+      "module": "docling_core.types.doc.base",
+      "fields": {
+        "width": {
+          "serialized_name": "width",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 0.0
+        },
+        "height": {
+          "serialized_name": "height",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 0.0
+        }
+      }
+    },
+    "SummaryMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "TableCell": {
+      "module": "docling_core.types.doc.items.table.table_data",
+      "fields": {
+        "bbox": {
+          "serialized_name": "bbox",
+          "type": "docling_core.types.doc.base.BoundingBox | None",
+          "required": false,
+          "default": null
+        },
+        "row_span": {
+          "serialized_name": "row_span",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        },
+        "col_span": {
+          "serialized_name": "col_span",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 1
+        },
+        "start_row_offset_idx": {
+          "serialized_name": "start_row_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end_row_offset_idx": {
+          "serialized_name": "end_row_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "start_col_offset_idx": {
+          "serialized_name": "start_col_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end_col_offset_idx": {
+          "serialized_name": "end_col_offset_idx",
+          "type": "<class 'int'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "column_header": {
+          "serialized_name": "column_header",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "row_header": {
+          "serialized_name": "row_header",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "row_section": {
+          "serialized_name": "row_section",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        },
+        "fillable": {
+          "serialized_name": "fillable",
+          "type": "<class 'bool'>",
+          "required": false,
+          "default": false
+        }
+      }
+    },
+    "TableData": {
+      "module": "docling_core.types.doc.items.table.table_data",
+      "fields": {
+        "table_cells": {
+          "serialized_name": "table_cells",
+          "type": "list[typing.Annotated[docling_core.types.doc.items.table.table_data.RichTableCell | docling_core.types.doc.items.table.table_data.TableCell, FieldInfo(annotation=NoneType, required=True, metadata=[_PydanticGeneralMetadata(union_mode='left_to_right')])]]",
+          "required": false,
+          "default": []
+        },
+        "num_rows": {
+          "serialized_name": "num_rows",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 0
+        },
+        "num_cols": {
+          "serialized_name": "num_cols",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": 0
+        },
+        "orientation": {
+          "serialized_name": "orientation",
+          "type": "<enum 'Orientation'>",
+          "required": false,
+          "default": "rot_0"
+        }
+      }
+    },
+    "TableItem": {
+      "module": "docling_core.types.doc.items.table.table",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.FloatingMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.DOCUMENT_INDEX: 'document_index'>, <DocItemLabel.TABLE: 'table'>]",
+          "required": false,
+          "default": "table"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "captions": {
+          "serialized_name": "captions",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "references": {
+          "serialized_name": "references",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "footnotes": {
+          "serialized_name": "footnotes",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "image": {
+          "serialized_name": "image",
+          "type": "docling_core.types.doc.common.reference.ImageRef | None",
+          "required": false,
+          "default": null
+        },
+        "data": {
+          "serialized_name": "data",
+          "type": "<class 'docling_core.types.doc.items.table.table_data.TableData'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "annotations": {
+          "serialized_name": "annotations",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.annotations.DescriptionAnnotation | docling_core.types.doc.common.annotations.MiscAnnotation, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "TabularChartMetaField": {
+      "module": "docling_core.types.doc.items.picture.meta",
+      "fields": {
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "float | None",
+          "required": false,
+          "default": null
+        },
+        "created_by": {
+          "serialized_name": "created_by",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "chart_data": {
+          "serialized_name": "chart_data",
+          "type": "<class 'docling_core.types.doc.items.table.table_data.TableData'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "TextCell": {
+      "module": "docling_core.types.doc.page",
+      "fields": {
+        "index": {
+          "serialized_name": "index",
+          "type": "<class 'int'>",
+          "required": false,
+          "default": -1
+        },
+        "rgba": {
+          "serialized_name": "rgba",
+          "type": "<class 'docling_core.types.doc.page.ColorRGBA'>",
+          "required": false,
+          "default": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 255
+          }
+        },
+        "rect": {
+          "serialized_name": "rect",
+          "type": "<class 'docling_core.types.doc.page.BoundingRectangle'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text_direction": {
+          "serialized_name": "text_direction",
+          "type": "<enum 'TextDirection'>",
+          "required": false,
+          "default": "left_to_right"
+        },
+        "confidence": {
+          "serialized_name": "confidence",
+          "type": "<class 'float'>",
+          "required": false,
+          "default": 1.0
+        },
+        "from_ocr": {
+          "serialized_name": "from_ocr",
+          "type": "<class 'bool'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "TextItem": {
+      "module": "docling_core.types.doc.items.text",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.CAPTION: 'caption'>, <DocItemLabel.CHECKBOX_SELECTED: 'checkbox_selected'>, <DocItemLabel.CHECKBOX_UNSELECTED: 'checkbox_unselected'>, <DocItemLabel.FOOTNOTE: 'footnote'>, <DocItemLabel.PAGE_FOOTER: 'page_footer'>, <DocItemLabel.PAGE_HEADER: 'page_header'>, <DocItemLabel.PARAGRAPH: 'paragraph'>, <DocItemLabel.REFERENCE: 'reference'>, <DocItemLabel.TEXT: 'text'>, <DocItemLabel.EMPTY_VALUE: 'empty_value'>, <DocItemLabel.FIELD_KEY: 'field_key'>, <DocItemLabel.FIELD_HINT: 'field_hint'>, <DocItemLabel.MARKER: 'marker'>, <DocItemLabel.HANDWRITTEN_TEXT: 'handwritten_text'>]",
+          "required": true,
+          "default": "<required>"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "TitleItem": {
+      "module": "docling_core.types.doc.items.text",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<DocItemLabel.TITLE: 'title'>]",
+          "required": false,
+          "default": "title"
+        },
+        "prov": {
+          "serialized_name": "prov",
+          "type": "list[docling_core.types.doc.common.reference.ProvenanceItem]",
+          "required": false,
+          "default": []
+        },
+        "source": {
+          "serialized_name": "source",
+          "type": "list[typing.Annotated[docling_core.types.doc.common.source.TrackSource, FieldInfo(annotation=NoneType, required=True, discriminator='kind')]]",
+          "required": false,
+          "default": []
+        },
+        "comments": {
+          "serialized_name": "comments",
+          "type": "list[docling_core.types.doc.common.reference.FineRef]",
+          "required": false,
+          "default": []
+        },
+        "orig": {
+          "serialized_name": "orig",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "formatting": {
+          "serialized_name": "formatting",
+          "type": "docling_core.types.doc.common.formatting.Formatting | None",
+          "required": false,
+          "default": null
+        },
+        "hyperlink": {
+          "serialized_name": "hyperlink",
+          "type": "pydantic.networks.AnyUrl | pathlib.Path | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "TopicsMetaField": {
+      "module": "docling_core.types.doc.common.meta",
+      "fields": {
+        "values": {
+          "serialized_name": "values",
+          "type": "list[str]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "TrackSource": {
+      "module": "docling_core.types.doc.common.source",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['track']",
+          "required": false,
+          "default": "track"
+        },
+        "start_time": {
+          "serialized_name": "start_time",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end_time": {
+          "serialized_name": "end_time",
+          "type": "<class 'float'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "identifier": {
+          "serialized_name": "identifier",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        },
+        "voice": {
+          "serialized_name": "voice",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "UnorderedList": {
+      "module": "docling_core.types.doc.items.group",
+      "fields": {
+        "self_ref": {
+          "serialized_name": "self_ref",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "parent": {
+          "serialized_name": "parent",
+          "type": "docling_core.types.doc.common.reference.RefItem | None",
+          "required": false,
+          "default": null
+        },
+        "children": {
+          "serialized_name": "children",
+          "type": "list[docling_core.types.doc.common.reference.RefItem]",
+          "required": false,
+          "default": []
+        },
+        "content_layer": {
+          "serialized_name": "content_layer",
+          "type": "<enum 'ContentLayer'>",
+          "required": false,
+          "default": "body"
+        },
+        "meta": {
+          "serialized_name": "meta",
+          "type": "docling_core.types.doc.common.meta.BaseMeta | None",
+          "required": false,
+          "default": null
+        },
+        "name": {
+          "serialized_name": "name",
+          "type": "<class 'str'>",
+          "required": false,
+          "default": "group"
+        },
+        "label": {
+          "serialized_name": "label",
+          "type": "typing.Literal[<GroupLabel.LIST: 'list'>]",
+          "required": false,
+          "default": "list"
+        }
+      }
+    },
+    "WebVTTCueBlock": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "identifier": {
+          "serialized_name": "identifier",
+          "type": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=True, min_length=None, max_length=None, pattern='^(?!.*-->)[^\\\\n\\\\r]+$', ascii_only=None)] | None",
+          "required": false,
+          "default": null
+        },
+        "timings": {
+          "serialized_name": "timings",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueTimings'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "payload": {
+          "serialized_name": "payload",
+          "type": "list[docling_core.types.doc.webvtt.WebVTTCueComponentWithTerminator]",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueBoldSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['b']",
+          "required": false,
+          "default": "b"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTag'>",
+          "required": false,
+          "default": {
+            "name": "b",
+            "classes": null
+          }
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueClassSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['c']",
+          "required": false,
+          "default": "c"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTag'>",
+          "required": false,
+          "default": {
+            "name": "c",
+            "classes": null
+          }
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueComponentBase": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['c', 'b', 'i', 'u', 'v', 'lang']",
+          "required": true,
+          "default": "<required>"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTag'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueComponentWithTerminator": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "component": {
+          "serialized_name": "component",
+          "type": "ForwardRef('WebVTTCueComponent', is_class=True)",
+          "required": true,
+          "default": "<required>"
+        },
+        "terminator": {
+          "serialized_name": "terminator",
+          "type": "docling_core.types.doc.webvtt.WebVTTLineTerminator | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "WebVTTCueInternalText": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "terminator": {
+          "serialized_name": "terminator",
+          "type": "docling_core.types.doc.webvtt.WebVTTLineTerminator | None",
+          "required": false,
+          "default": null
+        },
+        "components": {
+          "serialized_name": "components",
+          "type": "list[docling_core.types.doc.webvtt.WebVTTCueComponentWithTerminator]",
+          "required": false,
+          "default": []
+        }
+      }
+    },
+    "WebVTTCueItalicSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['i']",
+          "required": false,
+          "default": "i"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTag'>",
+          "required": false,
+          "default": {
+            "name": "i",
+            "classes": null
+          }
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueLanguageSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['lang']",
+          "required": false,
+          "default": "lang"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueLanguageSpanStartTag'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueLanguageSpanStartTag": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "name": {
+          "serialized_name": "name",
+          "type": "typing.Literal['lang']",
+          "required": false,
+          "default": "lang"
+        },
+        "classes": {
+          "serialized_name": "classes",
+          "type": "list[str] | None",
+          "required": false,
+          "default": null
+        },
+        "annotation": {
+          "serialized_name": "annotation",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueSpanStartTag": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "name": {
+          "serialized_name": "name",
+          "type": "typing.Literal['c', 'b', 'i', 'u', 'v', 'lang']",
+          "required": true,
+          "default": "<required>"
+        },
+        "classes": {
+          "serialized_name": "classes",
+          "type": "list[str] | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "WebVTTCueSpanStartTagAnnotated": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "name": {
+          "serialized_name": "name",
+          "type": "typing.Literal['c', 'b', 'i', 'u', 'v', 'lang']",
+          "required": true,
+          "default": "<required>"
+        },
+        "classes": {
+          "serialized_name": "classes",
+          "type": "list[str] | None",
+          "required": false,
+          "default": null
+        },
+        "annotation": {
+          "serialized_name": "annotation",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueTextSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['text']",
+          "required": false,
+          "default": "text"
+        },
+        "text": {
+          "serialized_name": "text",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueTimings": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "start": {
+          "serialized_name": "start",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTTimestamp'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "end": {
+          "serialized_name": "end",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTTimestamp'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueUnderlineSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['u']",
+          "required": false,
+          "default": "u"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTag'>",
+          "required": false,
+          "default": {
+            "name": "u",
+            "classes": null
+          }
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTCueVoiceSpan": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "kind": {
+          "serialized_name": "kind",
+          "type": "typing.Literal['v']",
+          "required": false,
+          "default": "v"
+        },
+        "start_tag": {
+          "serialized_name": "start_tag",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueSpanStartTagAnnotated'>",
+          "required": true,
+          "default": "<required>"
+        },
+        "internal_text": {
+          "serialized_name": "internal_text",
+          "type": "<class 'docling_core.types.doc.webvtt.WebVTTCueInternalText'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    },
+    "WebVTTFile": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "cue_blocks": {
+          "serialized_name": "cue_blocks",
+          "type": "list[docling_core.types.doc.webvtt.WebVTTCueBlock]",
+          "required": true,
+          "default": "<required>"
+        },
+        "title": {
+          "serialized_name": "title",
+          "type": "str | None",
+          "required": false,
+          "default": null
+        }
+      }
+    },
+    "WebVTTTimestamp": {
+      "module": "docling_core.types.doc.webvtt",
+      "fields": {
+        "raw": {
+          "serialized_name": "raw",
+          "type": "<class 'str'>",
+          "required": true,
+          "default": "<required>"
+        }
+      }
+    }
+  },
+  "examples_from_valid_sample": {
+    "body": {
+      "self_ref": "#/body",
+      "children": [
+        {
+          "$ref": "#/texts/1"
+        }
+      ],
+      "content_layer": "body",
+      "name": "_root_",
+      "label": "unspecified"
+    },
+    "furniture": {
+      "self_ref": "#/furniture",
+      "children": [
+        {
+          "$ref": "#/texts/0"
+        },
+        {
+          "$ref": "#/texts/13"
+        }
+      ],
+      "content_layer": "furniture",
+      "name": "_root_",
+      "label": "unspecified"
+    },
+    "group": {
+      "self_ref": "#/groups/0",
+      "parent": {
+        "$ref": "#/texts/1"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/2"
+        },
+        {
+          "$ref": "#/texts/3"
+        },
+        {
+          "$ref": "#/groups/1"
+        },
+        {
+          "$ref": "#/texts/5"
+        },
+        {
+          "$ref": "#/texts/6"
+        },
+        {
+          "$ref": "#/texts/7"
+        },
+        {
+          "$ref": "#/tables/0"
+        },
+        {
+          "$ref": "#/texts/8"
+        },
+        {
+          "$ref": "#/pictures/0"
+        },
+        {
+          "$ref": "#/key_value_items/0"
+        },
+        {
+          "$ref": "#/form_items/0"
+        },
+        {
+          "$ref": "#/field_regions/0"
+        }
+      ],
+      "content_layer": "body",
+      "name": "Representative content",
+      "label": "section"
+    },
+    "text": {
+      "self_ref": "#/texts/0",
+      "parent": {
+        "$ref": "#/furniture"
+      },
+      "children": [],
+      "content_layer": "furniture",
+      "label": "page_header",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 780.0,
+            "r": 550.0,
+            "b": 760.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            16
+          ]
+        }
+      ],
+      "orig": "Reference header",
+      "text": "Reference header"
+    },
+    "table": {
+      "self_ref": "#/tables/0",
+      "parent": {
+        "$ref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "table",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 460.0,
+            "r": 550.0,
+            "b": 410.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [
+        {
+          "$ref": "#/texts/7"
+        }
+      ],
+      "references": [],
+      "footnotes": [],
+      "data": {
+        "table_cells": [
+          {
+            "bbox": {
+              "l": 50.0,
+              "t": 460.0,
+              "r": 550.0,
+              "b": 435.0,
+              "coord_origin": "BOTTOMLEFT"
+            },
+            "row_span": 1,
+            "col_span": 2,
+            "start_row_offset_idx": 0,
+            "end_row_offset_idx": 1,
+            "start_col_offset_idx": 0,
+            "end_col_offset_idx": 2,
+            "text": "Merged header",
+            "column_header": true,
+            "row_header": false,
+            "row_section": false,
+            "fillable": false
+          },
+          {
+            "bbox": {
+              "l": 50.0,
+              "t": 435.0,
+              "r": 300.0,
+              "b": 410.0,
+              "coord_origin": "BOTTOMLEFT"
+            },
+            "row_span": 1,
+            "col_span": 1,
+            "start_row_offset_idx": 1,
+            "end_row_offset_idx": 2,
+            "start_col_offset_idx": 0,
+            "end_col_offset_idx": 1,
+            "text": "A",
+            "column_header": false,
+            "row_header": false,
+            "row_section": false,
+            "fillable": false
+          },
+          {
+            "bbox": {
+              "l": 300.0,
+              "t": 435.0,
+              "r": 550.0,
+              "b": 410.0,
+              "coord_origin": "BOTTOMLEFT"
+            },
+            "row_span": 1,
+            "col_span": 1,
+            "start_row_offset_idx": 1,
+            "end_row_offset_idx": 2,
+            "start_col_offset_idx": 1,
+            "end_col_offset_idx": 2,
+            "text": "B",
+            "column_header": false,
+            "row_header": false,
+            "row_section": false,
+            "fillable": false
+          }
+        ],
+        "num_rows": 2,
+        "num_cols": 2,
+        "orientation": "rot_0",
+        "grid": [
+          [
+            {
+              "bbox": {
+                "l": 50.0,
+                "t": 460.0,
+                "r": 550.0,
+                "b": 435.0,
+                "coord_origin": "BOTTOMLEFT"
+              },
+              "row_span": 1,
+              "col_span": 2,
+              "start_row_offset_idx": 0,
+              "end_row_offset_idx": 1,
+              "start_col_offset_idx": 0,
+              "end_col_offset_idx": 2,
+              "text": "Merged header",
+              "column_header": true,
+              "row_header": false,
+              "row_section": false,
+              "fillable": false
+            },
+            {
+              "bbox": {
+                "l": 50.0,
+                "t": 460.0,
+                "r": 550.0,
+                "b": 435.0,
+                "coord_origin": "BOTTOMLEFT"
+              },
+              "row_span": 1,
+              "col_span": 2,
+              "start_row_offset_idx": 0,
+              "end_row_offset_idx": 1,
+              "start_col_offset_idx": 0,
+              "end_col_offset_idx": 2,
+              "text": "Merged header",
+              "column_header": true,
+              "row_header": false,
+              "row_section": false,
+              "fillable": false
+            }
+          ],
+          [
+            {
+              "bbox": {
+                "l": 50.0,
+                "t": 435.0,
+                "r": 300.0,
+                "b": 410.0,
+                "coord_origin": "BOTTOMLEFT"
+              },
+              "row_span": 1,
+              "col_span": 1,
+              "start_row_offset_idx": 1,
+              "end_row_offset_idx": 2,
+              "start_col_offset_idx": 0,
+              "end_col_offset_idx": 1,
+              "text": "A",
+              "column_header": false,
+              "row_header": false,
+              "row_section": false,
+              "fillable": false
+            },
+            {
+              "bbox": {
+                "l": 300.0,
+                "t": 435.0,
+                "r": 550.0,
+                "b": 410.0,
+                "coord_origin": "BOTTOMLEFT"
+              },
+              "row_span": 1,
+              "col_span": 1,
+              "start_row_offset_idx": 1,
+              "end_row_offset_idx": 2,
+              "start_col_offset_idx": 1,
+              "end_col_offset_idx": 2,
+              "text": "B",
+              "column_header": false,
+              "row_header": false,
+              "row_section": false,
+              "fillable": false
+            }
+          ]
+        ]
+      },
+      "annotations": []
+    },
+    "picture": {
+      "self_ref": "#/pictures/0",
+      "parent": {
+        "$ref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "meta": {
+        "classification": {
+          "predictions": [
+            {
+              "confidence": 0.98,
+              "created_by": "reference-template",
+              "class_name": "flow_chart"
+            }
+          ]
+        }
+      },
+      "label": "picture",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 370.0,
+            "r": 550.0,
+            "b": 300.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [
+        {
+          "$ref": "#/texts/8"
+        }
+      ],
+      "references": [],
+      "footnotes": [],
+      "annotations": [
+        {
+          "kind": "classification",
+          "provenance": "reference-template",
+          "predicted_classes": [
+            {
+              "class_name": "flow_chart",
+              "confidence": 0.98
+            }
+          ]
+        }
+      ]
+    },
+    "key_value": {
+      "self_ref": "#/key_value_items/0",
+      "parent": {
+        "$ref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "key_value_region",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 285.0,
+            "r": 550.0,
+            "b": 255.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "graph": {
+        "cells": [
+          {
+            "label": "key",
+            "cell_id": 0,
+            "text": "Name",
+            "orig": "Name"
+          },
+          {
+            "label": "value",
+            "cell_id": 1,
+            "text": "Ada",
+            "orig": "Ada"
+          }
+        ],
+        "links": [
+          {
+            "label": "to_value",
+            "source_cell_id": 0,
+            "target_cell_id": 1
+          }
+        ]
+      }
+    },
+    "form": {
+      "self_ref": "#/form_items/0",
+      "parent": {
+        "$ref": "#/groups/0"
+      },
+      "children": [],
+      "content_layer": "body",
+      "label": "form",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 245.0,
+            "r": 550.0,
+            "b": 215.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ],
+      "captions": [],
+      "references": [],
+      "footnotes": [],
+      "graph": {
+        "cells": [
+          {
+            "label": "key",
+            "cell_id": 0,
+            "text": "Name",
+            "orig": "Name"
+          },
+          {
+            "label": "value",
+            "cell_id": 1,
+            "text": "Ada",
+            "orig": "Ada"
+          }
+        ],
+        "links": [
+          {
+            "label": "to_value",
+            "source_cell_id": 0,
+            "target_cell_id": 1
+          }
+        ]
+      }
+    },
+    "field_region": {
+      "self_ref": "#/field_regions/0",
+      "parent": {
+        "$ref": "#/groups/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/9"
+        },
+        {
+          "$ref": "#/field_items/0"
+        }
+      ],
+      "content_layer": "body",
+      "label": "field_region",
+      "prov": [
+        {
+          "page_no": 1,
+          "bbox": {
+            "l": 50.0,
+            "t": 205.0,
+            "r": 550.0,
+            "b": 125.0,
+            "coord_origin": "BOTTOMLEFT"
+          },
+          "charspan": [
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    "field_item": {
+      "self_ref": "#/field_items/0",
+      "parent": {
+        "$ref": "#/field_regions/0"
+      },
+      "children": [
+        {
+          "$ref": "#/texts/10"
+        },
+        {
+          "$ref": "#/texts/11"
+        },
+        {
+          "$ref": "#/texts/12"
+        }
+      ],
+      "content_layer": "body",
+      "label": "field_item",
+      "prov": []
+    },
+    "page": {
+      "size": {
+        "width": 612.0,
+        "height": 792.0
+      },
+      "page_no": 1
+    }
+  }
+}
