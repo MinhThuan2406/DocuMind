@@ -19,7 +19,7 @@ from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
 from .router import classify_page
-from .text import extract_words, xy_cut_order
+from .text import extract_horiz_rules, extract_words, xy_cut_order
 
 
 def _element_dict(
@@ -38,6 +38,8 @@ def _element_dict(
         meta["bold"] = item.bold
     if item.label is not None:
         meta["layout_label"] = item.label
+    if item.heading_clean_text is not None:
+        meta["heading_clean_text"] = item.heading_clean_text
     return {
         "id": elem_id,
         "type": item.kind,
@@ -52,6 +54,41 @@ def _element_dict(
         "source_ref": {"file": source_file, "page": page_no, "bbox": bbox},
         "metadata": meta,
     }
+
+
+def _extract_small_vector_boxes(page: Any, bounds: BBox) -> tuple[BBox, ...]:
+    pw = max(0.0, bounds[2] - bounds[0])
+    ph = max(0.0, bounds[3] - bounds[1])
+    boxes: list[BBox] = []
+    for obj in getattr(page, "rects", ()):
+        if obj.get("stroke") is False and obj.get("fill") is False:
+            continue
+        rx0, ry0, rx1, ry1 = float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"])
+        if rx0 > rx1:
+            rx0, rx1 = rx1, rx0
+        if ry0 > ry1:
+            ry0, ry1 = ry1, ry0
+        w, h = rx1 - rx0, ry1 - ry0
+        if w <= 1.0 or h <= 1.0 or (pw > 0.0 and w >= 0.8 * pw) or (ph > 0.0 and h >= 0.3 * ph):
+            continue
+        if h <= 60.0 and w <= 300.0:
+            boxes.append((rx0, ry0, rx1, ry1))
+    for obj in getattr(page, "curves", ()):
+        if obj.get("stroke") is False and obj.get("fill") is False:
+            continue
+        pts = obj.get("pts") or ()
+        if not obj.get("fill"):
+            if len(pts) < 4 or abs(float(pts[0][0]) - float(pts[-1][0])) > 2.0 or abs(float(pts[0][1]) - float(pts[-1][1])) > 2.0:
+                continue
+        rx0, ry0, rx1, ry1 = float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"])
+        if rx0 > rx1:
+            rx0, rx1 = rx1, rx0
+        if ry0 > ry1:
+            ry0, ry1 = ry1, ry0
+        w, h = rx1 - rx0, ry1 - ry0
+        if 1.0 < w <= 300.0 and 1.0 < h <= 60.0 and (pw <= 0.0 or w < 0.8 * pw):
+            boxes.append((rx0, ry0, rx1, ry1))
+    return tuple(boxes)
 
 
 def _uses_ocr_fallback(prof: PageProfile, ocr: bool) -> bool:
@@ -353,6 +390,7 @@ def extract_ir(
         resolved_table_backend: TableExtractor | None = None
         resolved_diagram_backend: DiagramExtractor | None = None
 
+        horiz_rules_by_page: dict[int, tuple[BBox, ...]] = {}
         for prof in profiles:
             page = doc.pages[prof.page - 1]
             use_ocr = _uses_ocr_fallback(prof, ocr) or prof.kind == "raster"
@@ -365,12 +403,18 @@ def extract_ir(
             kept_ocr: list[TextBlock] = []
             if region_ocr_blocks:
                 words, kept_ocr = merge_hybrid_region_ocr(words, region_ocr_blocks)
+            horiz_rules = () if use_ocr else extract_horiz_rules(page, page_boxes[prof.page])
+            if horiz_rules:
+                horiz_rules_by_page[prof.page] = horiz_rules
+            vector_boxes = () if use_ocr else _extract_small_vector_boxes(page, page_boxes[prof.page])
             assembled = assemble_page(
                 prof,
                 words,
                 page_boxes[prof.page],
                 figures_by_page.get(prof.page, ()),
                 raster_by_page.get(prof.page),
+                horiz_rules=horiz_rules,
+                vector_boxes=vector_boxes,
             )
             if kept_ocr:
                 assembled = _merge_assembled_with_region_ocr(assembled, kept_ocr)
@@ -482,6 +526,7 @@ def extract_ir(
         elements,
         {p["number"]: float(p["height_pt"]) for p in page_sizes},
         toc_titles=toc_titles,
+        horiz_rules_by_page=horiz_rules_by_page,
     )
 
     ir = {

@@ -69,7 +69,15 @@ _SLIDE_TITLE_BAND = 0.2
 _TITLE_BAND_MAX_WORDS = 24
 _DEFAULT_SIZE_TOLERANCE = 0.05
 _SLIDE_BOOKMARK_RE = re.compile(r"^(?:foli[ea]|slide|page)\s+\d+(?:\b|:)", re.IGNORECASE)
-_TOC_HEADER_RE = re.compile(r"^(?:table\s+of\s+contents|contents)$", re.IGNORECASE)
+_TOC_HEADER_RE = re.compile(r"^(?:table\s+of\s+contents|contents|目次|もくじ)$", re.IGNORECASE)
+
+
+def _heading_text(elem: Mapping[str, Any]) -> str:
+    meta = elem.get("metadata") or {}
+    clean = meta.get("heading_clean_text")
+    if isinstance(clean, str) and clean.strip():
+        return clean
+    return str(elem.get("text") or "")
 
 
 def _nfkc(text: str) -> str:
@@ -133,7 +141,7 @@ def _is_toc_leader_line(line: str, max_page_num: int) -> bool:
     return len(title) >= 2 and _has_alpha(title) and 1 <= pno <= max_page_num
 
 
-def _count_split_toc_pairs(page_elems: Sequence[dict[str, Any]], em: float, max_page_num: int) -> int:
+def _split_toc_pair_ids(page_elems: Sequence[dict[str, Any]], em: float, max_page_num: int) -> tuple[int, set[str]]:
     num_elems: list[tuple[dict[str, Any], float, float]] = []
     text_elems: list[tuple[dict[str, Any], float]] = []
     for elem in page_elems:
@@ -149,27 +157,39 @@ def _count_split_toc_pairs(page_elems: Sequence[dict[str, Any]], em: float, max_
         elif len(cleaned) >= 2 and _has_alpha(cleaned):
             text_elems.append((elem, cy))
     if len(num_elems) < 3 or not text_elems:
-        return 0
-    matched_rights: list[float] = []
+        return 0, set()
+    matched_pairs: list[tuple[float, str, str]] = []
     for r_elem, r_cy, r_x1 in num_elems:
         rx0 = float(r_elem["bbox"][0])
-        if any(
-            abs(l_cy - r_cy) <= 0.6 * em and float(l_elem["bbox"][2]) <= rx0 + 0.2 * em
-            for l_elem, l_cy in text_elems
-        ):
-            matched_rights.append(r_x1)
-    if len(matched_rights) < 3:
-        return 0
-    matched_rights.sort()
-    median_x1 = matched_rights[len(matched_rights) // 2]
-    return sum(1 for x1 in matched_rights if abs(x1 - median_x1) <= 2.5 * em)
+        l_match = next(
+            (
+                l_elem
+                for l_elem, l_cy in text_elems
+                if abs(l_cy - r_cy) <= 0.6 * em and float(l_elem["bbox"][2]) <= rx0 + 0.2 * em
+            ),
+            None,
+        )
+        if l_match is not None:
+            matched_pairs.append((r_x1, str(l_match["id"]), str(r_elem["id"])))
+    if len(matched_pairs) < 3:
+        return 0, set()
+    rights = sorted(item[0] for item in matched_pairs)
+    median_x1 = rights[len(rights) // 2]
+    aligned = [item for item in matched_pairs if abs(item[0] - median_x1) <= 2.5 * em]
+    ids = {eid for _, lid, rid in aligned for eid in (lid, rid)}
+    return len(aligned), ids
+
+
+def _count_split_toc_pairs(page_elems: Sequence[dict[str, Any]], em: float, max_page_num: int) -> int:
+    count, _ = _split_toc_pair_ids(page_elems, em, max_page_num)
+    return count
 
 
 def _detect_toc_pages(
     ordered: list[tuple[int, dict[str, Any]]],
     toc: Sequence[tuple[int, str, int]],
     body_font: float | None = None,
-) -> set[int]:
+) -> tuple[set[int], set[str]]:
     by_page_elems: dict[int, list[dict[str, Any]]] = {}
     for _, elem in ordered:
         if elem.get("type") != "text" or _is_ignored_element(elem):
@@ -178,7 +198,7 @@ def _detect_toc_pages(
         if pno >= 1:
             by_page_elems.setdefault(pno, []).append(elem)
     if not by_page_elems:
-        return set()
+        return set(), set()
 
     max_page = max(by_page_elems)
     max_page_num = max(max_page + 20, 300)
@@ -197,55 +217,127 @@ def _detect_toc_pages(
             bm_entries.append((idx, norm, int(target_page)))
 
     toc_pages: set[int] = set()
+    toc_elem_ids: set[str] = set()
     in_header_toc = False
     for pno in sorted(by_page_elems):
         if pno > scan_limit:
             break
         p_elems = by_page_elems[pno]
+        is_toc_candidate = False
+        anchor_ids: set[str] = set()
+
         if first_target_page is not None and pno < first_target_page:
             if any(_TOC_HEADER_RE.match(_clean_text(_nfkc(e.get("text", "")))) for e in p_elems):
                 in_header_toc = True
             if in_header_toc:
-                toc_pages.add(pno)
-                continue
+                is_toc_candidate = True
 
-        leader_lines = sum(
-            1
-            for e in p_elems
-            for ln in e.get("text", "").splitlines()
-            if _is_toc_leader_line(ln, max_page_num)
-        )
-        split_pairs = _count_split_toc_pairs(p_elems, em, max_page_num)
+        leader_lines = 0
+        for e in p_elems:
+            if any(_is_toc_leader_line(ln, max_page_num) for ln in e.get("text", "").splitlines()):
+                leader_lines += sum(1 for ln in e.get("text", "").splitlines() if _is_toc_leader_line(ln, max_page_num))
+                anchor_ids.add(e["id"])
+
+        split_pairs, split_ids = _split_toc_pair_ids(p_elems, em, max_page_num)
+        anchor_ids.update(split_ids)
+
         bm_hits: set[int] = set()
         if bm_entries:
-            line_norms = {
-                n
-                for e in p_elems
-                for ln in e.get("text", "").splitlines()
-                if _is_matchable_toc_title(n := _norm_title(ln))
-            }
+            line_norm_map: dict[str, list[str]] = {}
+            for e in p_elems:
+                for ln in e.get("text", "").splitlines():
+                    n = _norm_title(ln)
+                    if _is_matchable_toc_title(n):
+                        line_norm_map.setdefault(n, []).append(e["id"])
             for idx, b_norm, target_p in bm_entries:
-                if target_p > pno and b_norm in line_norms:
+                if target_p > pno and b_norm in line_norm_map:
                     bm_hits.add(idx)
+                    anchor_ids.update(line_norm_map[b_norm])
 
         if leader_lines >= 3 or split_pairs >= 3 or len(bm_hits) >= 3:
-            toc_pages.add(pno)
+            is_toc_candidate = True
             if first_target_page is not None and pno < first_target_page:
                 in_header_toc = True
         elif not toc and (pno - 1) in toc_pages and (leader_lines >= 1 or split_pairs >= 1):
-            toc_pages.add(pno)
+            is_toc_candidate = True
 
-    return toc_pages
+        if not is_toc_candidate:
+            continue
+
+        anchor_boxes = [
+            e["bbox"]
+            for e in p_elems
+            if e["id"] in anchor_ids and isinstance(e.get("bbox"), (list, tuple)) and len(e["bbox"]) == 4
+        ]
+        if not anchor_boxes:
+            toc_pages.add(pno)
+            continue
+
+        anchor_y0 = min(float(b[1]) for b in anchor_boxes)
+        anchor_y1 = max(float(b[3]) for b in anchor_boxes)
+
+        # Check whether this page mixes a ToC band with genuine body/heading content outside the band.
+        outside_elems: list[dict[str, Any]] = []
+        has_same_page_bm = False
+        for e in p_elems:
+            if e["id"] in anchor_ids:
+                continue
+            bbox = e.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            cy = 0.5 * (float(bbox[1]) + float(bbox[3]))
+            if anchor_y0 - 0.5 * em <= cy <= anchor_y1 + 0.5 * em:
+                continue
+            cleaned = _clean_text(_nfkc(_heading_text(e)))
+            if not cleaned or _TOC_HEADER_RE.match(cleaned):
+                continue
+            if bm_entries:
+                e_norm = _norm_title(cleaned)
+                if any(target_p == pno and b_norm == e_norm for _, b_norm, target_p in bm_entries):
+                    has_same_page_bm = True
+            if _has_alpha(cleaned) and (
+                len(cleaned) >= 30 or _sentence_count(cleaned) >= 1 or _is_heading_candidate(e, body_font)[0]
+            ):
+                outside_elems.append(e)
+
+        is_mixed = has_same_page_bm or len(outside_elems) >= 2
+        if not is_mixed:
+            toc_pages.add(pno)
+            continue
+
+        toc_band_y0 = anchor_y0
+        toc_band_y1 = anchor_y1
+        for e in p_elems:
+            bbox = e.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            ey0, ey1 = float(bbox[1]), float(bbox[3])
+            if 0.0 <= anchor_y0 - ey1 <= 4.0 * em:
+                cleaned = _clean_text(_nfkc(_heading_text(e)))
+                if _TOC_HEADER_RE.match(cleaned):
+                    toc_band_y0 = min(toc_band_y0, ey0)
+
+        for e in p_elems:
+            if e["id"] in anchor_ids:
+                toc_elem_ids.add(e["id"])
+                continue
+            bbox = e.get("bbox")
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                cy = 0.5 * (float(bbox[1]) + float(bbox[3]))
+                if toc_band_y0 - 0.2 * em <= cy <= toc_band_y1 + 0.2 * em:
+                    toc_elem_ids.add(e["id"])
+
+    return toc_pages, toc_elem_ids
 
 
 def _match_toc_entries(
     ordered: list[tuple[int, dict[str, Any]]],
     toc: Sequence[tuple[int, str, int]],
     body_font: float | None = None,
-) -> tuple[dict[str, int], set[int]]:
-    toc_pages = _detect_toc_pages(ordered, toc, body_font)
+) -> tuple[dict[str, int], set[int], set[str]]:
+    toc_pages, toc_elem_ids = _detect_toc_pages(ordered, toc, body_font)
     if not toc:
-        return {}, toc_pages
+        return {}, toc_pages, toc_elem_ids
 
     by_page: dict[int, list[tuple[int, str, str]]] = {}
     exact_idx: dict[tuple[int, str], list[tuple[int, str]]] = {}
@@ -266,9 +358,9 @@ def _match_toc_entries(
         if elem.get("type") != "text" or _is_ignored_element(elem):
             continue
         page = int(elem.get("page", 0))
-        if page in toc_pages:
+        if page in toc_pages or elem["id"] in toc_elem_ids:
             continue
-        norm_elem = _norm_title(elem.get("text", ""))
+        norm_elem = _norm_title(_heading_text(elem))
         if not _is_matchable_toc_title(norm_elem) or len(norm_elem) > 160:
             continue
 
@@ -312,7 +404,7 @@ def _match_toc_entries(
             matched_levels[elem["id"]] = best[1]
             used_toc.add(best[2])
 
-    return matched_levels, toc_pages
+    return matched_levels, toc_pages, toc_elem_ids
 
 
 def _is_ignored_element(elem: dict[str, Any]) -> bool:
@@ -1120,7 +1212,7 @@ def _is_heading_candidate(
     if label in _NON_HEADING_LABELS:
         return False, None
 
-    raw = elem.get("text", "")
+    raw = _heading_text(elem)
     if _is_list_block(raw):
         return False, None
 
@@ -1579,7 +1671,7 @@ def apply_structure(
     )
     learned_prefixes = _learn_caption_prefixes(elements, body_font, top_band_ids)
     ordered = _merge_multiline_headings(elements, ordered, body_font, top_band_ids, learned_prefixes)
-    toc_matches, toc_pages = _match_toc_entries(ordered, resolved_toc, body_font)
+    toc_matches, toc_pages, toc_elem_ids = _match_toc_entries(ordered, resolved_toc, body_font)
     ordered = _merge_multiline_captions(elements, ordered, body_font, learned_prefixes)
 
     def collect_headings() -> list[tuple[dict[str, Any], int | None]]:
@@ -1589,7 +1681,7 @@ def apply_structure(
             if eid in toc_matches:
                 found.append((elem, toc_matches[eid]))
                 continue
-            if elem.get("page") in toc_pages:
+            if elem.get("page") in toc_pages or eid in toc_elem_ids:
                 continue
             is_heading, explicit_depth = _is_heading_candidate(elem, body_font, eid in top_band_ids)
             if is_heading:
@@ -1628,7 +1720,7 @@ def apply_structure(
             outline.append(
                 {
                     "id": eid,
-                    "title": _clean_text(elem.get("text", "")),
+                    "title": _clean_text(_heading_text(elem)),
                     "level": h_level,
                     "page": elem.get("page"),
                     "parent_id": parent_id,
@@ -1652,7 +1744,7 @@ def build_section_tree(elements: Sequence[dict[str, Any]]) -> list[dict[str, Any
         if meta.get("role") == "heading":
             node: dict[str, Any] = {
                 "id": elem["id"],
-                "title": _clean_text(elem.get("text", "")),
+                "title": _clean_text(_heading_text(elem)),
                 "level": meta.get("heading_level", 1),
                 "page": elem.get("page"),
                 "parent_id": meta.get("section_parent_id"),

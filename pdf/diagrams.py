@@ -33,6 +33,9 @@ class _RawShape:
     bbox: BBox
     shape_type: str
     dashed: bool = False
+    has_stroke: bool = True
+    is_white_fill: bool = False
+    is_nonwhite_fill: bool = False
 
 
 @dataclass
@@ -351,7 +354,7 @@ def _extract_polyline_pts(obj: Mapping[str, Any], page_h: float) -> list[tuple[f
 
 
 def _dedup_shapes(shapes: Sequence[_RawShape]) -> list[_RawShape]:
-    ordered = sorted(shapes, key=lambda s: _bbox_area(s.bbox), reverse=True)
+    ordered = sorted(shapes, key=lambda s: (_bbox_area(s.bbox), s.has_stroke), reverse=True)
     kept: list[_RawShape] = []
     for cand in ordered:
         if any(_bbox_iou(cand.bbox, prev.bbox) >= 0.90 for prev in kept):
@@ -623,6 +626,27 @@ def _extract_v_chevron_tips(
     return list(polylines), chevrons
 
 
+def _fill_color_flags(obj: Mapping[str, Any]) -> tuple[bool, bool]:
+    if not obj.get("fill", False):
+        return False, False
+    col = obj.get("non_stroking_color")
+    if col is None:
+        return False, False
+    if isinstance(col, (int, float)):
+        val = float(col) / 255.0 if col > 1.0 else float(col)
+        is_white = val >= 0.96
+    elif isinstance(col, (tuple, list)) and len(col) > 0:
+        vals = [float(v) for v in col]
+        if len(vals) == 4:
+            is_white = all(v <= 0.04 for v in vals)
+        else:
+            scale = 255.0 if max(vals) > 1.0 else 1.0
+            is_white = all((v / scale) >= 0.96 for v in vals[:3])
+    else:
+        return False, False
+    return is_white, not is_white
+
+
 def _collect_primitives(
     fig_box: BBox,
     page_box: BBox,
@@ -650,7 +674,17 @@ def _collect_primitives(
             continue
         if max(b[2] - b[0], b[3] - b[1]) <= _MIN_SHAPE_DIM_PT or min(b[2] - b[0], b[3] - b[1]) <= 2.0:
             continue
-        shapes.append(_RawShape(bbox=b, shape_type="rect", dashed=_is_dashed(r)))
+        is_white, is_nonwhite = _fill_color_flags(r)
+        shapes.append(
+            _RawShape(
+                bbox=b,
+                shape_type="rect",
+                dashed=_is_dashed(r),
+                has_stroke=bool(r.get("stroke", True)),
+                is_white_fill=is_white,
+                is_nonwhite_fill=is_nonwhite,
+            )
+        )
 
     for ln in raw_lines:
         b = _obj_bbox(ln, page_h)
@@ -676,7 +710,17 @@ def _collect_primitives(
                 continue
             if max(w, h) <= _MIN_SHAPE_DIM_PT or min(w, h) <= 2.0:
                 continue
-            shapes.append(_RawShape(bbox=b, shape_type=_curve_shape_type(cv, pts), dashed=dashed))
+            is_white, is_nonwhite = _fill_color_flags(cv)
+            shapes.append(
+                _RawShape(
+                    bbox=b,
+                    shape_type=_curve_shape_type(cv, pts),
+                    dashed=dashed,
+                    has_stroke=bool(cv.get("stroke", True)),
+                    is_white_fill=is_white,
+                    is_nonwhite_fill=is_nonwhite,
+                )
+            )
         elif len(pts) >= 2:
             open_polys.append(_Polyline(pts=pts, dashed=dashed))
 
@@ -770,6 +814,7 @@ def _build_shape_hierarchy(
             "parent_group_id": None,
             "words": [],
             "confidence": shape_conf,
+            "is_nonwhite_fill": shapes[s_idx].is_nonwhite_fill,
         }
         for k, s_idx in enumerate(group_indices)
     ]
@@ -783,7 +828,11 @@ def _build_shape_hierarchy(
             "bbox": shapes[s_idx].bbox,
             "parent_group_id": _nearest_parent_group(shapes[s_idx].bbox, group_entries),
             "words": [],
+            "word_ids": [],
             "confidence": shape_conf,
+            "has_stroke": shapes[s_idx].has_stroke,
+            "is_white_fill": shapes[s_idx].is_white_fill,
+            "is_nonwhite_fill": shapes[s_idx].is_nonwhite_fill,
         }
         for k, s_idx in enumerate(node_indices)
     ]
@@ -806,6 +855,7 @@ def _assign_node_words(fig_words: Sequence[Word], node_entries: Sequence[dict[st
                     best_node = ne
         if best_node is not None:
             best_node["words"].append(w)
+            best_node.setdefault("word_ids", []).append(w_idx)
             used.add(w_idx)
     return used
 
@@ -1107,6 +1157,109 @@ def _assign_group_and_edge_labels(
                 used_word_ids.add(w_idx)
 
 
+def _demote_edge_masks_and_fold_title_bars(
+    fig_words: Sequence[Word],
+    word_clusters: list[tuple[list[int], BBox]],
+    used_word_ids: set[int],
+    node_entries: list[dict[str, Any]],
+    group_entries: Sequence[dict[str, Any]],
+    edge_entries: Sequence[dict[str, Any]],
+) -> None:
+    deg_by_node: dict[str, int] = defaultdict(int)
+    for ee in edge_entries:
+        if ee["source_node_id"] is not None:
+            deg_by_node[ee["source_node_id"]] += 1
+        if ee["target_node_id"] is not None:
+            deg_by_node[ee["target_node_id"]] += 1
+
+    group_by_id = {ge["id"]: ge for ge in group_entries}
+    nonwhite_boxes = [
+        container["bbox"]
+        for container in (*group_entries, *node_entries)
+        if container.get("is_nonwhite_fill", False)
+    ]
+
+    kept_nodes: list[dict[str, Any]] = []
+    for ne in node_entries:
+        nb = ne["bbox"]
+        words = ne["words"]
+        if (
+            ne["shape_type"] == "rect"
+            and deg_by_node.get(ne["id"], 0) == 0
+            and not ne.get("has_stroke", True)
+            and words
+        ):
+            lines = _group_word_indices_into_lines(words, list(range(len(words))))
+            line_h = max(w.bbox[3] - w.bbox[1] for w in words)
+            txt = _join_words(words)
+            if (
+                len(lines) == 1
+                and (nb[3] - nb[1]) <= max(14.0, 1.6 * line_h)
+                and len(txt.split()) <= 2
+                and len(txt) <= 12
+            ):
+                on_edge_mid = any(
+                    len(ee["pts"]) >= 2
+                    and _box_to_polyline_dist(nb, ee["pts"]) <= 4.0
+                    and _point_to_box_dist(ee["pts"][0], nb) > 6.0
+                    and _point_to_box_dist(ee["pts"][-1], nb) > 6.0
+                    for ee in edge_entries
+                )
+                has_nonwhite_parent = any(_strictly_encloses(outer_b, nb) for outer_b in nonwhite_boxes)
+                white_on_white = bool(ne.get("is_white_fill", False)) and not has_nonwhite_parent
+                if on_edge_mid or white_on_white:
+                    w_ids = list(ne.get("word_ids") or ())
+                    used_word_ids.difference_update(w_ids)
+                    if w_ids:
+                        word_clusters.append((w_ids, _words_bbox(fig_words, w_ids)))
+                    continue
+        kept_nodes.append(ne)
+
+    node_entries[:] = kept_nodes
+
+    # Fold tight top title-bar rects into parent group label while preserving layered stacks.
+    final_nodes: list[dict[str, Any]] = []
+    for ne in node_entries:
+        gid = ne["parent_group_id"]
+        ge = group_by_id.get(gid) if gid is not None else None
+        words = ne["words"]
+        if (
+            ge is not None
+            and ne["shape_type"] == "rect"
+            and deg_by_node.get(ne["id"], 0) == 0
+            and words
+        ):
+            gb = ge["bbox"]
+            nb = ne["bbox"]
+            group_w = max(1.0, gb[2] - gb[0])
+            group_h = max(1.0, gb[3] - gb[1])
+            nh = nb[3] - nb[1]
+            lines = _group_word_indices_into_lines(words, list(range(len(words))))
+            line_h = max(w.bbox[3] - w.bbox[1] for w in words)
+            edges_flush = (
+                abs(nb[0] - gb[0]) <= 3.0
+                and abs(nb[1] - gb[1]) <= 3.0
+                and abs(nb[2] - gb[2]) <= 3.0
+            )
+            if (
+                len(lines) == 1
+                and nh <= max(20.0, 1.8 * line_h)
+                and nh <= 0.15 * group_h
+                and edges_flush
+            ):
+                other_nodes = [o for o in node_entries if o is not ne and o["parent_group_id"] == gid]
+                other_groups = [g for g in group_entries if g["parent_group_id"] == gid]
+                if other_nodes or other_groups:
+                    full_w_nodes = sum(1 for o in other_nodes if (o["bbox"][2] - o["bbox"][0]) >= 0.80 * group_w)
+                    if not other_nodes or full_w_nodes < 0.5 * len(other_nodes):
+                        if not ge["words"]:
+                            ge["words"].extend(words)
+                        continue
+        final_nodes.append(ne)
+
+    node_entries[:] = final_nodes
+
+
 def _build_diagram_from_parts(
     fig_box: BBox,
     shapes: Sequence[_RawShape],
@@ -1138,6 +1291,14 @@ def _build_diagram_from_parts(
         edge_conf_snapped=0.78 if is_visual else 0.95,
         edge_conf_unsnapped=0.60 if is_visual else 0.75,
         text_node_conf=0.70 if is_visual else 0.85,
+    )
+    _demote_edge_masks_and_fold_title_bars(
+        fig_words,
+        word_clusters,
+        used_word_ids,
+        node_entries,
+        group_entries,
+        edge_entries,
     )
     _assign_group_and_edge_labels(fig_words, word_clusters, used_word_ids, node_entries, group_entries, edge_entries)
 

@@ -628,6 +628,85 @@ def test_tag_running_headers_footers_unicode_toc_protection():
     assert all(e["metadata"].get("role") == "page_footer" for e in footers)
 
 
+def test_hardened_running_header_narrow_margin_and_protected_layout_label():
+    # Narrow-margin body text at cy/page_h ~ 0.066 with fs == body_font must NOT be tagged page_header.
+    elems = []
+    page_heights = {p: 800.0 for p in range(1, 5)}
+    for p in range(1, 5):
+        elems.append(
+            {
+                "type": "text",
+                "page": p,
+                "level": 1,
+                "bbox": [50.0, 48.0, 400.0, 60.0],
+                "text": "General Terms and Conditions",
+                "metadata": {"font_size": 10.0},
+            }
+        )
+        elems.append(
+            {
+                "type": "text",
+                "page": p,
+                "level": 1,
+                "bbox": [50.0, 120.0, 500.0, 220.0],
+                "text": "Main body paragraph text establishing the 10pt body font size across pages. " * 3,
+                "metadata": {"font_size": 10.0},
+            }
+        )
+    tag_running_headers_footers(elems, page_heights)
+    top_elems = [e for e in elems if e["text"] == "General Terms and Conditions"]
+    assert all("role" not in e["metadata"] for e in top_elems), top_elems
+
+    # layout_label=page_header at margin band with fs <= body_font * 1.02 overrides protected_titles.
+    elems_lbl = [
+        {
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "bbox": [50.0, 20.0, 250.0, 32.0],
+            "text": "1 Introduction",
+            "metadata": {"font_size": 9.5, "layout_label": "page_header"},
+        },
+        {
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "bbox": [50.0, 120.0, 500.0, 200.0],
+            "text": "Body text content of sufficient length. " * 3,
+            "metadata": {"font_size": 10.0},
+        },
+    ]
+    tag_running_headers_footers(elems_lbl, {1: 800.0}, toc_titles=["1 Introduction"])
+    assert elems_lbl[0]["metadata"].get("role") == "page_header"
+
+
+def test_trailing_badge_stripping_and_negative_unit_suffix():
+    profile = PageProfile(1, "native", 8, 0.0, 0.0, False)
+    # Two consecutive small trailing badges inside vector boxes on one line.
+    badge_words = [
+        Word("1.", (50.0, 100.0, 62.0, 112.0), 12.0, True),
+        Word("Coverage", (66.0, 100.0, 125.0, 112.0), 12.0, True),
+        Word("Overview", (129.0, 100.0, 185.0, 112.0), 12.0, True),
+        Word("Contract", (200.0, 102.0, 240.0, 110.0), 7.5, False),
+        Word("Notice", (248.0, 102.0, 285.0, 110.0), 7.5, False),
+    ]
+    boxes = [(197.0, 100.0, 243.0, 112.0), (245.0, 100.0, 288.0, 112.0)]
+    items = assemble_page(profile, badge_words, (0.0, 0.0, 600.0, 800.0), vector_boxes=boxes)
+    assert len(items) == 1
+    assert items[0].text == "1. Coverage Overview Contract Notice"
+    assert items[0].heading_clean_text == "1. Coverage Overview"
+
+    # Negative: unit suffix "(kg)" without a vector box and with normal word gap must NOT be stripped.
+    unit_words = [
+        Word("Section", (50.0, 100.0, 96.0, 112.0), 12.0, True),
+        Word("3", (100.0, 100.0, 108.0, 112.0), 12.0, True),
+        Word("(kg)", (112.0, 102.0, 132.0, 110.0), 8.0, False),
+    ]
+    unit_items = assemble_page(profile, unit_words, (0.0, 0.0, 600.0, 800.0))
+    assert len(unit_items) == 1
+    assert unit_items[0].heading_clean_text is None
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

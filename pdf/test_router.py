@@ -479,6 +479,48 @@ def test_extract_ir_figures_false_tables_true_keeps_only_tables():
     assert ir["tables"][0]["num_rows"] >= 2 and ir["tables"][0]["num_cols"] == 2
 
 
+def test_table_candidate_collinear_rules_and_signal_b_bridging():
+    b = TestPdfBuilder()
+
+    # 1. Collinear horizontal segments (per-cell borders with gap <= 2pt) trigger Signal (a).
+    collinear_page = b.new_page(width=595, height=842)
+    for y in (120, 144, 194):
+        collinear_page.draw_line((60, y), (190, y), width=0.6)
+        collinear_page.draw_line((191.5, y), (380, y), width=0.6)
+        collinear_page.draw_line((381.0, y), (520, y), width=0.6)
+    collinear_page.insert_text((70, 126), "Code", fontsize=10)
+    collinear_page.insert_text((200, 126), "Item", fontsize=10)
+    collinear_page.insert_text((420, 126), "Amount", fontsize=10)
+    collinear_page.insert_text((70, 154), "A1", fontsize=10)
+    collinear_page.insert_text((200, 154), "Coverage", fontsize=10)
+    collinear_page.insert_text((420, 154), "100", fontsize=10)
+
+    # 2. Borderless table with 1 wrapped single-segment continuation line bridges cleanly in Signal (b).
+    wrapped_bl = b.new_page(width=595, height=842)
+    wrapped_bl.insert_text((60, 120), "K1", fontsize=10)
+    wrapped_bl.insert_text((200, 120), "First description text", fontsize=10)
+    wrapped_bl.insert_text((200, 134), "wrapped line inside col", fontsize=10)
+    wrapped_bl.insert_text((60, 152), "K2", fontsize=10)
+    wrapped_bl.insert_text((200, 152), "Second value", fontsize=10)
+    wrapped_bl.insert_text((60, 170), "K3", fontsize=10)
+    wrapped_bl.insert_text((200, 170), "Third value", fontsize=10)
+
+    # 3. 2-row aligned lines followed by full-width line crossing gutter must NOT bridge.
+    gutter_cross = b.new_page(width=595, height=842)
+    gutter_cross.insert_text((60, 120), "ColA row1", fontsize=10)
+    gutter_cross.insert_text((320, 120), "ColB row1", fontsize=10)
+    gutter_cross.insert_text((60, 134), "ColA row2", fontsize=10)
+    gutter_cross.insert_text((320, 134), "ColB row2", fontsize=10)
+    gutter_cross.insert_text((60, 148), "Full width prose sentence bridging across the entire column gutter.", fontsize=10)
+    gutter_cross.insert_text((60, 162), "ColA row3", fontsize=10)
+    gutter_cross.insert_text((320, 162), "ColB row3", fontsize=10)
+
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        assert classify_page(doc.pages[0]).table_candidate
+        assert classify_page(doc.pages[1]).table_candidate
+        assert not classify_page(doc.pages[2]).table_candidate
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

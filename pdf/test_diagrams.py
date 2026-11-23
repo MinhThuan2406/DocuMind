@@ -690,6 +690,42 @@ def test_visual_synthetic_diagram_benchmark_passes_kpis():
         assert lines[0]["task"] == "diagrams:visual"
 
 
+def test_borderless_white_card_edge_mask_demotion_and_title_bar_folding():
+    from pdf.diagrams import _Polyline, _RawShape, _build_diagram_from_parts
+    from pdf.models import Word
+
+    # 1. Borderless white card on colored group preserved; edge-label white mask demoted to edge.label;
+    #    tight top title-bar folded into group.label.
+    shapes = [
+        _RawShape((20.0, 20.0, 380.0, 260.0), "rect", has_stroke=True, is_nonwhite_fill=True),
+        _RawShape((20.0, 20.0, 380.0, 39.0), "rect", has_stroke=True),
+        _RawShape((40.0, 70.0, 140.0, 120.0), "rect", has_stroke=False, is_white_fill=True),
+        _RawShape((240.0, 70.0, 340.0, 120.0), "rect", has_stroke=True),
+        _RawShape((172.0, 86.0, 208.0, 102.0), "rect", has_stroke=False, is_white_fill=True),
+    ]
+    connectors = [_Polyline(pts=[(140.0, 95.0), (240.0, 95.0)], dashed=False)]
+    fig_words = [
+        Word("MyGroup", (30.0, 23.0, 90.0, 35.0), 10.0, True),
+        Word("CardA", (60.0, 90.0, 100.0, 102.0), 10.0, False),
+        Word("NodeB", (265.0, 90.0, 310.0, 102.0), 10.0, False),
+        Word("sync", (177.0, 89.0, 203.0, 99.0), 9.0, False),
+    ]
+    diag = _build_diagram_from_parts(
+        (0.0, 0.0, 400.0, 280.0),
+        shapes,
+        connectors,
+        arrow_polys=(),
+        matched_chevrons=(),
+        fig_words=fig_words,
+    )
+    assert len(diag.groups) == 1
+    assert diag.groups[0].label == "MyGroup"
+    node_labels = {n.label for n in diag.nodes}
+    assert node_labels == {"CardA", "NodeB"}, diag.nodes
+    assert len(diag.edges) == 1
+    assert diag.edges[0].label == "sync"
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

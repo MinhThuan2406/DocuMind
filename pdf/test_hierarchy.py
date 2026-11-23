@@ -942,6 +942,44 @@ def test_script_aware_length_unicode_punct_and_em_scaling():
     assert by_id["cap_em"]["metadata"]["caption_of"] == "fig"
 
 
+def test_mixed_toc_body_closed_band_with_and_without_bookmarks():
+    body_txt = "This paragraph contains ordinary explanatory body text of sufficient length."
+    elements = [
+        _elem("pre_h", page=1, bbox=[50.0, 40.0, 300.0, 60.0], reading_order=0, text="1. Prologue", font_size=16.0, bold=True),
+        _elem("pre_b", page=1, bbox=[50.0, 70.0, 480.0, 95.0], reading_order=1, text=body_txt, font_size=11.0, bold=False),
+        _elem("toc_hdr", page=1, bbox=[50.0, 130.0, 200.0, 150.0], reading_order=2, text="Contents", font_size=14.0, bold=True),
+        _elem("t1", page=1, bbox=[50.0, 160.0, 460.0, 175.0], reading_order=3, text="2. Coverage .... 2", font_size=12.0, bold=True),
+        _elem("t2", page=1, bbox=[50.0, 180.0, 460.0, 195.0], reading_order=4, text="3. Claims .... 3", font_size=12.0, bold=True),
+        _elem("t3", page=1, bbox=[50.0, 200.0, 460.0, 215.0], reading_order=5, text="4. Exclusions .... 4", font_size=12.0, bold=True),
+        _elem("post_h", page=1, bbox=[50.0, 260.0, 300.0, 280.0], reading_order=6, text="1.1 Scope", font_size=14.0, bold=True),
+        _elem("post_b", page=1, bbox=[50.0, 290.0, 480.0, 320.0], reading_order=7, text=body_txt, font_size=11.0, bold=False),
+        _elem("p2_h", page=2, bbox=[50.0, 50.0, 300.0, 70.0], reading_order=0, text="2. Coverage", font_size=16.0, bold=True),
+    ]
+    # Without bookmarks: prologue above ToC band and body heading below ToC band survive; ToC entries suppressed.
+    out_no_bm = apply_structure(_ir(elements), use_bookmarks=False)
+    titles_no_bm = [o["title"] for o in out_no_bm["metadata"]["outline"]]
+    assert titles_no_bm == ["1. Prologue", "1.1 Scope", "2. Coverage"], titles_no_bm
+
+    # With bookmarks: same mixed page suppression protects target_page == 1 headings above/below ToC band.
+    toc = [(1, "1. Prologue", 1), (2, "1.1 Scope", 1), (1, "2. Coverage", 2), (1, "3. Claims", 3)]
+    out_bm = apply_structure(_ir(elements), toc=toc)
+    titles_bm = [o["title"] for o in out_bm["metadata"]["outline"]]
+    assert titles_bm == ["1. Prologue", "1.1 Scope", "2. Coverage"], titles_bm
+
+
+def test_heading_clean_text_used_for_matching_and_outline_title():
+    body = "Regular body text repeated to anchor median body font size accurately. " * 3
+    h_elem = _elem("h1", page=1, reading_order=0, text="1. Coverage Overview BadgeA BadgeB", font_size=14.0, bold=True)
+    h_elem["metadata"]["heading_clean_text"] = "1. Coverage Overview"
+    elements = [
+        h_elem,
+        _elem("b1", page=1, reading_order=1, text=body, font_size=11.0, bold=False),
+    ]
+    out = apply_structure(_ir(elements), toc=[(1, "1. Coverage Overview", 1)])
+    assert out["metadata"]["outline"][0]["title"] == "1. Coverage Overview"
+    assert out["elements"][0]["text"] == "1. Coverage Overview BadgeA BadgeB"
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

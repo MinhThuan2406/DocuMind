@@ -40,6 +40,7 @@ class AssembledItem:
     font_size: float | None = None
     bold: bool | None = None
     label: str | None = None
+    heading_clean_text: str | None = None
 
 
 def _clip_figure_against_table(fig_bbox: BBox, tbl_bbox: BBox) -> BBox | None:
@@ -185,14 +186,67 @@ def merge_hybrid_region_ocr(
     return kept_words, kept_ocr
 
 
+def _strip_trailing_badges(
+    blk: TextBlock,
+    vector_boxes: Sequence[BBox],
+) -> str | None:
+    if blk.source != "text_layer" or "\n" in blk.text or len(blk.words) < 2:
+        return None
+    words = sorted(blk.words, key=lambda w: (w.bbox[0], w.bbox[1]))
+    main_fs = max((w.font_size for w in words if w.font_size > 0.0), default=0.0)
+    if main_fs <= 0.0:
+        return None
+    max_badge_fs = 0.84 * main_fs
+    small_boxes = [
+        b
+        for b in vector_boxes
+        if (b[3] - b[1]) <= 2.2 * main_fs and (b[2] - b[0]) <= 14.0 * main_fs
+    ]
+
+    def _word_in_badge_box(w: Word, left_x1: float) -> bool:
+        cx = 0.5 * (w.bbox[0] + w.bbox[2])
+        cy = 0.5 * (w.bbox[1] + w.bbox[3])
+        for bx0, by0, bx1, by1 in small_boxes:
+            if bx0 - 1.5 <= cx <= bx1 + 1.5 and by0 - 1.5 <= cy <= by1 + 1.5 and bx0 >= left_x1 - 0.5 * main_fs:
+                return True
+        return False
+
+    best_split: int | None = None
+    for split_idx in range(len(words) - 1, 0, -1):
+        suffix = words[split_idx:]
+        if not all(0.0 < w.font_size <= max_badge_fs for w in suffix):
+            break
+        left_words = words[:split_idx]
+        left_x1 = max(w.bbox[2] for w in left_words)
+        left_fs = max((w.font_size for w in left_words if w.font_size > 0.0), default=0.0)
+        if left_fs <= 0.0 or max(w.font_size for w in suffix) > 0.84 * left_fs:
+            continue
+        all_boxed = bool(small_boxes) and all(_word_in_badge_box(w, left_x1) for w in suffix)
+        gap_ok = (suffix[0].bbox[0] - left_x1) >= 0.8 * left_fs
+        if not all_boxed and not gap_ok:
+            continue
+        left_text = " ".join(w.text for w in left_words).strip()
+        badge_text = " ".join(w.text for w in suffix).strip()
+        if not left_text or not badge_text:
+            continue
+        if all_boxed or len(left_text) > len(badge_text):
+            best_split = split_idx
+
+    if best_split is None:
+        return None
+    return " ".join(w.text for w in words[:best_split]).strip()
+
+
 def _text_item(
     blk: TextBlock,
     *,
     level: int,
     parent_index: int | None,
     max_conf: float | None = None,
+    vector_boxes: Sequence[BBox] = (),
 ) -> AssembledItem:
     conf = blk.confidence if max_conf is None else round(min(float(blk.confidence), max_conf), 4)
+    clean_heading = _strip_trailing_badges(blk, vector_boxes) if level == 1 else None
     return AssembledItem(
         kind="text",
         bbox=blk.bbox,
@@ -204,6 +258,7 @@ def _text_item(
         font_size=blk.font_size,
         bold=blk.bold,
         label=blk.label,
+        heading_clean_text=clean_heading,
     )
 
 
@@ -286,6 +341,9 @@ def assemble_page(
     page_rect: BBox,
     figures: Sequence[FigureBox] = (),
     raster_page: RasterPage | None = None,
+    *,
+    horiz_rules: Sequence[BBox] = (),
+    vector_boxes: Sequence[BBox] = (),
 ) -> list[AssembledItem]:
     if profile.kind == "raster":
         if raster_page is None:
@@ -296,7 +354,7 @@ def assemble_page(
 
     kept_figures = filter_overlapping_figures(figures)
     body_words, box_words = _assign_words_to_boxes(words, kept_figures)
-    body_blocks = order_blocks(body_words, page_rect)
+    body_blocks = order_blocks(body_words, page_rect, horiz_rules=horiz_rules)
 
     top_nodes: list[tuple[str, BBox, TextBlock | tuple[int, FigureBox]]] = [
         ("text", blk.bbox, blk) for blk in body_blocks
@@ -311,7 +369,7 @@ def assemble_page(
         if kind == "text":
             blk = payload
             assert isinstance(blk, TextBlock)
-            items.append(_text_item(blk, level=1, parent_index=None))
+            items.append(_text_item(blk, level=1, parent_index=None, vector_boxes=vector_boxes))
             continue
 
         fig_idx, fig = payload  # type: ignore[misc]
@@ -462,50 +520,197 @@ def extract_plain_text(
     return {pno: "\n".join(parts) for pno, parts in sorted(page_parts.items())}
 
 
+def _local_body_font_size(elements: Sequence[Mapping[str, Any]]) -> float:
+    weighted: list[tuple[float, int]] = []
+    for elem in elements:
+        if elem.get("type") != "text" or elem.get("level", 1) != 1:
+            continue
+        meta = elem.get("metadata") or {}
+        fs = float(meta.get("font_size") or 0.0)
+        if fs <= 0.0:
+            continue
+        weight = max(1, len(str(elem.get("text") or "").strip()))
+        weighted.append((fs, weight))
+    if not weighted:
+        return 0.0
+    weighted.sort(key=lambda item: item[0])
+    half = sum(w for _, w in weighted) * 0.5
+    acc = 0.0
+    for fs, w in weighted:
+        acc += w
+        if acc >= half:
+            return fs
+    return weighted[-1][0]
+
+
 def tag_running_headers_footers(
     elements: Sequence[dict[str, Any]],
     page_heights: Mapping[int, float],
     toc_titles: Collection[str] = (),
+    horiz_rules_by_page: Mapping[int, Sequence[BBox]] | None = None,
 ) -> None:
     num_pages = len(page_heights)
     protected_titles = {
         t for raw in toc_titles if (t := _norm_toc_title(raw)) and _is_matchable_toc_title(t)
     }
+    body_font = _local_body_font_size(elements)
     even_pages = {p for p in page_heights if p % 2 == 0}
     odd_pages = {p for p in page_heights if p % 2 == 1}
-    candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    candidate_pages: dict[tuple[str, str], set[int]] = {}
+
+    by_page_lvl1: dict[int, list[tuple[BBox, dict[str, Any]]]] = {}
+    heading_or_body_titles: set[str] = set()
+    max_fs_for_title: dict[str, float] = {}
+    title_font_pages: set[int] = set()
 
     for elem in elements:
         if elem.get("type") != "text":
             continue
-        raw_text = str(elem.get("text", ""))
-        if protected_titles and _norm_toc_title(raw_text) in protected_titles:
-            continue
         meta = elem.setdefault("metadata", {})
+        raw_text = str(elem.get("text", ""))
+        fs = float(meta.get("font_size") or 0.0)
+        pno = elem.get("page")
+        bbox = elem.get("bbox")
+        has_box = isinstance(pno, int) and isinstance(bbox, (list, tuple)) and len(bbox) == 4
+        page_h = page_heights.get(pno, 0.0) if isinstance(pno, int) else 0.0
+
+        if elem.get("level") == 1 and has_box:
+            box_t: BBox = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+            by_page_lvl1.setdefault(pno, []).append((box_t, elem))
+            if body_font > 0.0 and fs >= 1.15 * body_font:
+                title_font_pages.add(pno)
+            tnorm = _norm_toc_title(meta.get("heading_clean_text") or raw_text)
+            if tnorm:
+                if page_h > 0.0 and box_t[1] > _HEADER_BAND_FRAC * page_h:
+                    heading_or_body_titles.add(tnorm)
+                if fs > max_fs_for_title.get(tnorm, 0.0):
+                    max_fs_for_title[tnorm] = fs
+
         layout_label = meta.get("layout_label")
         if layout_label in ("page_header", "page_footer"):
-            meta["role"] = layout_label
-        if num_pages < _MIN_MULTI_PAGE_DOCS or elem.get("level") != 1:
+            in_margin = False
+            if has_box and page_h > 0.0:
+                cy = 0.5 * (float(bbox[1]) + float(bbox[3]))
+                in_margin = cy <= _HEADER_BAND_FRAC * page_h or cy >= _FOOTER_BAND_FRAC * page_h
+            is_protected = bool(protected_titles and _norm_toc_title(raw_text) in protected_titles)
+            if not is_protected or (in_margin and (body_font <= 0.0 or fs <= 0.0 or fs <= body_font * 1.02)):
+                meta["role"] = layout_label
+
+    if num_pages < _MIN_MULTI_PAGE_DOCS:
+        return
+
+    # Identify the top-band baseline y0 across pages for strict positional running-header verification.
+    top_cand_y0: dict[int, float] = {}
+    top_separated: dict[int, bool] = {}
+    for pno, items in by_page_lvl1.items():
+        page_h = page_heights.get(pno, 0.0)
+        if page_h <= 0.0:
             continue
-        page_no = elem.get("page")
-        page_h = page_heights.get(page_no, 0.0) if isinstance(page_no, int) else 0.0
+        sorted_items = sorted(items, key=lambda it: (it[0][1], it[0][0]))
+        first_box, first_elem = sorted_items[0]
+        first_cy = 0.5 * (first_box[1] + first_box[3])
+        if first_cy > 0.055 * page_h:
+            continue
+        first_fs = float((first_elem.get("metadata") or {}).get("font_size") or 0.0)
+        em = first_fs if first_fs > 0.0 else (body_font if body_font > 0.0 else 10.0)
+        top_cand_y0[pno] = first_box[1]
+        next_boxes = [b for b, _ in sorted_items[1:] if b[1] > first_box[3] - 0.2 * em]
+        if not next_boxes:
+            top_separated[pno] = True
+        else:
+            next_y0 = min(b[1] for b in next_boxes)
+            gap_ok = (next_y0 - first_box[3]) >= 1.5 * em
+            rule_ok = False
+            if not gap_ok and horiz_rules_by_page:
+                for rx0, ry0, rx1, ry1 in horiz_rules_by_page.get(pno, ()):
+                    if first_box[3] - 2.0 <= 0.5 * (ry0 + ry1) <= next_y0 + 2.0 and (rx1 - rx0) >= 0.25 * (first_box[2] - first_box[0]):
+                        rule_ok = True
+                        break
+            top_separated[pno] = gap_ok or rule_ok
+
+    med_y0_hdr: float | None = None
+    distinct_top_band = False
+    if top_cand_y0:
+        sorted_y0s = sorted(top_cand_y0.values())
+        med_y0_hdr = sorted_y0s[len(sorted_y0s) // 2]
+        band_pages: set[int] = set()
+        for pno, y0 in top_cand_y0.items():
+            if not top_separated.get(pno, False):
+                continue
+            p_em = body_font if body_font > 0.0 else 10.0
+            if abs(y0 - med_y0_hdr) <= 0.35 * p_em:
+                band_pages.add(pno)
+        even_band = len(band_pages & even_pages)
+        odd_band = len(band_pages & odd_pages)
+        distinct_top_band = (
+            (len(band_pages) >= _MIN_REPEAT_PAGES and len(band_pages) >= _MIN_REPEAT_FRAC * num_pages)
+            or (
+                num_pages >= 4
+                and (
+                    (len(even_pages) >= 2 and (even_band >= _MIN_REPEAT_PAGES or even_band >= 0.6 * len(even_pages)))
+                    or (len(odd_pages) >= 2 and (odd_band >= _MIN_REPEAT_PAGES or odd_band >= 0.6 * len(odd_pages)))
+                )
+            )
+        )
+
+    candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    candidate_pages: dict[tuple[str, str], set[int]] = {}
+
+    for elem in elements:
+        if elem.get("type") != "text" or elem.get("level") != 1:
+            continue
+        pno = elem.get("page")
+        page_h = page_heights.get(pno, 0.0) if isinstance(pno, int) else 0.0
         bbox = elem.get("bbox")
         if page_h <= 0.0 or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
-        cy = (float(bbox[1]) + float(bbox[3])) * 0.5
+        raw_text = str(elem.get("text", ""))
+        meta = elem.get("metadata") or {}
+        fs = float(meta.get("font_size") or 0.0)
+        y0, y1 = float(bbox[1]), float(bbox[3])
+        cy = (y0 + y1) * 0.5
+        is_protected = bool(protected_titles and _norm_toc_title(raw_text) in protected_titles)
+
         if cy <= _HEADER_BAND_FRAC * page_h:
             zone = "page_header"
+            em = fs if fs > 0.0 else (body_font if body_font > 0.0 else 10.0)
+            # Positional running headers must sit on the top-band baseline with single-line short text.
+            if cy > 0.055 * page_h:
+                continue
+            if med_y0_hdr is None or abs(y0 - med_y0_hdr) > 0.35 * em:
+                continue
+            if len(raw_text.splitlines()) != 1 or len(" ".join(raw_text.split())) > 100:
+                continue
+            if body_font > 0.0 and fs > 0.0:
+                if not distinct_top_band:
+                    continue
+                if fs >= 1.15 * body_font and len(title_font_pages) <= 1:
+                    continue
+                tnorm = _norm_toc_title(meta.get("heading_clean_text") or raw_text)
+                matches_heading = bool(
+                    tnorm
+                    and (
+                        tnorm in heading_or_body_titles
+                        or tnorm in protected_titles
+                        or max_fs_for_title.get(tnorm, 0.0) > fs * 1.05
+                    )
+                )
+                if not (fs < 0.95 * body_font or matches_heading):
+                    continue
+            elif is_protected:
+                continue
         elif cy >= _FOOTER_BAND_FRAC * page_h:
+            if is_protected:
+                continue
             zone = "page_footer"
         else:
             continue
+
         norm = _normalize_band_text(raw_text)
         if not norm:
             continue
         key = (zone, norm)
         candidates.setdefault(key, []).append(elem)
-        candidate_pages.setdefault(key, set()).add(page_no)
+        candidate_pages.setdefault(key, set()).add(pno)
 
     for key, pages_seen in candidate_pages.items():
         role = key[0]

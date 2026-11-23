@@ -185,24 +185,67 @@ def extract_horiz_rules(
     ph = max(0.0, bounds[3] - bounds[1])
     if pw <= 0.0 or ph <= 0.0:
         return ()
-    rules: list[BBox] = []
+    raw_rules: list[BBox] = []
     for obj in (
         *getattr(page, "lines", ()),
         *getattr(page, "rects", ()),
         *getattr(page, "curves", ()),
     ):
-        raw_box = (float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"]))
-        box = clip_box(raw_box, bounds)
-        if box is None:
+        rx0, ry0, rx1, ry1 = float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"])
+        if rx0 > rx1:
+            rx0, rx1 = rx1, rx0
+        if ry0 > ry1:
+            ry0, ry1 = ry1, ry0
+        if ry1 < bounds[1] or ry0 > bounds[3]:
             continue
-        w = box[2] - box[0]
-        h = box[3] - box[1]
+        x0 = max(rx0, bounds[0])
+        y0 = max(ry0, bounds[1])
+        x1 = min(rx1, bounds[2])
+        y1 = min(ry1, bounds[3])
+        w = x1 - x0
+        h = y1 - y0
         if w <= 0.0 or h > max_thickness:
             continue
         if w >= 0.96 * pw and h >= 0.96 * ph:
             continue
-        rules.append(box)
-    return tuple(rules)
+        raw_rules.append((x0, y0, x1, y1))
+
+    if len(raw_rules) <= 1:
+        return tuple(raw_rules)
+
+    raw_rules.sort(key=lambda r: (r[0], r[2], r[1]))
+    # Track [x0, y0, x1, y1, anchor_cy, anchor_h] to prevent vertical drift and merging rects of differing thickness.
+    active: list[list[float]] = []
+    finished: list[BBox] = []
+    for sx0, sy0, sx1, sy1 in raw_rules:
+        scy = 0.5 * (sy0 + sy1)
+        sh = sy1 - sy0
+        still_active: list[list[float]] = []
+        merged = False
+        for grp in active:
+            if grp[2] < sx0 - 2.0:
+                finished.append((grp[0], grp[1], grp[2], grp[3]))
+                continue
+            thick_tol = 0.5 if max(sh, grp[5]) > 1.5 else 1.0
+            if (
+                not merged
+                and abs(scy - grp[4]) <= 1.0
+                and abs(sh - grp[5]) <= thick_tol
+                and max(grp[3], sy1) - min(grp[1], sy0) <= max_thickness
+            ):
+                grp[1] = min(grp[1], sy0)
+                grp[2] = max(grp[2], sx1)
+                grp[3] = max(grp[3], sy1)
+                merged = True
+            still_active.append(grp)
+        if not merged:
+            still_active.append([sx0, sy0, sx1, sy1, scy, sh])
+        active = still_active
+
+    for grp in active:
+        finished.append((grp[0], grp[1], grp[2], grp[3]))
+    finished.sort(key=lambda r: (r[1], r[0]))
+    return tuple(finished)
 
 
 def extract_words(
@@ -557,14 +600,36 @@ def _has_stroke_leader(
     y_lo = min(lb[1], rb[1]) - 0.2 * ref_fs
     y_hi = max(lb[3], rb[3]) + 0.5 * ref_fs
     max_h = max(3.5, 0.4 * ref_fs)
+    cands: list[BBox] = []
     for rx0, ry0, rx1, ry1 in horiz_rules:
         rw = rx1 - rx0
         if (ry1 - ry0) > max_h or (page_w > 0.0 and rw >= 0.9 * page_w):
             continue
         if ry0 < y_lo or ry1 > y_hi:
             continue
-        if rx0 >= lb[2] - 0.8 * ref_fs and rx1 <= rb[0] + 0.8 * ref_fs and rw >= 0.4 * gap_w:
-            return True
+        if rx0 >= lb[2] - 0.8 * ref_fs and rx1 <= rb[0] + 0.8 * ref_fs:
+            if rw >= 0.4 * gap_w:
+                return True
+            cands.append((rx0, ry0, rx1, ry1))
+    if len(cands) < 3:
+        return False
+    cands.sort(key=lambda r: (r[0], r[2]))
+    dy_tol = 0.25 * ref_fs
+    gap_tol = 0.6 * ref_fs
+    chains: list[list[float]] = []
+    for rx0, ry0, rx1, ry1 in cands:
+        rcy = 0.5 * (ry0 + ry1)
+        extended = False
+        for ch in chains:
+            if abs(rcy - ch[2]) <= dy_tol and rx0 - ch[1] <= gap_tol:
+                ch[1] = max(ch[1], rx1)
+                ch[3] += 1
+                if ch[3] >= 3 and (ch[1] - ch[0]) >= 0.4 * gap_w:
+                    return True
+                extended = True
+                break
+        if not extended:
+            chains.append([rx0, rx1, rcy, 1])
     return False
 
 
@@ -608,13 +673,15 @@ def _merge_line_segments_horizontally(
         }
         if len(matching_lines) < 3:
             return False
-        for _, wb in wide_segs:
+        band_y0 = min(line_bounds[idx][0] for idx in matching_lines) - 3.0 * ref_fs
+        band_y1 = max(line_bounds[idx][1] for idx in matching_lines) + 3.0 * ref_fs
+        for w_idx, wb in wide_segs:
+            if line_bounds[w_idx][1] < band_y0 or line_bounds[w_idx][0] > band_y1:
+                continue
             if (wb[2] - wb[0]) > 6.0 * ref_fs and abs(wb[2] - rb[2]) <= align_tol and wb[0] < rb[0] - 2.0 * ref_fs:
                 return False
             if abs(wb[0] - rb[0]) <= align_tol:
                 return False
-        band_y0 = min(line_bounds[idx][0] for idx in matching_lines) - 3.0 * ref_fs
-        band_y1 = max(line_bounds[idx][1] for idx in matching_lines) + 3.0 * ref_fs
         gutter_hits = 0
         for idx in range(len(raw_lines)):
             if line_bounds[idx][1] < band_y0 or line_bounds[idx][0] > band_y1:
@@ -738,6 +805,149 @@ def _merge_line_segments_horizontally(
     return out
 
 
+def _ends_sentence(line_words: Sequence[Word]) -> bool:
+    if not line_words:
+        return False
+    tail = unicodedata.normalize("NFKC", "".join(w.text for w in line_words[-2:])).rstrip(" \t\r\n\"'”’」』）)]")
+    return bool(tail) and tail[-1] in ".?!。？！"
+
+
+def _split_into_column_groups(
+    items: Sequence[tuple[int, BBox, list[Word], float | None]],
+    ref_fs: float,
+) -> list[list[tuple[int, BBox, list[Word], float | None]]]:
+    if len(items) <= 2:
+        return [list(items)]
+    x_inset_max = 0.384 * ref_fs
+    x_gap_tol = 0.048 * ref_fs
+    y_overlap_min = 0.48 * ref_fs
+    y_gap_tol = 0.096 * ref_fs
+
+    def _split_x(
+        grp: list[tuple[int, BBox, list[Word], float | None]],
+    ) -> list[list[tuple[int, BBox, list[Word], float | None]]] | None:
+        x_sorted = sorted(grp, key=lambda p: (p[1][0], p[1][1]))
+        cols: list[list[tuple[int, BBox, list[Word], float | None]]] = []
+        cur_col = [x_sorted[0]]
+        b0 = x_sorted[0][1]
+        cur_max_x = b0[2] - min(x_inset_max, 0.05 * max(0.0, b0[2] - b0[0]))
+        for item in x_sorted[1:]:
+            b = item[1]
+            ins = min(x_inset_max, 0.05 * max(0.0, b[2] - b[0]))
+            if b[0] + ins >= cur_max_x - x_gap_tol:
+                cols.append(cur_col)
+                cur_col = [item]
+                cur_max_x = b[2] - ins
+            else:
+                cur_col.append(item)
+                cur_max_x = max(cur_max_x, b[2] - ins)
+        cols.append(cur_col)
+        if len(cols) < 2:
+            return None
+        for idx in range(len(cols) - 1):
+            col_a, col_b = cols[idx], cols[idx + 1]
+            min_ya, max_ya = min(p[1][1] for p in col_a), max(p[1][3] for p in col_a)
+            min_yb, max_yb = min(p[1][1] for p in col_b), max(p[1][3] for p in col_b)
+            na = sum(1 for p in col_a if min(p[1][3], max_yb) - max(p[1][1], min_yb) > y_overlap_min)
+            nb = sum(1 for p in col_b if min(p[1][3], max_ya) - max(p[1][1], min_ya) > y_overlap_min)
+            if na >= 1 and nb >= 1 and (na + nb) >= 3:
+                return cols
+        return None
+
+    def _recurse(
+        grp: list[tuple[int, BBox, list[Word], float | None]],
+        depth: int,
+    ) -> list[list[tuple[int, BBox, list[Word], float | None]]]:
+        if len(grp) <= 2 or depth >= 16:
+            return [grp]
+        cols = _split_x(grp)
+        if cols is not None and all(len(c) < len(grp) for c in cols):
+            out: list[list[tuple[int, BBox, list[Word], float | None]]] = []
+            for c in cols:
+                out.extend(_recurse(c, depth + 1))
+            return out
+        y_sorted = sorted(grp, key=lambda p: (p[1][1], p[1][0]))
+        bands: list[list[tuple[int, BBox, list[Word], float | None]]] = []
+        cur_band = [y_sorted[0]]
+        cur_max_y = y_sorted[0][1][3]
+        for item in y_sorted[1:]:
+            if item[1][1] >= cur_max_y - y_gap_tol:
+                bands.append(cur_band)
+                cur_band = [item]
+                cur_max_y = item[1][3]
+            else:
+                cur_band.append(item)
+                cur_max_y = max(cur_max_y, item[1][3])
+        bands.append(cur_band)
+        if len(bands) >= 2:
+            rest_after_top = [p for b in bands[1:] for p in b]
+            if len(rest_after_top) >= 3 and _split_x(rest_after_top) is not None:
+                return _recurse(bands[0], depth + 1) + _recurse(rest_after_top, depth + 1)
+            rest_before_bot = [p for b in bands[:-1] for p in b]
+            if len(rest_before_bot) >= 3 and _split_x(rest_before_bot) is not None:
+                return _recurse(rest_before_bot, depth + 1) + _recurse(bands[-1], depth + 1)
+            if len(bands) >= 3:
+                mid_items = [p for b in bands[1:-1] for p in b]
+                if len(mid_items) >= 3 and _split_x(mid_items) is not None:
+                    return _recurse(bands[0], depth + 1) + _recurse(mid_items, depth + 1) + _recurse(bands[-1], depth + 1)
+        return [grp]
+
+    return _recurse(list(items), 0)
+
+
+def _compute_column_stats(
+    col_groups: Sequence[Sequence[tuple[int, BBox, list[Word], float | None]]],
+    ref_fs: float,
+) -> tuple[dict[int, int], dict[int, tuple[float, float, float, float, float]]]:
+    seg_col_id: dict[int, int] = {}
+    raw_gaps_by_col: dict[int, list[float]] = {}
+    all_gaps: list[float] = []
+    geom_by_col: dict[int, tuple[float, float, float, float]] = {}
+
+    for cid, grp in enumerate(col_groups):
+        for idx, _, _, _ in grp:
+            seg_col_id[idx] = cid
+        x0s = sorted(it[1][0] for it in grp)
+        x1s = sorted(it[1][2] for it in grp)
+        widths = sorted(it[1][2] - it[1][0] for it in grp)
+        n = len(grp)
+        col_x0 = x0s[round(0.15 * (n - 1))]
+        col_x1 = x1s[round(0.90 * (n - 1))]
+        col_w = widths[round(0.90 * (n - 1))]
+        geom_by_col[cid] = (col_x0, col_x1, col_w, 0.5 * (col_x0 + col_x1))
+
+        y_sorted = sorted(grp, key=lambda it: (it[1][1], it[1][0]))
+        c_gaps: list[float] = []
+        for k in range(1, len(y_sorted)):
+            prev_box, prev_words = y_sorted[k - 1][1], y_sorted[k - 1][2]
+            cur_box, cur_words = y_sorted[k][1], y_sorted[k][2]
+            prev_fs, _ = _segment_style(prev_words)
+            cur_fs, _ = _segment_style(cur_words)
+            fs_tol = max(0.1 * max(cur_fs, prev_fs, ref_fs), 0.5)
+            gap_y = cur_box[1] - prev_box[3]
+            if 0.0 < gap_y <= 2.5 * ref_fs and abs(cur_fs - prev_fs) <= fs_tol and _horiz_overlap(prev_box, cur_box):
+                c_gaps.append(gap_y)
+                all_gaps.append(gap_y)
+        raw_gaps_by_col[cid] = c_gaps
+
+    if all_gaps:
+        all_gaps.sort()
+        page_gap = max(0.15 * ref_fs, min(1.25 * ref_fs, all_gaps[round(0.35 * (len(all_gaps) - 1))]))
+    else:
+        page_gap = 0.25 * ref_fs
+
+    stats: dict[int, tuple[float, float, float, float, float]] = {}
+    for cid, geom in geom_by_col.items():
+        c_gaps = raw_gaps_by_col[cid]
+        if c_gaps:
+            c_gaps.sort()
+            t_gap = max(0.15 * ref_fs, min(1.25 * ref_fs, c_gaps[round(0.35 * (len(c_gaps) - 1))]))
+        else:
+            t_gap = page_gap
+        stats[cid] = (*geom, t_gap)
+    return seg_col_id, stats
+
+
 def _segments_to_blocks(
     segments: Sequence[tuple[BBox, list[Word]] | tuple[BBox, list[Word], float | None]],
     *,
@@ -752,17 +962,28 @@ def _segments_to_blocks(
         (s[0], s[1], s[2]) if len(s) == 3 else (s[0], s[1], None) for s in segments
     ]
     ordered = sorted(norm_segs, key=lambda s: (s[0][1], s[0][0]))
+    indexed = [(idx, s[0], s[1], s[2]) for idx, s in enumerate(ordered)]
+    col_groups = _split_into_column_groups(indexed, ref_fs)
+    seg_col_id, col_stats = _compute_column_stats(col_groups, ref_fs)
+
     groups: list[list[tuple[BBox, list[Word], float, bool, bool, float | None]]] = []
-    for bbox, line_words, body_x0 in ordered:
+    for idx, bbox, line_words, body_x0 in indexed:
+        col_x0, col_x1, col_w, col_cx, typical_gap = col_stats[seg_col_id[idx]]
         fs, bold = _segment_style(line_words)
         all_bold = bool(line_words) and all(w.bold for w in line_words)
         lh = max(1.0, bbox[3] - bbox[1])
         is_list_start = _is_list_item_start(line_words) or body_x0 is not None
         merged = False
         if not is_list_start:
+            cur_cx = 0.5 * (bbox[0] + bbox[2])
+            is_centered = (
+                abs(cur_cx - col_cx) <= 0.6 * ref_fs
+                and bbox[0] > col_x0 + 1.5 * ref_fs
+                and bbox[2] < col_x1 - 1.5 * ref_fs
+            )
             for group in reversed(groups):
-                first_box, _, _, _, _, first_body_x0 = group[0]
-                last_box, _, last_fs, last_bold, _, _ = group[-1]
+                first_box, first_words, _, _, _, first_body_x0 = group[0]
+                last_box, last_words, last_fs, last_bold, _, _ = group[-1]
                 if not _horiz_overlap(last_box, bbox):
                     continue
                 # Prevent merging across a vertical outdent back to a label/bullet margin.
@@ -774,14 +995,35 @@ def _segments_to_blocks(
                     if bbox[0] < expected_x0 - 0.5 * ref_fs:
                         continue
                 gap_y = bbox[1] - last_box[3]
-                max_gap = max(0.8 * max(lh, last_box[3] - last_box[1]), 0.6 * ref_fs, 1.0)
+                max_lh = max(lh, last_box[3] - last_box[1])
+                max_gap = max(0.8 * max_lh, min(1.30 * max_lh, 1.25 * typical_gap), 0.6 * ref_fs, 1.0)
                 fs_tol = max(0.1 * max(fs, last_fs, ref_fs), 0.5)
                 group_all_bold = all(item[4] for item in group)
                 bold_ok = (bold == last_bold) or (not group_all_bold and not all_bold)
-                if -0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= fs_tol and bold_ok:
-                    group.append((bbox, line_words, fs, bold, all_bold, body_x0))
-                    merged = True
-                    break
+                if not (-0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= fs_tol and bold_ok):
+                    continue
+                last_w = last_box[2] - last_box[0]
+                last_ends = _ends_sentence(last_words)
+                hanging_first_wrap = (
+                    len(group) == 1
+                    and last_w >= 0.80 * col_w
+                    and ((not last_ends) or _is_list_item_start(first_words))
+                )
+                first_line_indent_break = (
+                    not has_hanging
+                    and not hanging_first_wrap
+                    and not is_centered
+                    and bbox[0] >= col_x0 + 0.6 * ref_fs
+                    and (last_ends or last_box[2] < col_x1 - 1.5 * ref_fs)
+                )
+                short_last_line_break = (
+                    last_ends and last_w < 0.78 * col_w and gap_y > 1.05 * typical_gap
+                )
+                if first_line_indent_break or short_last_line_break:
+                    continue
+                group.append((bbox, line_words, fs, bold, all_bold, body_x0))
+                merged = True
+                break
         if not merged:
             groups.append([(bbox, line_words, fs, bold, all_bold, body_x0)])
 

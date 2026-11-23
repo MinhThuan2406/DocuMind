@@ -15,7 +15,7 @@ from pdf import extract_ir  # noqa: E402
 from pdf._pdf_io import extract_words_raw  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.models import Word  # noqa: E402
-from pdf.text import extract_raw_line_segments, extract_words, order_blocks, xy_cut_order  # noqa: E402
+from pdf.text import extract_horiz_rules, extract_raw_line_segments, extract_words, order_blocks, xy_cut_order  # noqa: E402
 
 
 def _make_two_column_pdf(path: Path) -> None:
@@ -529,6 +529,130 @@ def test_negative_counterexamples_two_col_prose_first_line_indent_and_borderless
     ]
     tbl_blocks = order_blocks(table_2col, (0.0, 0.0, 595.0, 842.0))
     assert not any("ID1" in b.text and "Description" in b.text for b in tbl_blocks), tbl_blocks
+
+
+def test_extract_horiz_rules_zero_height_collinear_and_thickness_guard():
+    class _FakeRulesPage:
+        lines = [
+            {"x0": 50.0, "top": 100.0, "x1": 150.0, "bottom": 100.0},
+            {"x0": 151.5, "top": 100.4, "x1": 280.0, "bottom": 100.4},
+            {"x0": 281.0, "top": 100.0, "x1": 400.0, "bottom": 100.0},
+        ]
+        rects = [
+            {"x0": 50.0, "top": 200.0, "x1": 150.0, "bottom": 204.0},
+            {"x0": 151.0, "top": 201.5, "x1": 260.0, "bottom": 202.5},
+        ]
+        curves = ()
+
+    rules = extract_horiz_rules(_FakeRulesPage(), (0.0, 0.0, 595.0, 842.0))
+    assert len(rules) == 3, rules
+    merged_top = rules[0]
+    assert merged_top[0] == 50.0 and merged_top[2] == 400.0
+    assert merged_top[3] - merged_top[1] <= 6.0
+    # Thick rect (h=4.0) and thin rect (h=1.0) at same y-center must remain separate.
+    assert rules[1] == (50.0, 200.0, 150.0, 204.0)
+    assert rules[2] == (151.0, 201.5, 260.0, 202.5)
+
+
+def test_dot_leader_stroke_sequence_and_band_scoped_right_edge():
+    # Sequence of >= 3 collinear dot segments merges left title with right page number.
+    dot_rules = [(160.0 + i * 7.0, 107.0, 162.6 + i * 7.0, 107.5) for i in range(25)]
+    words = [
+        Word("Chapter", (50.0, 100.0, 95.0, 110.0), 10.0, False),
+        Word("2", (99.0, 100.0, 106.0, 110.0), 10.0, False),
+        Word("45", (470.0, 100.0, 484.0, 110.0), 10.0, False),
+    ]
+    blocks = order_blocks(words, (0.0, 0.0, 595.0, 842.0), horiz_rules=dot_rules)
+    assert [b.text for b in blocks] == ["Chapter 2 45"], [b.text for b in blocks]
+
+    # Wide body paragraph far below the ToC band must not block _is_repeating_right_edge.
+    toc_and_body = [
+        Word("Sec1", (50.0, 100.0, 80.0, 110.0), 10.0, False),
+        Word("1", (470.0, 100.0, 480.0, 110.0), 10.0, False),
+        Word("Sec2", (50.0, 115.0, 80.0, 125.0), 10.0, False),
+        Word("2", (470.0, 115.0, 480.0, 125.0), 10.0, False),
+        Word("Sec3", (50.0, 130.0, 80.0, 140.0), 10.0, False),
+        Word("3", (470.0, 130.0, 480.0, 140.0), 10.0, False),
+        Word("This", (50.0, 300.0, 75.0, 310.0), 10.0, False),
+        Word("wide", (79.0, 300.0, 105.0, 310.0), 10.0, False),
+        Word("body", (109.0, 300.0, 138.0, 310.0), 10.0, False),
+        Word("paragraph", (142.0, 300.0, 200.0, 310.0), 10.0, False),
+        Word("reaches", (204.0, 300.0, 248.0, 310.0), 10.0, False),
+        Word("the", (252.0, 300.0, 272.0, 310.0), 10.0, False),
+        Word("right", (276.0, 300.0, 305.0, 310.0), 10.0, False),
+        Word("margin", (309.0, 300.0, 480.0, 310.0), 10.0, False),
+    ]
+    toc_blocks = order_blocks(toc_and_body, (0.0, 0.0, 595.0, 842.0))
+    assert "Sec1 1\nSec2 2\nSec3 3" in [b.text for b in toc_blocks], [b.text for b in toc_blocks]
+
+
+def test_paragraph_splitting_hanging_indent_two_col_and_one_line_indented():
+    # 1. Hanging-indent paragraph at ~1.8x leading must stay merged as one block.
+    hanging_words = [
+        Word("Article", (62.0, 100.0, 105.0, 110.0), 10.0, False),
+        Word("1", (109.0, 100.0, 116.0, 110.0), 10.0, False),
+        Word("The", (120.0, 100.0, 142.0, 110.0), 10.0, False),
+        Word("insured", (146.0, 100.0, 190.0, 110.0), 10.0, False),
+        Word("clause", (194.0, 100.0, 232.0, 110.0), 10.0, False),
+        Word("continues", (236.0, 100.0, 290.0, 110.0), 10.0, False),
+        Word("across", (294.0, 100.0, 330.0, 110.0), 10.0, False),
+        Word("full", (334.0, 100.0, 355.0, 110.0), 10.0, False),
+        Word("width", (359.0, 100.0, 500.0, 110.0), 10.0, False),
+        Word("wrapped", (89.0, 119.0, 140.0, 129.0), 10.0, False),
+        Word("onto", (144.0, 119.0, 170.0, 129.0), 10.0, False),
+        Word("hanging", (174.0, 119.0, 220.0, 129.0), 10.0, False),
+        Word("indent", (224.0, 119.0, 260.0, 129.0), 10.0, False),
+        Word("line", (264.0, 119.0, 290.0, 129.0), 10.0, False),
+        Word("two.", (294.0, 119.0, 320.0, 129.0), 10.0, False),
+        Word("third", (89.0, 138.0, 120.0, 148.0), 10.0, False),
+        Word("line.", (124.0, 138.0, 152.0, 148.0), 10.0, False),
+    ]
+    hanging_blocks = order_blocks(hanging_words, (0.0, 0.0, 595.0, 842.0))
+    assert len(hanging_blocks) == 1, [b.text for b in hanging_blocks]
+
+    # 2. 2-column prose: column 2 must use its own col_x0/col_w and not split every line.
+    two_col_words = [
+        Word("Left", (50.0, 100.0, 75.0, 110.0), 10.0, False),
+        Word("col", (79.0, 100.0, 100.0, 110.0), 10.0, False),
+        Word("line1", (104.0, 100.0, 250.0, 110.0), 10.0, False),
+        Word("Left", (50.0, 114.0, 75.0, 124.0), 10.0, False),
+        Word("col", (79.0, 114.0, 100.0, 124.0), 10.0, False),
+        Word("line2.", (104.0, 114.0, 240.0, 124.0), 10.0, False),
+        Word("Right", (320.0, 100.0, 355.0, 110.0), 10.0, False),
+        Word("col", (359.0, 100.0, 380.0, 110.0), 10.0, False),
+        Word("line1", (384.0, 100.0, 520.0, 110.0), 10.0, False),
+        Word("Right", (320.0, 114.0, 355.0, 124.0), 10.0, False),
+        Word("col", (359.0, 114.0, 380.0, 124.0), 10.0, False),
+        Word("line2", (384.0, 114.0, 520.0, 124.0), 10.0, False),
+        Word("Right", (320.0, 128.0, 355.0, 138.0), 10.0, False),
+        Word("col", (359.0, 128.0, 380.0, 138.0), 10.0, False),
+        Word("line3.", (384.0, 128.0, 500.0, 138.0), 10.0, False),
+    ]
+    two_col_blocks = order_blocks(two_col_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in two_col_blocks] == [
+        "Left col line1\nLeft col line2.",
+        "Right col line1\nRight col line2\nRight col line3.",
+    ], [b.text for b in two_col_blocks]
+
+    # 3. Two 1-line indented paragraphs without extra spacing must split (not merge as hanging indent).
+    one_line_indented = [
+        Word("Anchor", (50.0, 86.0, 95.0, 96.0), 10.0, False),
+        Word("unindented", (99.0, 86.0, 165.0, 96.0), 10.0, False),
+        Word("base", (169.0, 86.0, 198.0, 96.0), 10.0, False),
+        Word("margin.", (202.0, 86.0, 450.0, 96.0), 10.0, False),
+        Word("First", (70.0, 100.0, 100.0, 110.0), 10.0, False),
+        Word("indented", (104.0, 100.0, 155.0, 110.0), 10.0, False),
+        Word("single", (159.0, 100.0, 195.0, 110.0), 10.0, False),
+        Word("sentence", (199.0, 100.0, 250.0, 110.0), 10.0, False),
+        Word("paragraph.", (254.0, 100.0, 445.0, 110.0), 10.0, False),
+        Word("Second", (70.0, 114.0, 112.0, 124.0), 10.0, False),
+        Word("indented", (116.0, 114.0, 167.0, 124.0), 10.0, False),
+        Word("single", (171.0, 114.0, 207.0, 124.0), 10.0, False),
+        Word("sentence", (211.0, 114.0, 262.0, 124.0), 10.0, False),
+        Word("paragraph.", (266.0, 114.0, 440.0, 124.0), 10.0, False),
+    ]
+    ind_blocks = order_blocks(one_line_indented, (0.0, 0.0, 595.0, 842.0))
+    assert len(ind_blocks) == 3, [b.text for b in ind_blocks]
 
 
 def main():

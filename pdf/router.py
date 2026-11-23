@@ -196,21 +196,59 @@ def _is_table_candidate(
             start += 1
             continue
         end = start + 1
-        while end < n_lines and len(raw_lines[end]) >= 2 and (line_ys[end][0] - line_ys[end - 1][1]) <= max_row_gap:
-            end += 1
+        single_run = 0
+        last_multi = start
+        while end < n_lines:
+            gap_y = line_ys[end][0] - line_ys[end - 1][1]
+            if len(raw_lines[end]) >= 2 and gap_y <= max_row_gap:
+                single_run = 0
+                last_multi = end
+                end += 1
+            elif len(raw_lines[end]) == 1 and single_run < 2 and gap_y <= 2.0 * ref_fs:
+                single_run += 1
+                end += 1
+            else:
+                break
+        end = last_multi + 1
         if end - start >= 3:
             for anchor_idx in range(start, end - 2):
+                if len(raw_lines[anchor_idx]) < 2:
+                    continue
                 base = raw_lines[anchor_idx]
                 col_hits: list[list[tuple[BBox, list[Word]]]] = [[] for _ in base]
                 consec = 0
+                bridge_run = 0
                 for idx in range(anchor_idx, end):
-                    matches = _aligned_match(base, raw_lines[idx])
-                    if sum(1 for m in matches if m >= 0) < 2:
-                        break
-                    consec += 1
-                    for bi, cj in enumerate(matches):
-                        if cj >= 0:
-                            col_hits[bi].append(raw_lines[idx][cj])
+                    if len(raw_lines[idx]) >= 2:
+                        matches = _aligned_match(base, raw_lines[idx])
+                        if sum(1 for m in matches if m >= 0) < 2:
+                            break
+                        bridge_run = 0
+                        consec += 1
+                        for bi, cj in enumerate(matches):
+                            if cj >= 0:
+                                col_hits[bi].append(raw_lines[idx][cj])
+                    else:
+                        if bridge_run >= 2 or (line_ys[idx][0] - line_ys[idx - 1][1]) > 2.0 * ref_fs:
+                            break
+                        seg_box = raw_lines[idx][0][0]
+                        bridged = False
+                        for bi, hits in enumerate(col_hits):
+                            if not hits:
+                                continue
+                            col_x0 = base[bi][0][0]
+                            col_x1 = max(b[2] for b, _ in hits)
+                            if abs(seg_box[0] - col_x0) > align_tol:
+                                continue
+                            if seg_box[2] > col_x1 + align_tol:
+                                continue
+                            if bi + 1 < len(base) and seg_box[2] >= base[bi + 1][0][0] - 0.5 * ref_fs:
+                                continue
+                            bridged = True
+                            break
+                        if not bridged:
+                            break
+                        bridge_run += 1
                 if consec >= 3:
                     active_cols = [hits for hits in col_hits if len(hits) >= 3]
                     if len(active_cols) >= 3:

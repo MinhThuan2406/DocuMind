@@ -1400,6 +1400,53 @@ def test_tatr_rotated_90_orientation_calibration_and_auto_1xn():
     assert [c.text for c in out.cells] == ["H1", "H2", "R1", "V1"]
 
 
+def test_pdfplumber_clipped_open_rowspan_slots_merge_and_backfill():
+    from pdf.backends.table_pdfplumber import _convert_pdfplumber_table
+    from pdf.models import Word
+
+    class _BoxObj:
+        def __init__(self, bbox, cells=None):
+            self.bbox = bbox
+            self.cells = cells
+
+    class _FakePlumberTbl:
+        bbox = (40.0, 50.0, 260.0, 170.0)
+        columns = [_BoxObj((40.0, 50.0, 120.0, 170.0)), _BoxObj((120.0, 50.0, 260.0, 170.0))]
+        rows = [
+            _BoxObj((40.0, 50.0, 260.0, 80.0), cells=[(40.0, 50.0, 120.0, 80.0), (120.0, 50.0, 260.0, 80.0)]),
+            _BoxObj((40.0, 80.0, 260.0, 110.0), cells=[None, (120.0, 80.0, 260.0, 110.0)]),
+            _BoxObj((40.0, 110.0, 260.0, 140.0), cells=[None, (120.0, 110.0, 260.0, 140.0)]),
+            _BoxObj((40.0, 140.0, 260.0, 170.0), cells=[None, (120.0, 140.0, 260.0, 170.0)]),
+        ]
+
+        def extract(self, **_kw):
+            return [
+                ["H1", "H2"],
+                [None, "R1"],
+                [None, "R2"],
+                [None, "R3"],
+            ]
+
+    class _FakePage:
+        bbox = (0.0, 0.0, 300.0, 250.0)
+        # Rule between row 0 (H1) and row 1 (open slots 1..3), none between rows 1..3.
+        lines = [{"x0": 40.0, "top": 80.0, "x1": 260.0, "bottom": 80.0}]
+        rects = ()
+        curves = ()
+
+    words = [
+        Word("H1", (50.0, 60.0, 70.0, 70.0), 10.0, False),
+        Word("GroupX", (50.0, 115.0, 100.0, 125.0), 10.0, False),
+    ]
+    tbl = _convert_pdfplumber_table(_FakePlumberTbl(), (40.0, 50.0, 260.0, 170.0), page=_FakePage(), words=words)
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert (1, 0) in by_rc
+    assert by_rc[(1, 0)].rowspan == 3
+    assert by_rc[(1, 0)].text == "GroupX"
+    assert by_rc[(0, 0)].rowspan == 1
+    assert by_rc[(0, 0)].text == "H1"
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0
