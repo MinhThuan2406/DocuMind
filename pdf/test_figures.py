@@ -286,7 +286,7 @@ def test_grouped_figure_real_scores_and_legacy_fallback():
     layout = PageLayout(
         items=[
             {"order": 0, "label": "picture", "bbox": [40.0, 40.0, 240.0, 140.0], "text": "", "score": 0.80},
-            {"order": 1, "label": "caption", "bbox": [40.0, 145.0, 140.0, 165.0], "text": "", "score": 0.91},
+            {"order": 1, "label": "formula", "bbox": [40.0, 145.0, 140.0, 165.0], "text": "", "score": 0.91},
             {"order": 2, "label": "table", "bbox": [300.0, 40.0, 560.0, 200.0], "text": "", "score": 0.73},
         ],
         frame=(600.0, 400.0),
@@ -825,6 +825,37 @@ def test_image_layout_backend_keep_empty_clusters_semantic_regions_and_cache_ver
         assert det.calls == 1
         assert figs_hit == figs_miss
         assert sem_hit == sem_miss
+
+
+def test_groupers_ignore_caption_and_wide_prose_text_over_visual_containers():
+    import cv2
+    import numpy as np
+
+    from pdf.grouping import V1AnchorGrouper, V2VectorVisionGrouper
+
+    bgr = np.full((800, 600, 3), 255, dtype=np.uint8)
+    # Dense lines spanning prose + picture + caption so Canny morphology merges them into one contour.
+    for y in range(180, 260, 8):
+        cv2.line(bgr, (50, y), (550, y), (0, 0, 0), 2)
+    cv2.rectangle(bgr, (180, 275), (420, 460), (0, 0, 0), 2)
+    for y in range(475, 505, 8):
+        cv2.line(bgr, (50, y), (550, y), (0, 0, 0), 2)
+
+    layout = PageLayout(
+        items=[
+            {"order": 0, "label": "text", "bbox": [50.0, 175.0, 550.0, 260.0], "text": "", "score": 0.90},
+            {"order": 1, "label": "picture", "bbox": [180.0, 275.0, 420.0, 460.0], "text": "", "score": 0.94},
+            {"order": 2, "label": "caption", "bbox": [50.0, 472.0, 550.0, 505.0], "text": "", "score": 0.88},
+        ],
+        frame=(600.0, 800.0),
+    )
+
+    for grouper in (V1AnchorGrouper(), V2VectorVisionGrouper()):
+        grouped = grouper.group(bgr, layout, min_area=0.015)
+        assert len(grouped) == 1
+        x0, y0, x1, y1 = grouped[0].bbox
+        assert x0 >= 165.0 and x1 <= 435.0, (grouper.name, grouped[0].bbox)
+        assert y0 >= 260.0 and y1 <= 470.0, (grouper.name, grouped[0].bbox)
 
 
 def main():

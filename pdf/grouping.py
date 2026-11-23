@@ -16,10 +16,39 @@ _LEGACY_DEFAULT_SCORE = 0.95
 _CANONICAL_LONG_PT = 800.0
 _TABLE_BARRIER_GAP_PT = 4.0
 _SEPARATOR_LABELS = frozenset(
-    {"caption", "section_header", "title", "list_item", "page_header", "page_footer"}
+    {
+        "caption",
+        "section_header",
+        "title",
+        "list_item",
+        "page_header",
+        "page_footer",
+        "footnote",
+        "code",
+        "checkbox_selected",
+        "checkbox_unselected",
+        "document_index",
+        "form",
+        "key_value_region",
+    }
 )
 _V1_SKIP_LABELS = frozenset(
-    {"text", "page_header", "page_footer", "footnote", "list_item", "section_header", "title", "code"}
+    {
+        "text",
+        "page_header",
+        "page_footer",
+        "footnote",
+        "list_item",
+        "section_header",
+        "title",
+        "code",
+        "caption",
+        "checkbox_selected",
+        "checkbox_unselected",
+        "document_index",
+        "form",
+        "key_value_region",
+    }
 )
 
 
@@ -151,6 +180,24 @@ def _v1_group_boxes(
     if n_items == 0:
         return []
 
+    sep_items = [
+        (
+            str(it.get("label", "")).lower(),
+            [
+                round(it["bbox"][0] * sx, 1),
+                round(it["bbox"][1] * sy, 1),
+                round(it["bbox"][2] * sx, 1),
+                round(it["bbox"][3] * sy, 1),
+            ],
+        )
+        for it in items
+        if it.get("bbox")
+        and len(it["bbox"]) == 4
+        and str(it.get("label", "")).lower() in ("section_header", "list_item", "title", "caption")
+    ]
+    sep_boxes = [box for _, box in sep_items]
+    header_boxes = [box for lbl, box in sep_items if lbl in ("section_header", "title")]
+
     dsu = _DisjointSetUnion(n_items)
     visual_containers = _detect_visual_containers(bgr)
 
@@ -159,11 +206,9 @@ def _v1_group_boxes(
         y_bot = max(b1[1], b2[1])
         if y_bot - y_top < 20:
             return False
-        for it in pixel_items:
-            if it["label"] in ("section_header", "list_item"):
-                ib = it["bbox"]
-                if ib[1] >= y_top - 5 and ib[3] <= y_bot + 5:
-                    return True
+        for ib in sep_boxes:
+            if ib[1] >= y_top - 5 and ib[3] <= y_bot + 5:
+                return True
         return False
 
     def is_cross_column(b1: list[float], b2: list[float]) -> bool:
@@ -175,11 +220,7 @@ def _v1_group_boxes(
         vc_area = (vc[2] - vc[0]) * (vc[3] - vc[1])
         if vc_area > 0.35 * img_w * img_h:
             continue
-        n_headers = sum(
-            1
-            for it in pixel_items
-            if it["label"] in ("section_header", "title") and _box_inside(it["bbox"], vc, tolerance=0.15)
-        )
+        n_headers = sum(1 for hb in header_boxes if _box_inside(hb, vc, tolerance=0.15))
         if n_headers >= 2:
             continue
         contained = [
@@ -425,14 +466,22 @@ class V2VectorVisionGrouper:
             if not shared_vc:
                 standalone_tables.add(i)
 
-        separator_boxes = [
-            it["bbox"]
-            for idx, it in enumerate(canon_items)
-            if it["label"] in _SEPARATOR_LABELS or idx in standalone_tables
-        ]
-
         def is_blocked_item(idx: int) -> bool:
-            return canon_items[idx]["label"] in _SEPARATOR_LABELS or idx in standalone_tables
+            it = canon_items[idx]
+            lbl = it["label"]
+            if lbl in _SEPARATOR_LABELS or idx in standalone_tables:
+                return True
+            return lbl not in ("picture", "figure", "formula", "table") and (it["bbox"][2] - it["bbox"][0]) >= 0.45 * canon_w
+
+        separator_boxes = [it["bbox"] for idx, it in enumerate(canon_items) if is_blocked_item(idx)]
+
+        def vc_hits_separator(vc: Sequence[float]) -> bool:
+            if any(_box_inside(sb, vc, tolerance=0.20) for sb in separator_boxes):
+                return True
+            return any(
+                bbox_inter_area(canon_items[ti]["bbox"], vc) / max(1.0, bbox_area(canon_items[ti]["bbox"])) >= 0.30
+                for ti in standalone_tables
+            )
 
         def has_intervening_separator(b1: Sequence[float], b2: Sequence[float]) -> bool:
             y_top = min(b1[3], b2[3])
@@ -472,13 +521,7 @@ class V2VectorVisionGrouper:
                 for it in canon_items
                 if it["label"] in ("section_header", "title") and _box_inside(it["bbox"], vc, tolerance=0.15)
             )
-            if n_headers >= 2:
-                continue
-            if any(
-                not _box_inside(canon_items[ti]["bbox"], vc, tolerance=0.15)
-                and bbox_inter_area(canon_items[ti]["bbox"], vc) / max(1.0, bbox_area(canon_items[ti]["bbox"])) >= 0.30
-                for ti in standalone_tables
-            ):
+            if n_headers >= 2 or vc_hits_separator(vc):
                 continue
             contained = [
                 i
@@ -560,10 +603,7 @@ class V2VectorVisionGrouper:
                 if bbox_iou(u_box, vc) > 0.6 or (
                     _box_inside(u_box, vc, tolerance=0.1) and vc_area < 1.35 * u_area
                 ):
-                    if not any(
-                        bbox_inter_area(canon_items[ti]["bbox"], vc) / max(1.0, bbox_area(canon_items[ti]["bbox"])) >= 0.30
-                        for ti in standalone_tables
-                    ):
+                    if not vc_hits_separator(vc):
                         u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
                     break
 
