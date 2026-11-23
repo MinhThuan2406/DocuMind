@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -236,6 +236,96 @@ def _link_diagram_text_elements(
             best_node["text_element_ids"] = ids
 
 
+def _locate_formula_targets(
+    page_elems: Sequence[dict[str, Any]],
+    regions: Sequence[SemanticRegion],
+) -> list[tuple[dict[str, Any], BBox]]:
+    targets: list[tuple[dict[str, Any], BBox]] = []
+    seen_ids: set[str] = set()
+    reg_matches: list[tuple[dict[str, Any], BBox, int]] = []
+    reg_counts: dict[int, int] = {}
+
+    for elem in page_elems:
+        meta = elem.setdefault("metadata", {})
+        eb = elem.get("bbox")
+        if not eb or len(eb) != 4:
+            continue
+        eb_box: BBox = (float(eb[0]), float(eb[1]), float(eb[2]), float(eb[3]))
+        if elem.get("type") == "formula" or meta.get("layout_label") == "formula":
+            targets.append((elem, eb_box))
+            seen_ids.add(str(elem["id"]))
+
+    if regions:
+        for elem in page_elems:
+            eid = str(elem["id"])
+            if eid in seen_ids:
+                continue
+            if elem.get("type") not in ("text", "formula") or elem.get("level", 1) != 1:
+                continue
+            if elem.get("source", "text_layer") != "text_layer":
+                continue
+            meta = elem.setdefault("metadata", {})
+            if meta.get("layout_label") is not None:
+                continue
+            eb = elem.get("bbox")
+            if not eb or len(eb) != 4:
+                continue
+            ex0, ey0, ex1, ey1 = float(eb[0]), float(eb[1]), float(eb[2]), float(eb[3])
+            elem_area = max(0.0, ex1 - ex0) * max(0.0, ey1 - ey0)
+            if elem_area <= 0.0:
+                continue
+
+            best_score: tuple[float, float] | None = None
+            best_idx: int | None = None
+            best_label: str | None = None
+            best_rb: Sequence[float] | None = None
+            for r_idx, reg in enumerate(regions):
+                if isinstance(reg, Mapping):
+                    rb = reg.get("bbox")
+                    label = reg.get("label")
+                    conf = float(reg.get("confidence", 1.0))
+                else:
+                    rb = getattr(reg, "bbox", None)
+                    label = getattr(reg, "label", None)
+                    conf = float(getattr(reg, "confidence", 1.0))
+                if not rb or len(rb) != 4 or not label:
+                    continue
+                ix = max(0.0, min(ex1, float(rb[2])) - max(ex0, float(rb[0])))
+                iy = max(0.0, min(ey1, float(rb[3])) - max(ey0, float(rb[1])))
+                ioa = (ix * iy) / elem_area
+                if ioa >= 0.60:
+                    score = (ioa, conf)
+                    if best_score is None or score > best_score:
+                        best_score = score
+                        best_idx = r_idx
+                        best_label = str(label).lower()
+                        best_rb = rb
+
+            if best_idx is None or best_label != "formula" or best_rb is None:
+                continue
+            meta["layout_label"] = "formula"
+            union_box: BBox = (
+                min(ex0, float(best_rb[0])),
+                min(ey0, float(best_rb[1])),
+                max(ex1, float(best_rb[2])),
+                max(ey1, float(best_rb[3])),
+            )
+            reg_matches.append((elem, union_box, best_idx))
+            reg_counts[best_idx] = reg_counts.get(best_idx, 0) + 1
+            seen_ids.add(eid)
+
+    for elem, union_box, r_idx in reg_matches:
+        eb = elem["bbox"]
+        crop_box = (
+            union_box
+            if reg_counts.get(r_idx, 0) == 1
+            else (float(eb[0]), float(eb[1]), float(eb[2]), float(eb[3]))
+        )
+        targets.append((elem, crop_box))
+
+    return targets
+
+
 def extract_ir(
     path: str | Path,
     *,
@@ -243,6 +333,7 @@ def extract_ir(
     ocr: bool = True,
     tables: bool = False,
     diagrams: bool = False,
+    formulas: bool = False,
     layout: str | LayoutBackend = "heron-onnx",
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
@@ -250,6 +341,7 @@ def extract_ir(
     ocr_lang: str | None = None,
     table_backend: str | TableExtractor = "auto",
     diagram_backend: str | DiagramExtractor = "vector_first",
+    formula_backend: str | Any = "auto",
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
@@ -300,9 +392,9 @@ def extract_ir(
             for p in profiles
             if not _uses_ocr_fallback(p, ocr)
             and p.kind != "raster"
-            and ((figures and p.figure_candidate) or (tables and p.table_candidate))
+            and ((figures and p.figure_candidate) or (tables and p.table_candidate) or formulas)
         ]
-        if (figures or tables) and candidate_pages:
+        if (figures or tables or formulas) and candidate_pages:
             from .figures import detect_figures
 
             figures_by_page = detect_figures(
@@ -314,10 +406,12 @@ def extract_ir(
                 pdfium_doc=ctx.pdfium,
                 pdf_hash=ctx.pdf_hash,
                 warnings_out=warnings,
-                semantic_regions_out=semantic_regions if structure else None,
+                semantic_regions_out=semantic_regions if (structure or formulas) else None,
                 page_boxes={p: page_boxes[p] for p in candidate_pages},
             )
-            if not figures:
+            if not figures and not tables:
+                figures_by_page = {}
+            elif not figures:
                 figures_by_page = {
                     pno: [box for box in boxes if box.kind == "table"]
                     for pno, boxes in figures_by_page.items()
@@ -395,11 +489,14 @@ def extract_ir(
         elements: list[dict[str, Any]] = []
         extracted_tables: list[dict[str, Any]] = []
         extracted_diagrams: list[dict[str, Any]] = []
+        extracted_formulas: list[dict[str, Any]] = []
         elem_counter = 0
         tbl_counter = 0
         diag_counter = 0
+        fml_counter = 0
         resolved_table_backend: TableExtractor | None = None
         resolved_diagram_backend: DiagramExtractor | None = None
+        resolved_formula_backend: Any = None
 
         horiz_rules_by_page: dict[int, tuple[BBox, ...]] = {}
         for prof in profiles:
@@ -518,10 +615,55 @@ def extract_ir(
                         _link_diagram_text_elements(diag_dict, fig_elem["id"], page_elems)
                         extracted_diagrams.append(diag_dict)
 
+            if formulas:
+                formula_targets = _locate_formula_targets(page_elems, semantic_regions.get(prof.page, ()))
+                if formula_targets:
+                    from .formulas import extract_formulas_on_page, formula_to_ir_dict
+
+                    if resolved_formula_backend is None:
+                        resolved_formula_backend = (
+                            get_backend("formula", formula_backend, device=device)
+                            if isinstance(formula_backend, str)
+                            else formula_backend
+                        )
+                    prev_fml_stats = getattr(resolved_formula_backend, "last_stats", None)
+                    parsed_formulas = extract_formulas_on_page(
+                        ctx.pdfium[prof.page - 1],
+                        [crop_box for _, crop_box in formula_targets],
+                        extractor=resolved_formula_backend,
+                        raster_page=raster_by_page.get(prof.page),
+                        device=device,
+                    )
+                    _collect_stats_warnings(resolved_formula_backend, prev_fml_stats, warnings)
+                    for (fml_elem, _), parsed in zip(formula_targets, parsed_formulas):
+                        if not parsed.latex.strip():
+                            warnings.append({
+                                "page": prof.page,
+                                "code": "formula_parse_empty",
+                                "severity": "warning",
+                                "reason": "formula_extractor_returned_empty_latex",
+                                "fallback": None,
+                            })
+                            continue
+                        fml_counter += 1
+                        fml_id = f"fml_{fml_counter:04d}"
+                        fml_elem["metadata"]["formula_id"] = fml_id
+                        fml_elem["metadata"]["latex"] = parsed.latex
+                        fml_dict = formula_to_ir_dict(
+                            fml_id,
+                            fml_elem["id"],
+                            prof.page,
+                            source_file,
+                            tuple(fml_elem["bbox"]),
+                            parsed,
+                        )
+                        extracted_formulas.append(fml_dict)
+
             if (
                 any(float(e["confidence"]) < 0.70 for e in page_elems)
                 or any(float(t["confidence"]) < 0.70 for t in extracted_tables if t["page"] == prof.page)
                 or any(float(d["confidence"]) < 0.70 for d in extracted_diagrams if d["page"] == prof.page)
+                or any(float(f["confidence"]) < 0.70 for f in extracted_formulas if f["page"] == prof.page)
             ):
                 warnings.append({
                     "page": prof.page,
@@ -555,6 +697,7 @@ def extract_ir(
         "elements": elements,
         "tables": extracted_tables,
         "diagrams": extracted_diagrams,
+        "formulas": extracted_formulas,
     }
     if structure:
         apply_structure(ir, toc=toc, semantic_regions=semantic_regions, inplace=True)

@@ -39,9 +39,9 @@ def test_no_docling_or_torch_on_native_text_ir():
         ir = extract_ir(pdf_path, figures=False, ocr=False)
         assert "docling" not in sys.modules
         assert "torch" not in sys.modules
-        assert set(ir) == {"doc_id", "source_file", "doc_type", "metadata", "elements", "tables", "diagrams"}
+        assert set(ir) == {"doc_id", "source_file", "doc_type", "metadata", "elements", "tables", "diagrams", "formulas"}
         assert ir["doc_type"] == "pdf"
-        assert ir["tables"] == [] and ir["diagrams"] == []
+        assert ir["tables"] == [] and ir["diagrams"] == [] and ir["formulas"] == []
         assert json.loads(json.dumps(ir)) == ir
 
 

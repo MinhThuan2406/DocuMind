@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper", "table", "diagram")
+VALID_KINDS = ("layout", "detector", "ocr", "reader", "grouper", "table", "diagram", "formula")
 Factory = Callable[..., Any]
 
 _FACTORIES: dict[tuple[str, str], Factory] = {}
@@ -40,6 +40,9 @@ def _ensure_builtins() -> None:
     _FACTORIES[("table", "pdfplumber")] = _pdfplumber_table_factory
     _FACTORIES[("table", "auto")] = _auto_table_factory
     _FACTORIES[("diagram", "vector_first")] = _vector_first_diagram_factory
+    _FACTORIES[("formula", "unimernet-onnx")] = _unimernet_onnx_factory
+    _FACTORIES[("formula", "rapid-latex-ocr")] = _rapid_latex_ocr_factory
+    _FACTORIES[("formula", "auto")] = _unimernet_onnx_factory
 
 
 def _heron_detector_factory(*, device: str = "auto", **_extra: Any) -> Any:
@@ -196,6 +199,46 @@ def _vector_first_diagram_factory(**_extra: Any) -> Any:
     from ..diagrams import VectorFirstDiagramExtractor
 
     return VectorFirstDiagramExtractor()
+
+
+def _unimernet_onnx_factory(
+    *,
+    device: str = "cpu",
+    tier: str = "small",
+    model_path: str | None = None,
+    max_tokens: int = 512,
+    **_extra: Any,
+) -> Any:
+    from .formula_onnx import UnimernetOnnxBackend
+
+    return UnimernetOnnxBackend(
+        device=device,
+        tier=tier,
+        model_path=model_path,
+        max_tokens=max_tokens,
+    )
+
+
+def _rapid_latex_ocr_factory(
+    *,
+    device: str = "auto",
+    model_path: str | None = None,
+    image_resizer_path: str | None = None,
+    encoder_path: str | None = None,
+    decoder_path: str | None = None,
+    tokenizer_json: str | None = None,
+    **_extra: Any,
+) -> Any:
+    from .formula_onnx import RapidLatexOcrBackend
+
+    return RapidLatexOcrBackend(
+        device=device,
+        model_path=model_path,
+        image_resizer_path=image_resizer_path,
+        encoder_path=encoder_path,
+        decoder_path=decoder_path,
+        tokenizer_json=tokenizer_json,
+    )
 
 
 def register(kind: str, name: str, factory: Factory) -> None:
