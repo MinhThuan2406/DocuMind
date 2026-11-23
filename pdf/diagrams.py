@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 import time
 from collections import defaultdict
@@ -1812,6 +1813,7 @@ class VectorFirstDiagramExtractor:
         words: Sequence[Any] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = 150,
     ) -> list[ExtractedDiagram]:
@@ -1828,7 +1830,12 @@ class VectorFirstDiagramExtractor:
             nonlocal ocr_rec, ocr_checked
             if not ocr_checked:
                 ocr_checked = True
-                ocr_rec = get_backend("ocr", ocr_backend, device=eff_device)
+                ocr_rec = get_backend(
+                    "ocr",
+                    ocr_backend,
+                    device=eff_device,
+                    **({"lang": ocr_lang} if ocr_lang is not None else {}),
+                )
             return ocr_rec
 
         pbox = page_bbox(page)
@@ -1895,12 +1902,18 @@ def extract_diagrams_on_page(
     is_raster: bool = False,
     extractor: str | DiagramExtractor = "vector_first",
     ocr_backend: str = "rapidocr-onnx",
+    ocr_lang: str | None = None,
     device: str = "auto",
     dpi: int = 150,
 ) -> list[ExtractedDiagram]:
     if not figure_boxes_pt:
         return []
     backend = get_backend("diagram", extractor, device=device) if isinstance(extractor, str) else extractor
+    extra_kwargs: dict[str, Any] = {}
+    if ocr_lang is not None:
+        params = inspect.signature(backend.extract_from_page).parameters
+        if "ocr_lang" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            extra_kwargs["ocr_lang"] = ocr_lang
     return list(
         backend.extract_from_page(
             page,
@@ -1910,6 +1923,7 @@ def extract_diagrams_on_page(
             ocr_backend=ocr_backend,
             device=device,
             dpi=dpi,
+            **extra_kwargs,
         )
     )
 

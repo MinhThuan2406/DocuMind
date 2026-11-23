@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
@@ -365,12 +366,100 @@ def _mask_roman_numeral(text: str) -> str:
 
 
 def _normalize_band_text(text: str) -> str:
-    masked = _mask_roman_numeral(re.sub(r"\d+", "#", text))
-    return re.sub(r"\s+", " ", masked).strip().lower()
+    normed = unicodedata.normalize("NFKC", text)
+    masked = _mask_roman_numeral(re.sub(r"\d+", "#", normed))
+    return re.sub(r"\s+", " ", masked).strip().casefold()
 
 
 def _norm_toc_title(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", " ".join(text.split()).lower()).strip()
+    normed = unicodedata.normalize("NFKC", text).casefold()
+    chars = [ch if unicodedata.category(ch)[0] in ("L", "N", "M") else " " for ch in normed]
+    return " ".join("".join(chars).split())
+
+
+def _is_matchable_toc_title(norm: str) -> bool:
+    compact = norm.replace(" ", "")
+    return len(compact) >= 2 and any(ch.isalpha() for ch in compact)
+
+
+def _table_plain_text(tbl: Mapping[str, Any]) -> str:
+    rows: dict[int, list[tuple[int, int, str]]] = {}
+    for idx, cell in enumerate(tbl.get("cells") or ()):
+        if not isinstance(cell, Mapping):
+            continue
+        txt = str(cell.get("text") or "").strip()
+        if not txt:
+            continue
+        rows.setdefault(int(cell.get("row", 0)), []).append((int(cell.get("col", 0)), idx, txt))
+    lines: list[str] = []
+    for r in sorted(rows):
+        row_cells = sorted(rows[r], key=lambda item: (item[0], item[1]))
+        lines.append(" ".join(txt for _, _, txt in row_cells))
+    return "\n".join(lines)
+
+
+def extract_plain_text(
+    ir: Mapping[str, Any],
+    *,
+    include_furniture: bool = False,
+) -> dict[int, str]:
+    tables_by_id: dict[str, Mapping[str, Any]] = {}
+    for tbl in ir.get("tables") or ():
+        if isinstance(tbl, Mapping) and tbl.get("id") is not None:
+            tables_by_id[str(tbl["id"])] = tbl
+
+    page_parts: dict[int, list[str]] = {}
+    for pmeta in (ir.get("metadata") or {}).get("pages") or ():
+        if isinstance(pmeta, Mapping) and "number" in pmeta:
+            page_parts.setdefault(int(pmeta["number"]), [])
+
+    level1_by_page: dict[int, list[tuple[int, int, Mapping[str, Any]]]] = {}
+    children_by_parent: dict[str, list[tuple[int, int, Mapping[str, Any]]]] = {}
+    for idx, elem in enumerate(ir.get("elements") or ()):
+        if not isinstance(elem, Mapping):
+            continue
+        lvl = int(elem.get("level", 1))
+        ro = int(elem.get("reading_order", idx))
+        if lvl == 1:
+            pno = int(elem.get("page", 0))
+            page_parts.setdefault(pno, [])
+            level1_by_page.setdefault(pno, []).append((ro, idx, elem))
+        elif lvl == 2 and elem.get("parent_id") is not None:
+            children_by_parent.setdefault(str(elem["parent_id"]), []).append((ro, idx, elem))
+
+    for pno, entries in level1_by_page.items():
+        entries.sort(key=lambda item: (item[0], item[1]))
+        parts = page_parts[pno]
+        for _, _, elem in entries:
+            meta = elem.get("metadata") or {}
+            if not include_furniture and (
+                meta.get("role") in ("page_header", "page_footer")
+                or meta.get("layout_label") in ("page_header", "page_footer")
+            ):
+                continue
+            etype = elem.get("type")
+            if etype == "text":
+                txt = str(elem.get("text") or "")
+                if txt.strip():
+                    parts.append(txt)
+            elif etype == "table":
+                tid = meta.get("table_id") or elem.get("table_id")
+                tbl = tables_by_id.get(str(tid)) if tid is not None else None
+                tbl_txt = _table_plain_text(tbl) if tbl is not None else ""
+                if tbl_txt:
+                    parts.append(tbl_txt)
+                    continue
+                children = children_by_parent.get(str(elem.get("id") or ""), ())
+                if children:
+                    child_lines = [
+                        str(c.get("text") or "")
+                        for _, _, c in sorted(children, key=lambda item: (item[0], item[1]))
+                        if str(c.get("text") or "").strip()
+                    ]
+                    if child_lines:
+                        parts.append("\n".join(child_lines))
+
+    return {pno: "\n".join(parts) for pno, parts in sorted(page_parts.items())}
 
 
 def tag_running_headers_footers(
@@ -379,7 +468,9 @@ def tag_running_headers_footers(
     toc_titles: Collection[str] = (),
 ) -> None:
     num_pages = len(page_heights)
-    protected_titles = {t for raw in toc_titles if (t := _norm_toc_title(raw))}
+    protected_titles = {
+        t for raw in toc_titles if (t := _norm_toc_title(raw)) and _is_matchable_toc_title(t)
+    }
     even_pages = {p for p in page_heights if p % 2 == 0}
     odd_pages = {p for p in page_heights if p % 2 == 1}
     candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}

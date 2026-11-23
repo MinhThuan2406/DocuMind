@@ -148,10 +148,11 @@ class PdfPlumberTableExtractor:
         words: Sequence[Any] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = 200,
     ) -> list[ExtractedTable]:
-        del words, is_raster, ocr_backend, device, dpi
+        del words, is_raster, ocr_backend, ocr_lang, device, dpi
         t0 = time.perf_counter()
         out: list[ExtractedTable] = []
         for box in table_boxes_pt:

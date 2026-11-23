@@ -590,6 +590,93 @@ def test_reading_order_one_to_many_containment_and_no_gt_order_leak():
     assert kendall_tau_matched(giant_matched, ["l1", "l2", "r1", "r2"]) < 1.0
 
 
+def test_rapidocr_lang_option_and_ir_forwarding():
+    from pdf.backends import get as get_backend, reset_cache
+    from pdf.backends.rapidocr import RapidOcrRecognizer
+    from pdf.models import ExtractedDiagram, ExtractedTable, TableCell
+
+    rec_default = RapidOcrRecognizer()
+    rec_ja = RapidOcrRecognizer(lang="ja")
+    assert rec_default.lang is None
+    assert rec_ja.lang == "japan"
+    assert rec_ja.ensure_loaded() is True
+    assert str(rec_ja._reader.cfg.Rec.lang_type) == "japan"
+
+    reset_cache()
+    try:
+        cached_default = get_backend("ocr", "rapidocr-onnx")
+        cached_ja = get_backend("ocr", "rapidocr-onnx", lang="ja")
+        assert cached_default is not cached_ja
+        assert cached_ja.lang == "japan"
+
+        seen_reader_langs: list[str | None] = []
+        seen_table_langs: list[str | None] = []
+
+        class _Det:
+            def detect(self, image):
+                w, h = float(image.width), float(image.height)
+                return [
+                    LayoutItem("text", (10.0, 10.0, w * 0.4, h * 0.2), 0.9),
+                    LayoutItem("table", (10.0, h * 0.25, w * 0.8, h * 0.55), 0.9),
+                    LayoutItem("picture", (10.0, h * 0.6, w * 0.8, h * 0.9), 0.9),
+                ]
+
+        class _Ocr:
+            def __init__(self, lang=None):
+                seen_reader_langs.append(lang)
+
+            def recognize(self, image, regions=None):
+                del image, regions
+                return [OcrLine("日本語テスト", (12.0, 12.0, 120.0, 32.0), 0.95)]
+
+        class _TblWithLang:
+            last_stats = None
+
+            def extract_from_page(self, _page, table_boxes_pt, *, ocr_lang=None, **_kw):
+                seen_table_langs.append(ocr_lang)
+                return [
+                    ExtractedTable(
+                        bbox=table_boxes_pt[0],
+                        num_rows=1,
+                        num_cols=1,
+                        cells=(TableCell(0, 0, 1, 1, "表", None, False),),
+                        source="auto_tatr",
+                        confidence=0.9,
+                    )
+                ]
+
+        class _LegacyDiag:
+            last_stats = None
+
+            def extract_from_page(self, _page, diagram_boxes_pt, *, words=None, is_raster=False, ocr_backend="rapidocr-onnx", device=None, dpi=150):
+                del words, is_raster, ocr_backend, device, dpi
+                return [ExtractedDiagram(bbox=diagram_boxes_pt[0], diagram_type="block_diagram")]
+
+        register("detector", "fake_lang_det", lambda **_kw: _Det())
+        register("ocr", "fake_lang_ocr", lambda **kw: _Ocr(lang=kw.get("lang")))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "ja_scan.pdf"
+            _make_raster_pdf(pdf_path, text="JP")
+            ir = extract_ir(
+                pdf_path,
+                figures=False,
+                ocr=True,
+                tables=True,
+                diagrams=True,
+                layout="fake_lang_det",
+                ocr_backend="fake_lang_ocr",
+                ocr_lang="ja",
+                table_backend=_TblWithLang(),
+                diagram_backend=_LegacyDiag(),
+            )
+            assert seen_reader_langs == ["ja"], seen_reader_langs
+            assert seen_table_langs == ["ja"], seen_table_langs
+            assert any(e["text"] == "日本語テスト" for e in ir["elements"])
+    finally:
+        reset_cache()
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

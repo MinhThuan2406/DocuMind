@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeVar
@@ -11,9 +12,17 @@ from .models import BBox, TextBlock, TextSource, Word
 T = TypeVar("T")
 
 _MAX_XY_DEPTH = 64
-_UNICODE_BULLETS = frozenset("•●○◦▪▫‣⁃")
+_UNICODE_BULLETS = frozenset("•●○◦▪▫‣⁃・･")
 _ASCII_BULLETS = frozenset(("-", "–", "—", "*", "+"))
-_LIST_MARKER_RE = re.compile(r"^(?:\d{1,3}[.)]|\(\d{1,3}\)|[a-zA-Z]\)|\[[A-Za-z0-9_.:-]{1,40}\])$")
+_LIST_MARKER_RE = re.compile(
+    r"^(?:"
+    r"\d{1,3}[.)、:]"
+    r"|\(\d{1,3}\)"
+    r"|\([^\W\d_]\)"
+    r"|(?:[ivx]{1,4}|[IVX]{1,4})[.)]"
+    r"|\[[A-Za-z0-9_.:-]{1,40}\]"
+    r")$"
+)
 _ROT_CHAR_GAP_RATIO = 0.35
 
 
@@ -138,6 +147,64 @@ def _rot_chars_to_words(
     return words
 
 
+def raw_words_to_words(
+    items: Sequence[Mapping[str, Any]],
+    bounds: BBox,
+    *,
+    min_font_size: float = 0.0,
+) -> list[Word]:
+    words: list[Word] = []
+    for item in items:
+        raw_box = (float(item["x0"]), float(item["top"]), float(item["x1"]), float(item["bottom"]))
+        box = clip_box(raw_box, bounds) or raw_box
+        font_size = float(item.get("size", 0.0) or 0.0)
+        bold = _is_bold_font(str(item.get("fontname", "")))
+        upright = bool(item.get("upright", True))
+        if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
+            continue
+        words.append(
+            Word(
+                text=str(item["text"]),
+                bbox=box,
+                font_size=round(font_size, 2),
+                bold=bold,
+                upright=upright,
+                direction=str(item.get("direction", "ltr")),
+            )
+        )
+    return words
+
+
+def extract_horiz_rules(
+    page: Any,
+    bounds: BBox,
+    *,
+    max_thickness: float = 6.0,
+) -> tuple[BBox, ...]:
+    pw = max(0.0, bounds[2] - bounds[0])
+    ph = max(0.0, bounds[3] - bounds[1])
+    if pw <= 0.0 or ph <= 0.0:
+        return ()
+    rules: list[BBox] = []
+    for obj in (
+        *getattr(page, "lines", ()),
+        *getattr(page, "rects", ()),
+        *getattr(page, "curves", ()),
+    ):
+        raw_box = (float(obj["x0"]), float(obj["top"]), float(obj["x1"]), float(obj["bottom"]))
+        box = clip_box(raw_box, bounds)
+        if box is None:
+            continue
+        w = box[2] - box[0]
+        h = box[3] - box[1]
+        if w <= 0.0 or h > max_thickness:
+            continue
+        if w >= 0.96 * pw and h >= 0.96 * ph:
+            continue
+        rules.append(box)
+    return tuple(rules)
+
+
 def extract_words(
     page: Any,
     *,
@@ -165,25 +232,7 @@ def extract_words(
 
     if not items and not rot_words:
         return []
-    words: list[Word] = []
-    for item in items:
-        raw_box = (float(item["x0"]), float(item["top"]), float(item["x1"]), float(item["bottom"]))
-        box = clip_box(raw_box, bounds) or raw_box
-        font_size = float(item.get("size", 0.0))
-        bold = _is_bold_font(str(item.get("fontname", "")))
-        upright = bool(item.get("upright", True))
-        if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
-            continue
-        words.append(
-            Word(
-                text=str(item["text"]),
-                bbox=box,
-                font_size=round(font_size, 2),
-                bold=bold,
-                upright=upright,
-                direction=str(item.get("direction", "ltr")),
-            )
-        )
+    words = raw_words_to_words(items, bounds, min_font_size=min_font_size)
     words.extend(rot_words)
     return words
 
@@ -315,31 +364,55 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
     return horiz, vert
 
 
-def _words_to_line_segments(
+def _words_to_raw_lines(
     words: Sequence[Word],
     *,
     median_font_size: float = 0.0,
-) -> list[tuple[BBox, list[Word]]]:
+) -> list[list[tuple[BBox, list[Word]]]]:
     if not words:
         return []
     ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
     lines = cluster_by_overlap(words, lambda w: (w.bbox[1], w.bbox[3]), lambda w: w.bbox[0])
 
-    segments: list[tuple[BBox, list[Word]]] = []
+    raw_lines: list[list[tuple[BBox, list[Word]]]] = []
     for line in lines:
         line.sort(key=lambda w: w.bbox[0])
+        segs: list[tuple[BBox, list[Word]]] = []
         cur: list[Word] = [line[0]]
         for word in line[1:]:
             prev = cur[-1]
             ref_size = max(prev.font_size, word.font_size, prev.bbox[3] - prev.bbox[1], 0.6 * ref_fs, 1.0)
             gap_thr = max(1.8 * ref_size, 1.8 * ref_fs)
             if word.bbox[0] - prev.bbox[2] > gap_thr:
-                segments.append((_union_bbox([w.bbox for w in cur]), cur))
+                segs.append((_union_bbox([w.bbox for w in cur]), cur))
                 cur = [word]
             else:
                 cur.append(word)
-        segments.append((_union_bbox([w.bbox for w in cur]), cur))
-    return segments
+        segs.append((_union_bbox([w.bbox for w in cur]), cur))
+        raw_lines.append(segs)
+    raw_lines.sort(key=lambda segs: min(s[0][1] for s in segs))
+    return raw_lines
+
+
+def extract_raw_line_segments(
+    words: Sequence[Word],
+    page_rect: BBox | None = None,
+) -> list[list[tuple[BBox, list[Word]]]]:
+    if not words:
+        return []
+    horiz_words, _ = _partition_orientation(words)
+    if not horiz_words:
+        return []
+    median_fs = _median_font_size(horiz_words, page_rect)
+    return _words_to_raw_lines(horiz_words, median_font_size=median_fs)
+
+
+def _words_to_line_segments(
+    words: Sequence[Word],
+    *,
+    median_font_size: float = 0.0,
+) -> list[tuple[BBox, list[Word]]]:
+    return [seg for line in _words_to_raw_lines(words, median_font_size=median_font_size) for seg in line]
 
 
 def _vertical_words_to_blocks(
@@ -415,21 +488,258 @@ def _horiz_overlap(a: BBox, b: BBox) -> bool:
     return min(a[2], b[2]) > max(a[0], b[0])
 
 
-def _is_list_item_start(line_words: Sequence[Word]) -> bool:
+def _is_list_item_start(line_words: Sequence[Word], *, has_trailing: bool = False) -> bool:
     if not line_words:
         return False
-    first = line_words[0].text.strip()
-    if not first:
+    raw = line_words[0].text.strip()
+    if not raw:
         return False
-    if first[0] in _UNICODE_BULLETS:
+    if raw[0] in _UNICODE_BULLETS:
         return True
-    if first in _ASCII_BULLETS and len(line_words) >= 2:
+    has_body = has_trailing or len(line_words) >= 2
+    if len(raw) == 1:
+        if raw in _ASCII_BULLETS and has_body:
+            return True
+        if unicodedata.category(raw) in ("No", "So") and has_body:
+            return True
+    nfkc = unicodedata.normalize("NFKC", raw)
+    if not nfkc:
+        return False
+    if _LIST_MARKER_RE.match(nfkc):
         return True
-    return bool(_LIST_MARKER_RE.match(first))
+    return bool(
+        len(nfkc) == 2
+        and nfkc[0].isalpha()
+        and unicodedata.category(nfkc[1]).startswith("P")
+        and has_body
+    )
+
+
+def _is_leader_token(text: str, *, min_chars: int = 3) -> bool:
+    s = unicodedata.normalize("NFKC", text).strip()
+    chars = [ch for ch in s if not ch.isspace()]
+    if len(chars) < min_chars:
+        return False
+    return all(unicodedata.category(ch)[0] in ("P", "S") for ch in chars) and len(set(chars)) <= 2
+
+
+def _is_leader_segment(words: Sequence[Word]) -> bool:
+    chars = [
+        ch
+        for w in words
+        for ch in unicodedata.normalize("NFKC", w.text).strip()
+        if not ch.isspace()
+    ]
+    if not chars:
+        return False
+    return all(unicodedata.category(ch)[0] in ("P", "S") for ch in chars) and len(set(chars)) <= 2
+
+
+def _is_short_right_token(words: Sequence[Word], box: BBox, ref_fs: float) -> bool:
+    if len(words) > 2 or (box[2] - box[0]) > 5.0 * ref_fs:
+        return False
+    total_chars = sum(len(unicodedata.normalize("NFKC", w.text).strip()) for w in words)
+    return 0 < total_chars <= 12
+
+
+def _has_stroke_leader(
+    lb: BBox,
+    rb: BBox,
+    horiz_rules: Sequence[BBox],
+    ref_fs: float,
+    page_w: float,
+) -> bool:
+    if not horiz_rules:
+        return False
+    gap_w = rb[0] - lb[2]
+    if gap_w <= 0.0:
+        return False
+    y_lo = min(lb[1], rb[1]) - 0.2 * ref_fs
+    y_hi = max(lb[3], rb[3]) + 0.5 * ref_fs
+    max_h = max(3.5, 0.4 * ref_fs)
+    for rx0, ry0, rx1, ry1 in horiz_rules:
+        rw = rx1 - rx0
+        if (ry1 - ry0) > max_h or (page_w > 0.0 and rw >= 0.9 * page_w):
+            continue
+        if ry0 < y_lo or ry1 > y_hi:
+            continue
+        if rx0 >= lb[2] - 0.8 * ref_fs and rx1 <= rb[0] + 0.8 * ref_fs and rw >= 0.4 * gap_w:
+            return True
+    return False
+
+
+def _merge_line_segments_horizontally(
+    raw_lines: list[list[tuple[BBox, list[Word]]]],
+    *,
+    page_rect: BBox | None,
+    median_font_size: float,
+    horiz_rules: Sequence[BBox] = (),
+) -> list[tuple[BBox, list[Word], float | None]]:
+    if not raw_lines:
+        return []
+    ref_fs = median_font_size if median_font_size > 0.0 else 10.0
+    align_tol = max(0.8 * ref_fs, 2.0)
+    page_w = max(0.0, page_rect[2] - page_rect[0]) if page_rect is not None else 0.0
+
+    line_bounds = [(min(s[0][1] for s in ln), max(s[0][3] for s in ln)) for ln in raw_lines]
+
+    # Collect repeating list-marker tab-stops (A2) and right-aligned short token edges (B2).
+    tab_pairs: list[tuple[float, float]] = []
+    right_token_lines: list[tuple[int, BBox]] = []
+    wide_segs: list[tuple[int, BBox]] = []
+    for li, ln in enumerate(raw_lines):
+        for si, (sb, sw) in enumerate(ln):
+            w_seg = sb[2] - sb[0]
+            if w_seg > 5.0 * ref_fs:
+                wide_segs.append((li, sb))
+            if si + 1 < len(ln):
+                s_fs, _ = _segment_style(sw)
+                if w_seg <= 3.5 * max(s_fs, ref_fs) and _is_list_item_start(sw, has_trailing=True):
+                    tab_pairs.append((sb[0], ln[si + 1][0][0]))
+            if si >= 1 and _is_short_right_token(sw, sb, ref_fs):
+                right_token_lines.append((li, sb))
+
+    def _is_repeating_tab_pair(lx0: float, rx0: float) -> bool:
+        return sum(1 for px, py in tab_pairs if abs(px - lx0) <= align_tol and abs(py - rx0) <= align_tol) >= 2
+
+    def _is_repeating_right_edge(li: int, lb: BBox, rb: BBox) -> bool:
+        matching_lines = {
+            idx for idx, b in right_token_lines if abs(b[2] - rb[2]) <= align_tol
+        }
+        if len(matching_lines) < 3:
+            return False
+        for _, wb in wide_segs:
+            if (wb[2] - wb[0]) > 6.0 * ref_fs and abs(wb[2] - rb[2]) <= align_tol and wb[0] < rb[0] - 2.0 * ref_fs:
+                return False
+            if abs(wb[0] - rb[0]) <= align_tol:
+                return False
+        band_y0 = min(line_bounds[idx][0] for idx in matching_lines) - 3.0 * ref_fs
+        band_y1 = max(line_bounds[idx][1] for idx in matching_lines) + 3.0 * ref_fs
+        gutter_hits = 0
+        for idx in range(len(raw_lines)):
+            if line_bounds[idx][1] < band_y0 or line_bounds[idx][0] > band_y1:
+                continue
+            has_wide_left = any(
+                (b[2] - b[0]) > 3.5 * ref_fs and b[2] <= rb[0] + 0.5 * ref_fs for b, _ in raw_lines[idx]
+            )
+            has_wide_right = any(
+                (b[2] - b[0]) > 3.5 * ref_fs and b[0] >= lb[2] - 0.5 * ref_fs for b, _ in raw_lines[idx]
+            )
+            if has_wide_left and has_wide_right:
+                gutter_hits += 1
+        return gutter_hits < 2
+
+    def _has_prose_left_column(li: int, lx0: float, rx0: float, max_label_w: float) -> bool:
+        ly0, ly1 = line_bounds[li]
+        for idx in range(len(raw_lines)):
+            if idx == li:
+                continue
+            if line_bounds[idx][1] < ly0 - 5.0 * ref_fs or line_bounds[idx][0] > ly1 + 5.0 * ref_fs:
+                continue
+            for b, _ in raw_lines[idx]:
+                if abs(b[0] - lx0) <= align_tol and (b[2] - b[0]) > max_label_w and b[2] <= rx0 + 0.5 * ref_fs:
+                    return True
+        return False
+
+    def _has_hanging_indent_next_line(li: int, lb: BBox, rb: BBox) -> bool:
+        if li + 1 >= len(raw_lines):
+            return False
+        if line_bounds[li + 1][0] - line_bounds[li][1] > 1.8 * ref_fs:
+            return False
+        next_first_box = raw_lines[li + 1][0][0]
+        return next_first_box[0] > lb[2] - 0.2 * ref_fs and abs(next_first_box[0] - rb[0]) <= align_tol
+
+    out: list[tuple[BBox, list[Word], float | None]] = []
+    for li, ln in enumerate(raw_lines):
+        i = 0
+        while i < len(ln):
+            cur_box, cur_words = ln[i]
+            cur_body_x0: float | None = None
+            j = i + 1
+            while j < len(ln):
+                nxt_box, nxt_words = ln[j]
+                l_fs, _ = _segment_style(cur_words)
+                r_fs, _ = _segment_style(nxt_words)
+                fs_tol = max(0.25 * max(l_fs, r_fs, ref_fs), 1.5)
+                merged_this = False
+
+                # B1a: intermediate leader-only segments between cur and a later segment.
+                if _is_leader_segment(nxt_words):
+                    k = j
+                    leader_chars = 0
+                    while k < len(ln) and _is_leader_segment(ln[k][1]):
+                        leader_chars += sum(len(unicodedata.normalize("NFKC", w.text).strip()) for w in ln[k][1])
+                        k += 1
+                    if k < len(ln) and leader_chars >= 3:
+                        t_box, t_words = ln[k]
+                        t_fs, _ = _segment_style(t_words)
+                        if abs(l_fs - t_fs) <= max(0.25 * max(l_fs, t_fs, ref_fs), 1.5):
+                            combined = sorted(
+                                [w for idx_m in range(i, k + 1) for w in (cur_words if idx_m == i else ln[idx_m][1])],
+                                key=lambda w: w.bbox[0],
+                            )
+                            cur_box = _union_bbox([w.bbox for w in combined])
+                            cur_words = combined
+                            j = k + 1
+                            merged_this = True
+                if merged_this:
+                    continue
+
+                if abs(l_fs - r_fs) > fs_tol:
+                    break
+
+                # B1b: leader attached to end of left or start of right, or stroke leader in gap.
+                has_char_leader = (
+                    (len(cur_words) >= 2 and _is_leader_token(cur_words[-1].text))
+                    or (len(nxt_words) >= 2 and _is_leader_token(nxt_words[0].text))
+                )
+                has_stroke = _has_stroke_leader(cur_box, nxt_box, horiz_rules, ref_fs, page_w)
+                if has_char_leader or has_stroke:
+                    combined = sorted(cur_words + nxt_words, key=lambda w: w.bbox[0])
+                    cur_box = _union_bbox([w.bbox for w in combined])
+                    cur_words = combined
+                    j += 1
+                    continue
+
+                # A: hanging-indent label-body merge (only on the initial unmerged left label).
+                if j == i + 1:
+                    max_label_w = 3.5 * max(l_fs, ref_fs)
+                    if (
+                        (cur_box[2] - cur_box[0]) <= max_label_w
+                        and abs(l_fs - r_fs) <= max(0.2 * max(l_fs, r_fs, ref_fs), 1.5)
+                        and not _has_prose_left_column(li, cur_box[0], nxt_box[0], max_label_w)
+                    ):
+                        has_indent = _has_hanging_indent_next_line(li, cur_box, nxt_box)
+                        has_list_tab = _is_list_item_start(cur_words, has_trailing=True) and _is_repeating_tab_pair(
+                            cur_box[0], nxt_box[0]
+                        )
+                        if has_indent or has_list_tab:
+                            cur_body_x0 = nxt_box[0]
+                            combined = sorted(cur_words + nxt_words, key=lambda w: w.bbox[0])
+                            cur_box = _union_bbox([w.bbox for w in combined])
+                            cur_words = combined
+                            j += 1
+                            continue
+
+                # B2: repeating short right-aligned token along shared right edge.
+                if _is_short_right_token(nxt_words, nxt_box, ref_fs) and _is_repeating_right_edge(
+                    li, cur_box, nxt_box
+                ):
+                    combined = sorted(cur_words + nxt_words, key=lambda w: w.bbox[0])
+                    cur_box = _union_bbox([w.bbox for w in combined])
+                    cur_words = combined
+                    j += 1
+                    continue
+
+                break
+
+            out.append((cur_box, cur_words, cur_body_x0))
+            i = j
+    return out
 
 
 def _segments_to_blocks(
-    segments: list[tuple[BBox, list[Word]]],
+    segments: Sequence[tuple[BBox, list[Word]] | tuple[BBox, list[Word], float | None]],
     *,
     source: TextSource,
     confidence: float,
@@ -438,30 +748,45 @@ def _segments_to_blocks(
     if not segments:
         return []
     ref_fs = median_font_size if median_font_size > 0.0 else 10.0
-    ordered = sorted(segments, key=lambda s: (s[0][1], s[0][0]))
-    groups: list[list[tuple[BBox, list[Word], float, bool]]] = []
-    for bbox, line_words in ordered:
+    norm_segs: list[tuple[BBox, list[Word], float | None]] = [
+        (s[0], s[1], s[2]) if len(s) == 3 else (s[0], s[1], None) for s in segments
+    ]
+    ordered = sorted(norm_segs, key=lambda s: (s[0][1], s[0][0]))
+    groups: list[list[tuple[BBox, list[Word], float, bool, bool, float | None]]] = []
+    for bbox, line_words, body_x0 in ordered:
         fs, bold = _segment_style(line_words)
+        all_bold = bool(line_words) and all(w.bold for w in line_words)
         lh = max(1.0, bbox[3] - bbox[1])
-        is_list_start = _is_list_item_start(line_words)
+        is_list_start = _is_list_item_start(line_words) or body_x0 is not None
         merged = False
         if not is_list_start:
             for group in reversed(groups):
-                last_box, _, last_fs, last_bold = group[-1]
+                first_box, _, _, _, _, first_body_x0 = group[0]
+                last_box, _, last_fs, last_bold, _, _ = group[-1]
                 if not _horiz_overlap(last_box, bbox):
                     continue
+                # Prevent merging across a vertical outdent back to a label/bullet margin.
+                has_hanging = first_body_x0 is not None or (
+                    len(group) >= 2 and last_box[0] > first_box[0] + 0.5 * ref_fs
+                )
+                if has_hanging:
+                    expected_x0 = first_body_x0 if first_body_x0 is not None else last_box[0]
+                    if bbox[0] < expected_x0 - 0.5 * ref_fs:
+                        continue
                 gap_y = bbox[1] - last_box[3]
                 max_gap = max(0.8 * max(lh, last_box[3] - last_box[1]), 0.6 * ref_fs, 1.0)
                 fs_tol = max(0.1 * max(fs, last_fs, ref_fs), 0.5)
-                if -0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= fs_tol and bold == last_bold:
-                    group.append((bbox, line_words, fs, bold))
+                group_all_bold = all(item[4] for item in group)
+                bold_ok = (bold == last_bold) or (not group_all_bold and not all_bold)
+                if -0.3 * lh <= gap_y <= max_gap and abs(fs - last_fs) <= fs_tol and bold_ok:
+                    group.append((bbox, line_words, fs, bold, all_bold, body_x0))
                     merged = True
                     break
         if not merged:
-            groups.append([(bbox, line_words, fs, bold)])
+            groups.append([(bbox, line_words, fs, bold, all_bold, body_x0)])
 
     return [
-        _make_text_block([seg_words for _, seg_words, _, _ in group], source=source, confidence=confidence)
+        _make_text_block([seg_words for _, seg_words, _, _, _, _ in group], source=source, confidence=confidence)
         for group in groups
     ]
 
@@ -693,12 +1018,19 @@ def order_blocks(
     *,
     source: TextSource = "text_layer",
     confidence: float = 1.0,
+    horiz_rules: Sequence[BBox] = (),
 ) -> list[TextBlock]:
     if not words:
         return []
     median_fs = _median_font_size(words, page_rect)
     horiz_words, vert_words = _partition_orientation(words)
-    segments = _words_to_line_segments(horiz_words, median_font_size=median_fs)
+    raw_lines = _words_to_raw_lines(horiz_words, median_font_size=median_fs)
+    segments = _merge_line_segments_horizontally(
+        raw_lines,
+        page_rect=page_rect,
+        median_font_size=median_fs,
+        horiz_rules=horiz_rules,
+    )
     blocks = _segments_to_blocks(
         segments,
         source=source,
@@ -717,5 +1049,6 @@ def order_blocks(
 
 
 def extract_text(page: Any, *, min_font_size: float = 0.0) -> list[TextBlock]:
+    bounds = page_bbox(page)
     words = extract_words(page, min_font_size=min_font_size)
-    return order_blocks(words, page_bbox(page))
+    return order_blocks(words, bounds, horiz_rules=extract_horiz_rules(page, bounds))

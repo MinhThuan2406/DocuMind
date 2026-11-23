@@ -1,5 +1,6 @@
 import io
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from pdf._pdf_io import (  # noqa: E402
     render_bgr,
 )
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
+from pdf.ir import extract_ir  # noqa: E402
+from pdf.models import FigureBox  # noqa: E402
 from pdf.router import classify_page  # noqa: E402
 
 
@@ -383,6 +386,97 @@ def test_no_heavy_ml_imports():
     assert "docling" not in sys.modules
     assert "torch" not in sys.modules
     assert "pymupdf" not in sys.modules
+
+
+def test_table_candidate_booktabs_borderless_and_two_col_prose_negative():
+    b = TestPdfBuilder()
+
+    # 1. Booktabs 3-rule table: only 3 thin horizontal rules (figure_candidate=False, table_candidate=True).
+    booktabs = b.new_page(width=595, height=842)
+    booktabs.draw_line((60, 120), (520, 120), width=0.8)
+    booktabs.draw_line((60, 144), (520, 144), width=0.6)
+    booktabs.draw_line((60, 194), (520, 194), width=0.8)
+    booktabs.insert_text((70, 126), "Date", fontsize=10)
+    booktabs.insert_text((200, 126), "Amendment", fontsize=10)
+    booktabs.insert_text((420, 126), "Version", fontsize=10)
+    booktabs.insert_text((70, 152), "2024-01-01", fontsize=10)
+    booktabs.insert_text((200, 152), "Initial issue", fontsize=10)
+    booktabs.insert_text((420, 152), "1.0", fontsize=10)
+    booktabs.insert_text((70, 172), "2025-04-01", fontsize=10)
+    booktabs.insert_text((200, 172), "Rate revision", fontsize=10)
+    booktabs.insert_text((420, 172), "2.0", fontsize=10)
+
+    # 2. Borderless 2-column table (0 drawings).
+    borderless_2col = b.new_page(width=595, height=842)
+    for row_idx, (k, v) in enumerate([("ID1", "Alpha value"), ("ID2", "Beta value"), ("ID3", "Gamma value")]):
+        y = 120 + row_idx * 18
+        borderless_2col.insert_text((60, y), k, fontsize=10)
+        borderless_2col.insert_text((220, y), v, fontsize=10)
+
+    # 3. Normal 2-column prose page with header rule: must NOT trigger table_candidate.
+    prose_2col = b.new_page(width=595, height=842)
+    prose_2col.draw_line((50, 40), (545, 40), width=0.5)
+    for row_idx in range(4):
+        y = 100 + row_idx * 16
+        prose_2col.insert_text((50, y), "This left column holds normal long prose lines", fontsize=10)
+        prose_2col.insert_text((320, y), "This right column also holds normal prose text", fontsize=10)
+
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        p_book = classify_page(doc.pages[0])
+        assert not p_book.figure_candidate
+        assert p_book.table_candidate
+
+        p_bl = classify_page(doc.pages[1])
+        assert not p_bl.figure_candidate
+        assert p_bl.table_candidate
+
+        p_prose = classify_page(doc.pages[2])
+        assert not p_prose.figure_candidate
+        assert not p_prose.table_candidate
+
+
+def test_extract_ir_figures_false_tables_true_keeps_only_tables():
+    import pdf.figures as figures_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "booktabs.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=400, height=300)
+        for y in (60, 88, 160):
+            p.draw_line((40, y), (320, y), width=0.6)
+        p.insert_text((50, 68), "Key", fontsize=10)
+        p.insert_text((170, 68), "Val", fontsize=10)
+        p.insert_text((50, 100), "A", fontsize=10)
+        p.insert_text((170, 100), "10", fontsize=10)
+        p.insert_text((50, 128), "B", fontsize=10)
+        p.insert_text((170, 128), "20", fontsize=10)
+        b.save(pdf_path)
+
+        seen_pages: list[list[int]] = []
+        orig_detect = figures_mod.detect_figures
+
+        def _fake_detect(_path, pages, **_kw):
+            seen_pages.append(list(pages))
+            return {
+                pg: [
+                    FigureBox((20.0, 10.0, 120.0, 50.0), "figure", "layout_picture", 0.90),
+                    FigureBox((38.0, 58.0, 322.0, 162.0), "table", "layout_table", 0.95),
+                ]
+                for pg in pages
+            }
+
+        figures_mod.detect_figures = _fake_detect
+        try:
+            ir = extract_ir(pdf_path, figures=False, tables=True, ocr=False, table_backend="auto")
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+    assert seen_pages == [[1]]
+    assert ir["metadata"]["pages"][0]["table_candidate"] is True
+    assert not any(e["type"] == "figure" for e in ir["elements"])
+    assert any(e["type"] == "table" for e in ir["elements"])
+    assert len(ir["tables"]) == 1
+    assert ir["tables"][0]["num_rows"] >= 2 and ir["tables"][0]["num_cols"] == 2
 
 
 def main():

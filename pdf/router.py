@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from ._pdf_io import bbox_area, clip_box, extract_words_raw, page_bbox
-from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, PageKind, PageProfile
+from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, PageKind, PageProfile, Word
+from .text import extract_horiz_rules, extract_raw_line_segments, raw_words_to_words
 
 FULL_PAGE_IMAGE_RATIO = 0.96
 MIN_CANDIDATE_DRAWINGS = 8
@@ -101,6 +103,133 @@ def _is_figure_candidate(page: Any, bounds: BBox, image_boxes: list[BBox]) -> bo
         drawings += 1
         thick += min(w, h) >= THICK_DRAWING_MIN_SIDE
     return drawings >= MIN_CANDIDATE_DRAWINGS or thick >= MIN_CANDIDATE_THICK_DRAWINGS
+
+
+def _is_table_candidate(
+    page: Any,
+    bounds: BBox,
+    raw_words_filtered: Sequence[dict[str, Any]],
+) -> bool:
+    page_w = bounds[2] - bounds[0]
+    page_h = bounds[3] - bounds[1]
+    if page_w <= 0.0 or page_h <= 0.0 or not raw_words_filtered:
+        return False
+
+    word_objs = raw_words_to_words(raw_words_filtered, bounds)
+    raw_lines = extract_raw_line_segments(word_objs, page_rect=bounds)
+    if not raw_lines:
+        return False
+
+    sizes = sorted(w.font_size for w in word_objs if w.font_size > 0.0)
+    if sizes:
+        ref_fs = sizes[len(sizes) // 2]
+    else:
+        heights = sorted(w.bbox[3] - w.bbox[1] for w in word_objs if w.bbox[3] > w.bbox[1])
+        ref_fs = heights[len(heights) // 2] if heights else 10.0
+
+    def _is_short_cell(box: BBox, seg_words: Sequence[Word]) -> bool:
+        seg_w = box[2] - box[0]
+        total_chars = sum(len(w.text.strip()) for w in seg_words)
+        if len(seg_words) == 1:
+            return total_chars <= 16 and seg_w <= 0.28 * page_w
+        return len(seg_words) <= 4 and total_chars <= 26 and seg_w <= 0.32 * page_w
+
+    line_ys = [(min(s[0][1] for s in ln), max(s[0][3] for s in ln)) for ln in raw_lines]
+
+    # Signal (a): >= 1 wide horizontal rule outside running header/footer bands adjacent to multi-column text.
+    header_y = bounds[1] + 0.07 * page_h
+    footer_y = bounds[1] + FIGURE_FOOTER_FRAC * page_h
+    wide_rules = [
+        r
+        for r in extract_horiz_rules(page, bounds, max_thickness=max(4.0, 0.5 * ref_fs))
+        if (r[2] - r[0]) >= 0.25 * page_w and header_y < (r[1] + r[3]) * 0.5 < footer_y
+    ]
+    for rule in wide_rules:
+        rx0, ry0, rx1, ry1 = rule
+        rw = rx1 - rx0
+        win_top = ry0 - 4.5 * ref_fs
+        win_bot = ry1 + 6.5 * ref_fs
+        adj_multi: list[list[tuple[BBox, list[Word]]]] = []
+        for ln, (ly0, ly1) in zip(raw_lines, line_ys):
+            if ly1 < win_top or ly0 > win_bot:
+                continue
+            segs = [s for s in ln if min(s[0][2], rx1 + ref_fs) > max(s[0][0], rx0 - ref_fs)]
+            if len(segs) >= 2:
+                adj_multi.append(segs)
+        if len(adj_multi) >= 2:
+            has_paired_rule = any(
+                o is not rule
+                and abs(o[0] - rx0) <= 2.0 * ref_fs
+                and abs(o[2] - rx1) <= 2.0 * ref_fs
+                and abs(o[1] - ry0) <= 0.5 * page_h
+                for o in wide_rules
+            )
+            has_3plus_cols = any(len(segs) >= 3 for segs in adj_multi)
+            short_cell_lines = sum(
+                1 for segs in adj_multi if any(_is_short_cell(sb, sw) and (sb[2] - sb[0]) < 0.35 * rw for sb, sw in segs)
+            )
+            if has_paired_rule or has_3plus_cols or short_cell_lines >= 2:
+                return True
+
+    # Signal (b): >= 3 consecutive lines with >= 2 column-aligned segments (borderless tables).
+    align_tol = max(1.2 * ref_fs, 0.02 * page_w)
+    max_row_gap = 4.0 * ref_fs
+
+    def _aligned_match(base_line: Sequence[tuple[BBox, list[Word]]], cand_line: Sequence[tuple[BBox, list[Word]]]) -> list[int]:
+        matched: list[int] = []
+        min_idx = 0
+        for sb, _ in base_line:
+            found = -1
+            for j in range(min_idx, len(cand_line)):
+                cb = cand_line[j][0]
+                if abs(cb[0] - sb[0]) <= align_tol or abs(cb[2] - sb[2]) <= align_tol:
+                    found = j
+                    min_idx = j + 1
+                    break
+            matched.append(found)
+        return matched
+
+    n_lines = len(raw_lines)
+    start = 0
+    while start < n_lines:
+        if len(raw_lines[start]) < 2:
+            start += 1
+            continue
+        end = start + 1
+        while end < n_lines and len(raw_lines[end]) >= 2 and (line_ys[end][0] - line_ys[end - 1][1]) <= max_row_gap:
+            end += 1
+        if end - start >= 3:
+            for anchor_idx in range(start, end - 2):
+                base = raw_lines[anchor_idx]
+                col_hits: list[list[tuple[BBox, list[Word]]]] = [[] for _ in base]
+                consec = 0
+                for idx in range(anchor_idx, end):
+                    matches = _aligned_match(base, raw_lines[idx])
+                    if sum(1 for m in matches if m >= 0) < 2:
+                        break
+                    consec += 1
+                    for bi, cj in enumerate(matches):
+                        if cj >= 0:
+                            col_hits[bi].append(raw_lines[idx][cj])
+                if consec >= 3:
+                    active_cols = [hits for hits in col_hits if len(hits) >= 3]
+                    if len(active_cols) >= 3:
+                        all_segs = [s for hits in active_cols for s in hits]
+                        short_frac = sum(1 for sb, sw in all_segs if _is_short_cell(sb, sw)) / len(all_segs)
+                        avg_words = sum(len(sw) for _, sw in all_segs) / len(all_segs)
+                        if short_frac >= 0.25 or avg_words < 6.0:
+                            return True
+                    elif len(active_cols) == 2:
+                        col_short_fracs = [
+                            sum(1 for sb, sw in hits if _is_short_cell(sb, sw)) / len(hits) for hits in active_cols
+                        ]
+                        all_segs = [s for hits in active_cols for s in hits]
+                        total_short_frac = sum(1 for sb, sw in all_segs if _is_short_cell(sb, sw)) / len(all_segs)
+                        if max(col_short_fracs) >= 0.75 or total_short_frac >= 0.50:
+                            return True
+        start = end
+
+    return False
 
 
 def classify_page(
@@ -204,4 +333,5 @@ def classify_page(
         suspect_reasons=suspect_reasons,
         partial_raster_regions=partial_raster_regions,
         watermark_word_count=watermark_word_count,
+        table_candidate=_is_table_candidate(page, bounds, words),
     )

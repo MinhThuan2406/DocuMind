@@ -8,7 +8,13 @@ from typing import Any
 import pdfplumber
 
 from ._pdf_io import PdfContext, bbox_area, bbox_inter_area, extract_toc, extract_words_raw, page_bbox, round_bbox
-from .assemble import AssembledItem, assemble_page, merge_hybrid_region_ocr, tag_running_headers_footers
+from .assemble import (
+    AssembledItem,
+    assemble_page,
+    extract_plain_text,
+    merge_hybrid_region_ocr,
+    tag_running_headers_footers,
+)
 from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
 from .hierarchy import apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
@@ -203,6 +209,7 @@ def extract_ir(
     grouper: str | FigureGrouper = "v1_anchor",
     reader: str | PageReader = "composed",
     ocr_backend: str = "rapidocr-onnx",
+    ocr_lang: str | None = None,
     table_backend: str | TableExtractor = "auto",
     diagram_backend: str | DiagramExtractor = "vector_first",
     device: str = "auto",
@@ -235,6 +242,7 @@ def extract_ir(
                 "height_pt": round(float(page.height), 3),
                 "suspect_ocr_layer": prof.suspect_ocr_layer,
                 "figure_candidate": prof.figure_candidate,
+                "table_candidate": prof.table_candidate,
             })
             if prof.kind == "hybrid" and prof.suspect_ocr_layer:
                 warnings.append({
@@ -250,9 +258,13 @@ def extract_ir(
         figures_by_page: dict[int, list[FigureBox]] = {}
         semantic_regions: dict[int, list[SemanticRegion]] = {}
         candidate_pages = [
-            p.page for p in profiles if not _uses_ocr_fallback(p, ocr) and p.kind != "raster" and p.figure_candidate
+            p.page
+            for p in profiles
+            if not _uses_ocr_fallback(p, ocr)
+            and p.kind != "raster"
+            and ((figures and p.figure_candidate) or (tables and p.table_candidate))
         ]
-        if figures and candidate_pages:
+        if (figures or tables) and candidate_pages:
             from .figures import detect_figures
 
             figures_by_page = detect_figures(
@@ -267,6 +279,11 @@ def extract_ir(
                 semantic_regions_out=semantic_regions if structure else None,
                 page_boxes={p: page_boxes[p] for p in candidate_pages},
             )
+            if not figures:
+                figures_by_page = {
+                    pno: [box for box in boxes if box.kind == "table"]
+                    for pno, boxes in figures_by_page.items()
+                }
 
         raster_by_page: dict[int, RasterPage] = {}
         region_ocr_by_page: dict[int, list[TextBlock]] = {}
@@ -286,6 +303,7 @@ def extract_ir(
                         layout=resolved_layout,
                         ocr_backend=ocr_backend,
                         device=device,
+                        **({"ocr_lang": ocr_lang} if ocr_lang is not None else {}),
                     )
                     if isinstance(reader, str)
                     else reader
@@ -300,6 +318,7 @@ def extract_ir(
                         reader=resolved_reader,
                         layout=resolved_layout,
                         ocr_backend=ocr_backend,
+                        ocr_lang=ocr_lang,
                         device=device,
                         pdfium_doc=ctx.pdfium,
                         page_boxes={p: page_boxes[p] for p in raster_pages},
@@ -316,6 +335,7 @@ def extract_ir(
                             reader=resolved_reader,
                             layout=resolved_layout,
                             ocr_backend=ocr_backend,
+                            ocr_lang=ocr_lang,
                             device=device,
                             pdfium_doc=ctx.pdfium,
                             page_boxes={p: page_boxes[p] for p in partial_regions_by_page},
@@ -382,6 +402,7 @@ def extract_ir(
                         is_raster=use_ocr,
                         extractor=resolved_table_backend,
                         ocr_backend=ocr_backend,
+                        ocr_lang=ocr_lang,
                         device=device,
                     )
                     _collect_stats_warnings(resolved_table_backend, prev_tbl_stats, warnings)
@@ -421,6 +442,7 @@ def extract_ir(
                         is_raster=use_ocr,
                         extractor=resolved_diagram_backend,
                         ocr_backend=ocr_backend,
+                        ocr_lang=ocr_lang,
                         device=device,
                     )
                     _collect_stats_warnings(resolved_diagram_backend, prev_diag_stats, warnings)

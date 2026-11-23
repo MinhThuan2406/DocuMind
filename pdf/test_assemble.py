@@ -14,6 +14,7 @@ from pdf._pdf_io import page_bbox  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.assemble import (  # noqa: E402
     assemble_page,
+    extract_plain_text,
     filter_overlapping_figures,
     merge_hybrid_region_ocr,
     tag_running_headers_footers,
@@ -569,6 +570,62 @@ def test_ir_low_confidence_warning_emitted():
         ir = ir_mod.extract_ir(pdf_path, figures=False, ocr=True, reader=_FakeReader(), structure=False)
     low_warnings = [w for w in ir["metadata"]["warnings"] if w.get("code") == "low_confidence"]
     assert len(low_warnings) == 1 and low_warnings[0]["page"] == 1
+
+
+def test_extract_plain_text_tables_reading_order_and_furniture():
+    ir = {
+        "metadata": {"pages": [{"number": 1}, {"number": 2}, {"number": 3}]},
+        "elements": [
+            {"id": "e1", "type": "text", "page": 1, "level": 1, "reading_order": 0, "text": "Header Line", "metadata": {"role": "page_header"}},
+            {"id": "e2", "type": "text", "page": 1, "level": 1, "reading_order": 1, "text": "Intro paragraph", "metadata": {}},
+            {"id": "e3", "type": "table", "page": 1, "level": 1, "reading_order": 2, "text": "[Table tbl_0001: 2x2]", "metadata": {"table_id": "tbl_0001"}},
+            {"id": "e3_c1", "type": "text", "page": 1, "level": 2, "parent_id": "e3", "reading_order": 3, "text": "Duplicate child", "metadata": {}},
+            {"id": "e4", "type": "figure", "page": 1, "level": 1, "reading_order": 4, "text": "", "metadata": {}},
+            {"id": "e4_c1", "type": "text", "page": 1, "level": 2, "parent_id": "e4", "reading_order": 5, "text": "Diagram node", "metadata": {}},
+            {"id": "e5", "type": "text", "page": 1, "level": 1, "reading_order": 6, "text": "Closing paragraph", "metadata": {}},
+            {"id": "e6", "type": "text", "page": 1, "level": 1, "reading_order": 7, "text": "Page 1", "metadata": {"layout_label": "page_footer"}},
+            {"id": "e7", "type": "table", "page": 2, "level": 1, "reading_order": 0, "text": "", "metadata": {}},
+            {"id": "e7_c2", "type": "text", "page": 2, "level": 2, "parent_id": "e7", "reading_order": 2, "text": "Fallback row 2", "metadata": {}},
+            {"id": "e7_c1", "type": "text", "page": 2, "level": 2, "parent_id": "e7", "reading_order": 1, "text": "Fallback row 1", "metadata": {}},
+        ],
+        "tables": [
+            {
+                "id": "tbl_0001",
+                "page": 1,
+                "num_rows": 2,
+                "num_cols": 2,
+                "cells": [
+                    {"row": 1, "col": 1, "text": "100"},
+                    {"row": 0, "col": 1, "text": "Value"},
+                    {"row": 0, "col": 0, "text": "Key"},
+                    {"row": 1, "col": 0, "text": "Alpha"},
+                ],
+            }
+        ],
+    }
+    body = extract_plain_text(ir, include_furniture=False)
+    assert body == {
+        1: "Intro paragraph\nKey Value\nAlpha 100\nClosing paragraph",
+        2: "Fallback row 1\nFallback row 2",
+        3: "",
+    }
+    raw = extract_plain_text(ir, include_furniture=True)
+    assert raw[1] == "Header Line\nIntro paragraph\nKey Value\nAlpha 100\nClosing paragraph\nPage 1"
+    assert ir["elements"][2]["text"] == "[Table tbl_0001: 2x2]"
+
+
+def test_tag_running_headers_footers_unicode_toc_protection():
+    page_heights = {p: 800.0 for p in range(1, 5)}
+    elems = []
+    for p in range(1, 5):
+        elems.append({"type": "text", "page": p, "level": 1, "bbox": [50, 30, 260, 45], "text": "第１章　総則", "metadata": {}})
+        elems.append({"type": "text", "page": p, "level": 1, "bbox": [280, 760, 310, 775], "text": str(p), "metadata": {}})
+
+    tag_running_headers_footers(elems, page_heights, toc_titles=["第1章 総則", "1", "（２）"])
+    headers = [e for e in elems if e["text"] == "第１章　総則"]
+    footers = [e for e in elems if e["text"].isdigit()]
+    assert all("role" not in e["metadata"] for e in headers)
+    assert all(e["metadata"].get("role") == "page_footer" for e in footers)
 
 
 def main():

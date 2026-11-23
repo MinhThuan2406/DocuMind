@@ -229,6 +229,27 @@ def test_postprocess_parity_with_recorded_dumps():
             assert max(abs(a - b) for a, b in zip(g.bbox, e["bbox"])) <= 1e-3
 
 
+def test_postprocess_table_vs_document_index_priority():
+    # Real table overlapping document_index must survive unless document_index outscores it by >= 0.20.
+    kept_tie = postprocess_layout(
+        [
+            LayoutItem("table", (40.0, 80.0, 520.0, 420.0), 0.62),
+            LayoutItem("document_index", (38.0, 78.0, 524.0, 422.0), 0.70),
+        ],
+        (600.0, 850.0),
+    )
+    assert [c.label for c in kept_tie] == ["table"]
+
+    kept_toc = postprocess_layout(
+        [
+            LayoutItem("table", (40.0, 80.0, 520.0, 420.0), 0.52),
+            LayoutItem("document_index", (38.0, 78.0, 524.0, 422.0), 0.90),
+        ],
+        (600.0, 850.0),
+    )
+    assert [c.label for c in kept_toc] == ["document_index"]
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

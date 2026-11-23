@@ -807,6 +807,141 @@ def test_narrow_gutter_does_not_cross_match_orphan_caption():
     assert "caption_id" not in by_id["fig2"]["metadata"]
 
 
+def test_unicode_toc_matching_and_single_digit_guard():
+    body = "Regular body paragraph of sufficient length to set the median body font size accurately. " * 2
+    elements = [
+        _elem("b0", page=1, reading_order=0, text=body, font_size=10.0, bold=False),
+        _elem("h_jp", page=2, reading_order=0, text="第1章 契約の締結", font_size=10.0, bold=False),
+        _elem("h_ru", page=2, reading_order=1, text="раздел 1 введение", font_size=10.0, bold=False),
+        _elem("num_1", page=2, reading_order=2, text="1", font_size=10.0, bold=False),
+        _elem("num_2", page=2, reading_order=3, text="（２）", font_size=10.0, bold=False),
+        _elem("b1", page=2, reading_order=4, text=body, font_size=10.0, bold=False),
+    ]
+    toc = [(1, "第１章　契約の締結", 2), (2, "Раздел 1. Введение", 2), (1, "1", 2), (1, "(2)", 2)]
+    out = apply_structure(_ir(elements), toc=toc)
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["h_jp"]["metadata"]["role"] == "heading"
+    assert by_id["h_jp"]["metadata"]["heading_level"] == 1
+    assert by_id["h_ru"]["metadata"]["role"] == "heading"
+    assert by_id["h_ru"]["metadata"]["heading_level"] == 2
+    assert by_id["h_ru"]["metadata"]["section_parent_id"] == "h_jp"
+    assert by_id["num_1"]["metadata"].get("role") is None
+    assert by_id["num_2"]["metadata"].get("role") is None
+
+
+def test_heron_section_header_low_font_and_caption_demotion():
+    body = "Normal body text repeated to establish a clear 10.0pt body font size across pages. " * 3
+    elements = [
+        _elem("b0", page=1, bbox=[50.0, 40.0, 480.0, 60.0], reading_order=0, text=body, font_size=10.0, bold=False),
+        _elem("badge", page=1, bbox=[400.0, 70.0, 480.0, 82.0], reading_order=1, text="Ref 1", font_size=6.5, bold=True, layout_label="section_header"),
+        _elem("sec", page=1, bbox=[50.0, 90.0, 300.0, 110.0], reading_order=2, text="1. Overview", font_size=10.0, bold=False, layout_label="section_header"),
+        _elem("fig1", kind="figure", page=1, bbox=[60.0, 120.0, 320.0, 220.0], reading_order=3, font_size=None, bold=None),
+        _elem("cap_f", page=1, bbox=[60.0, 226.0, 320.0, 240.0], reading_order=4, text="Hardware bus overview", font_size=8.5, bold=False, layout_label="section_header"),
+        _elem("cap_t", page=1, bbox=[60.0, 260.0, 320.0, 275.0], reading_order=5, text="Table 1: Limits", font_size=10.0, bold=True, layout_label="section_header"),
+        _elem("tbl1", kind="table", page=1, bbox=[60.0, 282.0, 320.0, 360.0], reading_order=6, font_size=None, bold=None),
+        _elem("ocr_sec", page=2, bbox=[50.0, 50.0, 300.0, 70.0], reading_order=0, text="Raster Heading", source="ocr", font_size=0.0, bold=False, layout_label="section_header"),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["badge"]["metadata"].get("role") is None
+    assert by_id["sec"]["metadata"]["role"] == "heading"
+    assert by_id["ocr_sec"]["metadata"]["role"] == "heading"
+    assert by_id["cap_f"]["metadata"]["role"] == "caption"
+    assert by_id["cap_f"]["metadata"]["caption_of"] == "fig1"
+    assert by_id["cap_t"]["metadata"]["role"] == "caption"
+    assert by_id["cap_t"]["metadata"]["caption_of"] == "tbl1"
+    assert "heading_level" not in by_id["cap_f"]["metadata"]
+    assert "heading_level" not in by_id["cap_t"]["metadata"]
+
+
+def test_self_learned_non_english_caption_prefixes():
+    body = "通常の本文テキストを十分な長さで配置して基準フォントサイズを安定させます。" * 3
+    elements = [
+        _elem("b0", page=1, bbox=[50.0, 30.0, 480.0, 50.0], reading_order=0, text=body, font_size=10.0, bold=False),
+        _elem("art1", page=1, bbox=[50.0, 60.0, 300.0, 78.0], reading_order=1, text="第1条 定義", font_size=10.0, bold=True),
+        _elem("fig1", kind="figure", page=1, bbox=[60.0, 90.0, 300.0, 180.0], reading_order=2, font_size=None, bold=None),
+        _elem("c_f1", page=1, bbox=[60.0, 186.0, 300.0, 200.0], reading_order=3, text="図1 保険の仕組み", font_size=9.0, bold=True),
+        _elem("fig2", kind="figure", page=1, bbox=[60.0, 220.0, 300.0, 310.0], reading_order=4, font_size=None, bold=None),
+        _elem("c_f2", page=1, bbox=[60.0, 316.0, 300.0, 330.0], reading_order=5, text="図2 支払の流れ", font_size=9.0, bold=True),
+        _elem("fig3", kind="figure", page=2, bbox=[60.0, 60.0, 300.0, 160.0], reading_order=0, font_size=None, bold=None),
+        _elem("c_f3", page=2, bbox=[60.0, 195.0, 300.0, 210.0], reading_order=1, text="図3 特約の構成", font_size=9.5, bold=True, layout_label="section_header"),
+        _elem("c_t1", page=2, bbox=[60.0, 240.0, 300.0, 255.0], reading_order=2, text="Tableau 1 : Résumé", font_size=9.0, bold=True),
+        _elem("tbl1", kind="table", page=2, bbox=[60.0, 262.0, 300.0, 340.0], reading_order=3, font_size=None, bold=None),
+        _elem("c_t2", page=2, bbox=[60.0, 360.0, 300.0, 375.0], reading_order=4, text="Tableau 2 : Détails", font_size=9.0, bold=True),
+        _elem("tbl2", kind="table", page=2, bbox=[60.0, 382.0, 300.0, 460.0], reading_order=5, font_size=None, bold=None),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["art1"]["metadata"]["role"] == "heading"
+    assert by_id["c_f1"]["metadata"]["caption_of"] == "fig1"
+    assert by_id["c_f2"]["metadata"]["caption_of"] == "fig2"
+    assert by_id["c_f3"]["metadata"]["caption_of"] == "fig3"
+    assert by_id["c_f3"]["metadata"]["role"] == "caption"
+    assert by_id["c_t1"]["metadata"]["caption_of"] == "tbl1"
+    assert by_id["c_t2"]["metadata"]["caption_of"] == "tbl2"
+
+
+def test_structural_toc_page_suppression_multilingual():
+    elements = [
+        _elem("hdr", page=1, bbox=[50.0, 40.0, 200.0, 60.0], reading_order=0, text="目次", font_size=16.0, bold=True),
+        _elem("l1", page=1, bbox=[50.0, 80.0, 300.0, 95.0], reading_order=1, text="第1章 概要", font_size=11.0, bold=True),
+        _elem("p1", page=1, bbox=[460.0, 80.0, 480.0, 95.0], reading_order=2, text="2", font_size=11.0, bold=False),
+        _elem("l2", page=1, bbox=[50.0, 105.0, 300.0, 120.0], reading_order=3, text="第2章 補償", font_size=11.0, bold=True),
+        _elem("p2", page=1, bbox=[460.0, 105.0, 480.0, 120.0], reading_order=4, text="2", font_size=11.0, bold=False),
+        _elem("l3", page=1, bbox=[50.0, 130.0, 300.0, 145.0], reading_order=5, text="第3章 手続", font_size=11.0, bold=True),
+        _elem("p3", page=1, bbox=[460.0, 130.0, 480.0, 145.0], reading_order=6, text="2", font_size=11.0, bold=False),
+        _elem("h1", page=2, bbox=[50.0, 50.0, 300.0, 70.0], reading_order=0, text="第1章 概要", font_size=16.0, bold=True),
+        _elem("b1", page=2, bbox=[50.0, 90.0, 480.0, 120.0], reading_order=1, text="本文のテキストが十分な長さでここに続きます。" * 3, font_size=11.0, bold=False),
+    ]
+    out_no_bm = apply_structure(_ir(elements), use_bookmarks=False)
+    titles_no_bm = [o["title"] for o in out_no_bm["metadata"]["outline"]]
+    assert titles_no_bm == ["第1章 概要"]
+    assert all(o["page"] == 2 for o in out_no_bm["metadata"]["outline"])
+
+    leader_elems = [
+        _elem("hdr", page=1, reading_order=0, text="目次", font_size=16.0, bold=True),
+        _elem("t1", page=1, reading_order=1, text="第1章 概要 .... 2", font_size=12.0, bold=True),
+        _elem("t2", page=1, reading_order=2, text="第2章 補償 .... 2", font_size=12.0, bold=True),
+        _elem("t3", page=1, reading_order=3, text="第3章 手続 .... 2", font_size=12.0, bold=True),
+        _elem("h1", page=2, reading_order=0, text="第1章 概要", font_size=16.0, bold=True),
+    ]
+    out_bm = apply_structure(_ir(leader_elems), toc=[(1, "第1章 概要", 2), (1, "第2章 補償", 2)])
+    assert [o["title"] for o in out_bm["metadata"]["outline"]] == ["第1章 概要"]
+
+
+def test_script_aware_length_unicode_punct_and_em_scaling():
+    cjk_prose = "これは見出しではなく非常に長い日本語の本文でありスペースを含まないまま連続して記述されています"
+    thai_prose = "นี่คือย่อหน้าภาษาไทยที่ยาวมากและไม่มีช่องว่างระหว่างคำเลยดังนั้นจึงไม่ควรเป็นหัวข้อ"
+    assert len(cjk_prose) < 140 and len(cjk_prose.split()) == 1
+    assert len(thai_prose) < 140 and len(thai_prose.split()) == 1
+
+    elements = [
+        _elem("body", page=1, bbox=[50.0, 40.0, 500.0, 70.0], reading_order=0, text="本文の基準フォントを設定するための段落です。" * 4, font_size=20.0, bold=False),
+        _elem("num_fw", page=1, bbox=[50.0, 90.0, 300.0, 115.0], reading_order=1, text="１．総則", font_size=24.0, bold=True),
+        _elem("cjk_p", page=1, bbox=[50.0, 130.0, 500.0, 160.0], reading_order=2, text=cjk_prose, font_size=20.0, bold=True),
+        _elem("thai_p", page=1, bbox=[50.0, 175.0, 500.0, 205.0], reading_order=3, text=thai_prose, font_size=20.0, bold=True),
+        _elem("two_sent", page=1, bbox=[50.0, 220.0, 400.0, 245.0], reading_order=4, text="最初の文です。次の文です。", font_size=20.0, bold=True),
+        _elem("multi_bul", page=1, bbox=[50.0, 260.0, 300.0, 300.0], reading_order=5, text="① 項目A\n② 項目B", font_size=24.0, bold=True),
+        _elem("single_art", page=1, bbox=[50.0, 315.0, 300.0, 340.0], reading_order=6, text="① 契約の概要", font_size=24.0, bold=True),
+        _elem("fig", kind="figure", page=2, bbox=[60.0, 80.0, 340.0, 200.0], reading_order=0, font_size=None, bold=None),
+        _elem("cap_em", page=2, bbox=[60.0, 230.0, 340.0, 255.0], reading_order=1, text="構成図", font_size=18.0, bold=False),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+
+    assert by_id["num_fw"]["metadata"]["role"] == "heading"
+    assert by_id["num_fw"]["metadata"]["heading_level"] == 1
+    assert by_id["cjk_p"]["metadata"].get("role") is None
+    assert by_id["thai_p"]["metadata"].get("role") is None
+    assert by_id["two_sent"]["metadata"].get("role") is None
+    assert by_id["multi_bul"]["metadata"].get("role") is None
+    assert by_id["single_art"]["metadata"]["role"] == "heading"
+    assert by_id["cap_em"]["metadata"]["caption_of"] == "fig"
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

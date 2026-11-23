@@ -212,11 +212,11 @@ class AutoTableExtractor:
         eff_device = self.device_name if device is None else device
         return get_backend("table", "tatr-onnx", device=eff_device)
 
-    def _get_ocr(self, ocr_backend: str, device: str | None = None) -> Any:
+    def _get_ocr(self, ocr_backend: str, device: str | None = None, ocr_lang: str | None = None) -> Any:
         if self._ocr is not None:
             return self._ocr
         eff_device = self.device_name if device is None else device
-        return get_backend("ocr", ocr_backend, device=eff_device)
+        return get_backend("ocr", ocr_backend, device=eff_device, **({"lang": ocr_lang} if ocr_lang is not None else {}))
 
     def ensure_loaded(self) -> bool:
         tatr = self._get_tatr()
@@ -232,6 +232,7 @@ class AutoTableExtractor:
         words: Sequence[Word] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = DEFAULT_TABLE_DPI,
     ) -> list[ExtractedTable]:
@@ -256,7 +257,7 @@ class AutoTableExtractor:
         page_no = getattr(page, "page_number", None)
 
         if is_raster:
-            ocr_rec = self._get_ocr(ocr_backend, device)
+            ocr_rec = self._get_ocr(ocr_backend, device, ocr_lang=ocr_lang)
             for box in table_boxes_pt:
                 crop, crop_box = crop_page_region(page, box, dpi)
                 box_tokens = ocr_crop_tokens(ocr_rec, crop, crop_box)

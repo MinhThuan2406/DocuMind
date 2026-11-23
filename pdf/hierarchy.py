@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -45,14 +46,23 @@ _CAPTION_PROSE_START_RE = re.compile(
 _CHAPTER_RE = re.compile(r"^(?:chapter|part)\s+([0-9]+|[IVXLCDM]+)\b[:.\-\s]*(.*)$", re.IGNORECASE)
 _APPENDIX_RE = re.compile(r"^appendix\s+([A-Z])(?:\.([0-9]+(?:\.[0-9]+)*))?\b[:.\-\s]*(.*)$", re.IGNORECASE)
 _APPENDIX_SUB_RE = re.compile(r"^([A-Z]\.[0-9]+(?:\.[0-9]+)*)\.?\s+(.+)$")
-_NUMERIC_HEADING_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(\.?)\s+(.+)$")
-_LEADING_NUMBER_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(?:\.)?\s+(\S.*)$")
+_NUMERIC_HEADING_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(?:(\.)\s*|\s+)(.+)$")
+_LEADING_NUMBER_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(?:(\.)\s*|\s+)(\S.*)$")
 _SOFT_HYPHEN_WRAP_RE = re.compile(r"([A-Za-z])-\s*\n\s*([A-Za-z])")
 _REQ_ID_RE = re.compile(r"^\[[A-Za-z0-9_.:-]{2,}\]")
-_DECORATIVE_RUN_RE = re.compile(r"[.\-_=•·]{4,}")
+_DECORATIVE_RUN_RE = re.compile(r"[.\-_=•·\u2026\u30fb─━]{4,}")
 _UML_MULTIPLICITY_RE = re.compile(r"\b\d+\.\.(?:\d+\b|\*)")
-_BULLET_RE = re.compile(r"^[•\-\*\u2022\u25e6\u25aa\u25b3\u25bd]")
-_MULTI_LIST_LINE_RE = re.compile(r"(?:^|\n)\s*(?:[0-9]+[.)]|[•\-\*\u2022])\s+\S")
+_BULLET_RE = re.compile(r"^[•\-*◦▪▫●○■□◆◇★☆△▽▲▼▶▷▸▹‣⁃∙・※✓✔➢➣➤\u2022\u25e6\u25aa\u25b3\u25bd\u2013\u2014]")
+_MULTI_LIST_LINE_RE = re.compile(
+    r"^(?:\([0-9]+\)\s*\S|[0-9]+[.)]\s+\S|[0-9]+[.)](?=[^\d\s.])\S|"
+    r"[•\-*◦▪▫●○■□◆◇★☆△▽▲▼▶▷▸▹‣⁃∙・※✓✔➢➣➤\u2022\u25e6\u25aa\u25b3\u25bd\u2013\u2014]\s*\S)"
+)
+_TOC_LEADER_RE = re.compile(
+    r"^(?P<title>.+?)\s*(?:[.\u00b7\u2022\u2026\u30fb\-_─━]{3,}|\t|\s{2,})\s*(?P<pno>\d{1,4})\s*$"
+)
+_CJK_CHAR_CLASS = r"\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_CJK_GAP_RE = re.compile(rf"(?<=[{_CJK_CHAR_CLASS}])\s+(?=[{_CJK_CHAR_CLASS}])")
+_DEFAULT_EM = 10.0
 _MAX_HEADING_LEVEL = 6
 _MIN_STYLE_TIER_COUNT = 5
 _SLIDE_TITLE_BAND = 0.2
@@ -60,6 +70,14 @@ _TITLE_BAND_MAX_WORDS = 24
 _DEFAULT_SIZE_TOLERANCE = 0.05
 _SLIDE_BOOKMARK_RE = re.compile(r"^(?:foli[ea]|slide|page)\s+\d+(?:\b|:)", re.IGNORECASE)
 _TOC_HEADER_RE = re.compile(r"^(?:table\s+of\s+contents|contents)$", re.IGNORECASE)
+
+
+def _nfkc(text: str) -> str:
+    return unicodedata.normalize("NFKC", text)
+
+
+def _em_size(body_font: float | None) -> float:
+    return float(body_font) if (body_font is not None and body_font > 0) else _DEFAULT_EM
 
 
 def _clean_text(text: str) -> str:
@@ -80,7 +98,15 @@ def _join_wrapped_text(first: str, second: str) -> str:
 
 def _norm_title(text: str) -> str:
     dehyphenated = _SOFT_HYPHEN_WRAP_RE.sub(r"\1\2", text)
-    return re.sub(r"[^a-z0-9]+", " ", _clean_text(dehyphenated).lower()).strip()
+    normed = _nfkc(dehyphenated).casefold()
+    chars = [ch if unicodedata.category(ch)[0] in ("L", "N", "M") else " " for ch in normed]
+    collapsed = " ".join("".join(chars).split())
+    return _CJK_GAP_RE.sub("", collapsed)
+
+
+def _is_matchable_toc_title(norm: str) -> bool:
+    compact = norm.replace(" ", "")
+    return len(compact) >= 2 and any(ch.isalpha() for ch in compact)
 
 
 def _filter_meaningful_toc(toc: Sequence[tuple[int, str, int]]) -> list[tuple[int, str, int]]:
@@ -95,35 +121,144 @@ def _load_pdf_toc(pdf_path: str | Path) -> list[tuple[int, str, int]]:
     return _filter_meaningful_toc(extract_toc(pdf_path))
 
 
-def _match_toc_entries(
+def _is_toc_leader_line(line: str, max_page_num: int) -> bool:
+    norm = _nfkc(line).strip()
+    if not norm:
+        return False
+    m = _TOC_LEADER_RE.match(norm)
+    if not m:
+        return False
+    title = m.group("title").strip()
+    pno = int(m.group("pno"))
+    return len(title) >= 2 and _has_alpha(title) and 1 <= pno <= max_page_num
+
+
+def _count_split_toc_pairs(page_elems: Sequence[dict[str, Any]], em: float, max_page_num: int) -> int:
+    num_elems: list[tuple[dict[str, Any], float, float]] = []
+    text_elems: list[tuple[dict[str, Any], float]] = []
+    for elem in page_elems:
+        bbox = elem.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        cleaned = _clean_text(_nfkc(elem.get("text", "")))
+        if not cleaned:
+            continue
+        cy = (float(bbox[1]) + float(bbox[3])) * 0.5
+        if cleaned.isdigit() and 1 <= int(cleaned) <= max_page_num:
+            num_elems.append((elem, cy, float(bbox[2])))
+        elif len(cleaned) >= 2 and _has_alpha(cleaned):
+            text_elems.append((elem, cy))
+    if len(num_elems) < 3 or not text_elems:
+        return 0
+    matched_rights: list[float] = []
+    for r_elem, r_cy, r_x1 in num_elems:
+        rx0 = float(r_elem["bbox"][0])
+        if any(
+            abs(l_cy - r_cy) <= 0.6 * em and float(l_elem["bbox"][2]) <= rx0 + 0.2 * em
+            for l_elem, l_cy in text_elems
+        ):
+            matched_rights.append(r_x1)
+    if len(matched_rights) < 3:
+        return 0
+    matched_rights.sort()
+    median_x1 = matched_rights[len(matched_rights) // 2]
+    return sum(1 for x1 in matched_rights if abs(x1 - median_x1) <= 2.5 * em)
+
+
+def _detect_toc_pages(
     ordered: list[tuple[int, dict[str, Any]]],
     toc: Sequence[tuple[int, str, int]],
-) -> tuple[dict[str, int], set[int]]:
-    if not toc:
-        return {}, set()
-    first_target_page = min(page for _, _, page in toc)
-    toc_pages: set[int] = set()
-    in_toc = False
+    body_font: float | None = None,
+) -> set[int]:
+    by_page_elems: dict[int, list[dict[str, Any]]] = {}
     for _, elem in ordered:
         if elem.get("type") != "text" or _is_ignored_element(elem):
             continue
-        page = int(elem.get("page", 0))
-        if page >= first_target_page:
+        pno = int(elem.get("page", 0))
+        if pno >= 1:
+            by_page_elems.setdefault(pno, []).append(elem)
+    if not by_page_elems:
+        return set()
+
+    max_page = max(by_page_elems)
+    max_page_num = max(max_page + 20, 300)
+    em = _em_size(body_font)
+    first_target_page = min((page for _, _, page in toc), default=None)
+    scan_limit = (
+        max(first_target_page - 1, min(8, max(2, max_page // 3)))
+        if first_target_page is not None
+        else min(8, max(2, max_page // 3))
+    )
+
+    bm_entries: list[tuple[int, str, int]] = []
+    for idx, (_, title, target_page) in enumerate(toc):
+        norm = _norm_title(title)
+        if _is_matchable_toc_title(norm):
+            bm_entries.append((idx, norm, int(target_page)))
+
+    toc_pages: set[int] = set()
+    in_header_toc = False
+    for pno in sorted(by_page_elems):
+        if pno > scan_limit:
             break
-        if _TOC_HEADER_RE.match(_clean_text(elem.get("text", ""))):
-            in_toc = True
-        if in_toc:
-            toc_pages.add(page)
+        p_elems = by_page_elems[pno]
+        if first_target_page is not None and pno < first_target_page:
+            if any(_TOC_HEADER_RE.match(_clean_text(_nfkc(e.get("text", "")))) for e in p_elems):
+                in_header_toc = True
+            if in_header_toc:
+                toc_pages.add(pno)
+                continue
+
+        leader_lines = sum(
+            1
+            for e in p_elems
+            for ln in e.get("text", "").splitlines()
+            if _is_toc_leader_line(ln, max_page_num)
+        )
+        split_pairs = _count_split_toc_pairs(p_elems, em, max_page_num)
+        bm_hits: set[int] = set()
+        if bm_entries:
+            line_norms = {
+                n
+                for e in p_elems
+                for ln in e.get("text", "").splitlines()
+                if _is_matchable_toc_title(n := _norm_title(ln))
+            }
+            for idx, b_norm, target_p in bm_entries:
+                if target_p > pno and b_norm in line_norms:
+                    bm_hits.add(idx)
+
+        if leader_lines >= 3 or split_pairs >= 3 or len(bm_hits) >= 3:
+            toc_pages.add(pno)
+            if first_target_page is not None and pno < first_target_page:
+                in_header_toc = True
+        elif not toc and (pno - 1) in toc_pages and (leader_lines >= 1 or split_pairs >= 1):
+            toc_pages.add(pno)
+
+    return toc_pages
+
+
+def _match_toc_entries(
+    ordered: list[tuple[int, dict[str, Any]]],
+    toc: Sequence[tuple[int, str, int]],
+    body_font: float | None = None,
+) -> tuple[dict[str, int], set[int]]:
+    toc_pages = _detect_toc_pages(ordered, toc, body_font)
+    if not toc:
+        return {}, toc_pages
 
     by_page: dict[int, list[tuple[int, str, str]]] = {}
     exact_idx: dict[tuple[int, str], list[tuple[int, str]]] = {}
+    compact_idx: dict[tuple[int, str], list[tuple[int, str]]] = {}
     for idx, (lvl, title, page) in enumerate(toc):
         norm = _norm_title(title)
-        if not norm:
+        if not _is_matchable_toc_title(norm):
             continue
         uid = f"{idx}:{norm}"
         by_page.setdefault(page, []).append((lvl, norm, uid))
         exact_idx.setdefault((page, norm), []).append((lvl, uid))
+        if any(ord(ch) >= 0x3000 for ch in norm):
+            compact_idx.setdefault((page, norm.replace(" ", "")), []).append((lvl, uid))
 
     matched_levels: dict[str, int] = {}
     used_toc: set[str] = set()
@@ -134,15 +269,21 @@ def _match_toc_entries(
         if page in toc_pages:
             continue
         norm_elem = _norm_title(elem.get("text", ""))
-        if not norm_elem or len(norm_elem) > 160:
+        if not _is_matchable_toc_title(norm_elem) or len(norm_elem) > 160:
             continue
 
         exact_hit: tuple[int, str] | None = None
+        compact_elem = norm_elem.replace(" ", "") if any(ord(ch) >= 0x3000 for ch in norm_elem) else ""
         for cand_page in (page, page - 1, page + 1):
             for lvl, uid in exact_idx.get((cand_page, norm_elem), ()):
                 if uid not in used_toc:
                     exact_hit = (lvl, uid)
                     break
+            if exact_hit is None and compact_elem:
+                for lvl, uid in compact_idx.get((cand_page, compact_elem), ()):
+                    if uid not in used_toc:
+                        exact_hit = (lvl, uid)
+                        break
             if exact_hit is not None:
                 break
         if exact_hit is not None:
@@ -182,15 +323,66 @@ def _is_ignored_element(elem: dict[str, Any]) -> bool:
 
 
 def _has_alpha(text: str) -> bool:
-    return any(ch.isalpha() for ch in text)
+    return any(ch.isalpha() for ch in _nfkc(text))
 
 
 def _sentence_count(text: str) -> int:
-    return len(re.findall(r"[.!?](?:\s|$)", text))
+    return len(re.findall(r"(?:[.!?](?:\s|$)|[。！？])", _nfkc(text)))
 
 
 def _ends_sentence(text: str) -> bool:
-    return bool(text) and text[-1] in ".?!;,"
+    norm = _nfkc(text).rstrip()
+    return bool(norm) and norm[-1] in ".?!;,。！？；、"
+
+
+def _effective_word_count(text: str) -> float:
+    total = 0.0
+    for tok in _nfkc(text).split():
+        cjk = 0
+        sea = 0
+        has_other = False
+        for ch in tok:
+            o = ord(ch)
+            if (
+                0x3040 <= o <= 0x30FF
+                or 0x31F0 <= o <= 0x31FF
+                or 0x3400 <= o <= 0x4DBF
+                or 0x4E00 <= o <= 0x9FFF
+                or 0xF900 <= o <= 0xFAFF
+            ):
+                cjk += 1
+            elif (
+                0x0E00 <= o <= 0x0EFF
+                or 0x0F00 <= o <= 0x0FFF
+                or 0x1000 <= o <= 0x109F
+                or 0x1780 <= o <= 0x17FF
+            ):
+                if not unicodedata.category(ch).startswith("M"):
+                    sea += 1
+            elif unicodedata.category(ch)[0] in ("L", "N"):
+                has_other = True
+        total += cjk * 0.4 + sea * 0.25 + (1.0 if has_other or (cjk == 0 and sea == 0) else 0.0)
+    return total
+
+
+def _is_list_block(raw: str) -> bool:
+    stripped = raw.strip()
+    if not stripped:
+        return False
+    if _BULLET_RE.match(_nfkc(stripped)):
+        return True
+    list_lines = 0
+    for ln in raw.splitlines():
+        s_raw = ln.lstrip()
+        if not s_raw:
+            continue
+        if unicodedata.category(s_raw[0]) == "No" and len(s_raw) > 1:
+            list_lines += 1
+        elif _MULTI_LIST_LINE_RE.match(_nfkc(s_raw)):
+            list_lines += 1
+        if list_lines >= 2:
+            return True
+    return False
 
 
 def _weighted_median_font_size(elements: Sequence[dict[str, Any]]) -> float | None:
@@ -266,42 +458,189 @@ def _project_semantic_regions(
             meta["layout_label"] = best_label
 
 
-def _parse_caption_prefix(text: str) -> tuple[bool, str | None]:
-    cleaned = _clean_text(text)
+def _should_trust_section_header(elem: dict[str, Any], body_font: float | None) -> bool:
+    if elem.get("source", "text_layer") != "text_layer" or body_font is None:
+        return True
+    fs = (elem.get("metadata") or {}).get("font_size")
+    if not isinstance(fs, (int, float)) or fs <= 0:
+        return True
+    return float(fs) >= body_font * 0.95
+
+
+def _allow_caption_check_on_label(label: Any, elem: dict[str, Any], body_font: float | None) -> bool:
+    if label == "caption":
+        return True
+    if label == "title" or label in _NON_HEADING_LABELS:
+        return False
+    if label == "section_header":
+        if body_font is None:
+            return False
+        fs = (elem.get("metadata") or {}).get("font_size")
+        return isinstance(fs, (int, float)) and 0.0 < float(fs) <= body_font
+    return True
+
+
+def _extract_short_prefix_and_num(cleaned_nfkc: str) -> tuple[str, str | None, str] | None:
+    n = len(cleaned_nfkc)
+    i = 0
+    letter_count = 0
+    while i < n:
+        cat = unicodedata.category(cleaned_nfkc[i])
+        if cat[0] == "L":
+            letter_count += 1
+            i += 1
+        elif cat[0] == "M" and letter_count > 0:
+            i += 1
+        else:
+            break
+    if letter_count == 0 or letter_count > 15:
+        return None
+    if i < n and cleaned_nfkc[i] == ".":
+        i += 1
+    prefix_key = cleaned_nfkc[:i].rstrip(".").casefold()
+    while i < n and cleaned_nfkc[i].isspace():
+        i += 1
+    num_start = i
+    while i < n and (cleaned_nfkc[i].isdigit() or (cleaned_nfkc[i] in ".-" and i + 1 < n and cleaned_nfkc[i + 1].isdigit())):
+        i += 1
+    if i == num_start:
+        return None
+    if i == n:
+        return prefix_key, None, ""
+    ch = cleaned_nfkc[i]
+    if ch in ":.-–—、)）":
+        return prefix_key, ch, cleaned_nfkc[i + 1 :].strip()
+    if ch.isspace():
+        rest = cleaned_nfkc[i:].strip()
+        if rest and rest[0] in ":.-–—、)）":
+            return prefix_key, rest[0], rest[1:].strip()
+        return prefix_key, None, rest
+    return None
+
+
+def _learn_caption_prefixes(
+    elements: Sequence[dict[str, Any]],
+    body_font: float | None,
+    protected_ids: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, str | None]:
+    em = _em_size(body_font)
+    adj_targets: dict[str, set[str]] = {}
+    adj_kinds: dict[str, list[str]] = {}
+    adj_elems: dict[str, set[str]] = {}
+    non_adj_count: dict[str, int] = {}
+
+    pages: dict[int, list[dict[str, Any]]] = {}
+    for elem in elements:
+        pages.setdefault(elem.get("page", 0), []).append(elem)
+
+    for page_elems in pages.values():
+        targets = [e for e in page_elems if e.get("level", 1) == 1 and e.get("type") in {"figure", "table"}]
+        for elem in page_elems:
+            if elem.get("type") != "text" or _is_ignored_element(elem) or elem.get("id") in protected_ids:
+                continue
+            meta = elem.get("metadata") or {}
+            if not _allow_caption_check_on_label(meta.get("layout_label"), elem, body_font):
+                continue
+            raw = elem.get("text", "")
+            if _is_list_block(raw):
+                continue
+            cleaned = _clean_text(_nfkc(raw))
+            if (
+                not cleaned
+                or not _has_alpha(cleaned)
+                or len(cleaned) > 140
+                or _effective_word_count(cleaned) > 18
+                or _sentence_count(cleaned) >= 2
+                or _parse_caption_prefix(cleaned)[0]
+                or _parse_numbered_heading(cleaned, meta, body_font) is not None
+            ):
+                continue
+            fs = meta.get("font_size")
+            if body_font and isinstance(fs, (int, float)) and fs >= body_font * 1.15:
+                continue
+            parsed = _extract_short_prefix_and_num(cleaned)
+            if parsed is None:
+                continue
+            prefix_key, sep, rest = parsed
+            if sep is None and rest and _CAPTION_PROSE_START_RE.match(rest):
+                continue
+            bbox = elem.get("bbox")
+            best_tgt: tuple[float, float, dict[str, Any]] | None = None
+            if bbox and len(bbox) == 4:
+                for tgt in targets:
+                    tb = tgt.get("bbox")
+                    if not tb or len(tb) != 4:
+                        continue
+                    dy, h_ov = _bbox_metrics(bbox, tb, em=em)
+                    if dy <= 2.2 * em and h_ov > 0.0:
+                        cand = (dy, -h_ov, tgt)
+                        if best_tgt is None or cand < (best_tgt[0], best_tgt[1], None):
+                            best_tgt = cand
+            if best_tgt is not None:
+                tgt = best_tgt[2]
+                adj_targets.setdefault(prefix_key, set()).add(tgt["id"])
+                adj_kinds.setdefault(prefix_key, []).append(str(tgt.get("type")))
+                adj_elems.setdefault(prefix_key, set()).add(elem["id"])
+            else:
+                non_adj_count[prefix_key] = non_adj_count.get(prefix_key, 0) + 1
+
+    learned: dict[str, str | None] = {}
+    for prefix_key, tgt_ids in adj_targets.items():
+        if len(tgt_ids) >= 2 and len(adj_elems[prefix_key]) >= non_adj_count.get(prefix_key, 0):
+            kinds = set(adj_kinds[prefix_key])
+            learned[prefix_key] = next(iter(kinds)) if len(kinds) == 1 else None
+    return learned
+
+
+def _parse_caption_prefix(
+    text: str,
+    learned_prefixes: Mapping[str, str | None] | None = None,
+) -> tuple[bool, str | None]:
+    cleaned = _clean_text(_nfkc(text))
     if not cleaned or len(cleaned) > 300:
         return False, None
     m = _CAPTION_PREFIX_RE.match(cleaned)
-    if not m:
-        return False, None
-    kind_raw = m.group("kind").lower().rstrip(".")
-    target_kind = "table" if kind_raw in _TABLE_CAPTION_KINDS else "figure"
-    sep = m.group("sep")
-    rest = m.group("rest")
-    bare = m.group("bare")
+    if m:
+        kind_raw = m.group("kind").lower().rstrip(".")
+        target_kind = "table" if kind_raw in _TABLE_CAPTION_KINDS else "figure"
+        sep = m.group("sep")
+        rest = m.group("rest")
+        bare = m.group("bare")
 
-    if sep is not None:
-        if sep == "." and rest and _CAPTION_PROSE_START_RE.match(rest):
+        if sep is not None:
+            if sep == "." and rest and _CAPTION_PROSE_START_RE.match(rest):
+                return False, None
+            return True, target_kind
+        if bare is None or not bare.strip():
+            return True, target_kind
+        if _CAPTION_PROSE_START_RE.match(bare) or len(cleaned) > 140 or _sentence_count(cleaned) >= 2:
             return False, None
         return True, target_kind
-    if bare is None or not bare.strip():
-        return True, target_kind
-    if _CAPTION_PROSE_START_RE.match(bare) or len(cleaned) > 140 or _sentence_count(cleaned) >= 2:
-        return False, None
-    return True, target_kind
+
+    if learned_prefixes:
+        parsed = _extract_short_prefix_and_num(cleaned)
+        if parsed is not None and parsed[0] in learned_prefixes:
+            prefix_key, sep, rest = parsed
+            if sep is None and rest and (
+                _CAPTION_PROSE_START_RE.match(rest) or len(cleaned) > 140 or _sentence_count(cleaned) >= 2
+            ):
+                return False, None
+            return True, learned_prefixes[prefix_key]
+    return False, None
 
 
-def _bbox_metrics(a: Sequence[float], b: Sequence[float]) -> tuple[float, float]:
+def _bbox_metrics(a: Sequence[float], b: Sequence[float], *, em: float = _DEFAULT_EM) -> tuple[float, float]:
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
     h_overlap = max(0.0, min(ax1, bx1) - max(ax0, bx0))
     acy = (ay0 + ay1) * 0.5
     bcy = (by0 + by1) * 0.5
-    if acy <= bcy and ay1 <= by0 + 8.0:
+    if acy <= bcy and ay1 <= by0 + 0.8 * em:
         dy = max(0.0, by0 - ay1)
-    elif acy > bcy and ay0 >= by1 - 8.0:
+    elif acy > bcy and ay0 >= by1 - 0.8 * em:
         dy = max(0.0, ay0 - by1)
     else:
-        dy = min(abs(by0 - ay1), abs(ay0 - by1)) + 50.0
+        dy = min(abs(by0 - ay1), abs(ay0 - by1)) + 5.0 * em
     return dy, h_overlap
 
 
@@ -342,14 +681,15 @@ def _vertically_adjacent(
     gap_scale: float,
     max_cap: float,
     align_tol: float,
+    em: float = _DEFAULT_EM,
 ) -> bool:
     if not b1 or not b2 or len(b1) != 4 or len(b2) != 4:
         return False
     h1 = max(1.0, float(b1[3]) - float(b1[1]))
     h2 = max(1.0, float(b2[3]) - float(b2[1]))
     dy = float(b2[1]) - float(b1[3])
-    max_gap = max(6.0, min(max_cap, gap_scale * min(h1, h2)))
-    if dy < -3.0 or dy > max_gap:
+    max_gap = max(0.6 * em, min(max_cap, gap_scale * min(h1, h2)))
+    if dy < -0.3 * em or dy > max_gap:
         return False
     if min(float(b1[2]), float(b2[2])) <= max(float(b1[0]), float(b2[0])):
         return False
@@ -366,16 +706,16 @@ def _is_adjacent_caption_candidate(
     if elem.get("type") != "text" or _is_ignored_element(elem):
         return False
     meta = elem.get("metadata") or {}
-    label = meta.get("layout_label")
-    if label in _HEADING_LABELS or label in _NON_HEADING_LABELS:
+    if not _allow_caption_check_on_label(meta.get("layout_label"), elem, body_font):
         return False
     raw = elem.get("text", "")
-    if _BULLET_RE.match(raw.strip()) or len(_MULTI_LIST_LINE_RE.findall(raw)) >= 2:
+    if _is_list_block(raw):
         return False
-    cleaned = _clean_text(raw)
-    if not cleaned or not _has_alpha(cleaned) or len(cleaned) > 120 or len(cleaned.split()) > 18:
+    cleaned = _clean_text(_nfkc(raw))
+    eff_words = _effective_word_count(cleaned)
+    if not cleaned or not _has_alpha(cleaned) or len(cleaned) > 120 or eff_words > 14:
         return False
-    if cleaned[-1] in ":;?" or _sentence_count(cleaned) >= 2:
+    if cleaned[-1] in ":;?" or _sentence_count(cleaned) >= 2 or (eff_words > 8 and _ends_sentence(cleaned)):
         return False
     if _parse_numbered_heading(cleaned, meta, body_font) is not None:
         return False
@@ -385,12 +725,13 @@ def _is_adjacent_caption_candidate(
     bbox = elem.get("bbox")
     if not bbox or len(bbox) != 4:
         return False
+    em = _em_size(body_font)
     for tgt in targets:
         tb = tgt.get("bbox")
         if not tb or len(tb) != 4:
             continue
-        dy, h_ov = _bbox_metrics(bbox, tb)
-        if dy <= 18.0 and h_ov > 0.0:
+        dy, h_ov = _bbox_metrics(bbox, tb, em=em)
+        if dy <= 1.8 * em and h_ov > 0.0:
             return True
     return False
 
@@ -399,8 +740,10 @@ def _merge_multiline_captions(
     elements: list[dict[str, Any]],
     ordered: list[tuple[int, dict[str, Any]]],
     body_font: float | None,
+    learned_prefixes: Mapping[str, str | None] | None = None,
 ) -> list[tuple[int, dict[str, Any]]]:
     dropped_ids: set[str] = set()
+    em = _em_size(body_font)
     n = len(ordered)
     i = 0
     while i + 1 < n:
@@ -422,23 +765,30 @@ def _merge_multiline_captions(
         m2 = c2.get("metadata") or {}
         l1 = m1.get("layout_label")
         l2 = m2.get("layout_label")
-        is_cap1 = l1 == "caption" or m1.get("role") == "caption" or _parse_caption_prefix(c1.get("text", ""))[0]
-        if not is_cap1 or l2 in _HEADING_LABELS or (l2 in _NON_HEADING_LABELS and l2 != "caption"):
+        is_cap1 = (
+            l1 == "caption"
+            or m1.get("role") == "caption"
+            or (
+                _allow_caption_check_on_label(l1, c1, body_font)
+                and _parse_caption_prefix(c1.get("text", ""), learned_prefixes)[0]
+            )
+        )
+        if not is_cap1 or not _allow_caption_check_on_label(l2, c2, body_font):
             i += 1
             continue
 
         raw2 = c2.get("text", "")
-        if _BULLET_RE.match(raw2.strip()) or len(_MULTI_LIST_LINE_RE.findall(raw2)) >= 2:
+        if _is_list_block(raw2):
             i += 1
             continue
-        t2 = _clean_text(raw2)
+        t2 = _clean_text(_nfkc(raw2))
         if (
             not t2
             or not _has_alpha(t2)
             or len(t2) > 140
-            or len(t2.split()) > 20
+            or _effective_word_count(t2) > 20
             or _sentence_count(t2) >= 2
-            or _parse_caption_prefix(t2)[0]
+            or _parse_caption_prefix(t2, learned_prefixes)[0]
             or _parse_numbered_heading(t2, m2, body_font) is not None
         ):
             i += 1
@@ -459,7 +809,14 @@ def _merge_multiline_captions(
             i += 1
             continue
 
-        if not _vertically_adjacent(c1.get("bbox"), c2.get("bbox"), gap_scale=0.6, max_cap=12.0, align_tol=40.0):
+        if not _vertically_adjacent(
+            c1.get("bbox"),
+            c2.get("bbox"),
+            gap_scale=0.6,
+            max_cap=1.2 * em,
+            align_tol=4.0 * em,
+            em=em,
+        ):
             i += 1
             continue
 
@@ -480,7 +837,11 @@ def _link_captions(
     elements: list[dict[str, Any]],
     body_font: float | None,
     protected_ids: set[str] = frozenset(),
+    learned_prefixes: Mapping[str, str | None] | None = None,
 ) -> None:
+    if learned_prefixes is None:
+        learned_prefixes = _learn_caption_prefixes(elements, body_font, protected_ids)
+    em = _em_size(body_font)
     pages: dict[int, list[dict[str, Any]]] = {}
     for elem in elements:
         pages.setdefault(elem.get("page", 0), []).append(elem)
@@ -489,20 +850,20 @@ def _link_captions(
         targets = [e for e in page_elems if e.get("level", 1) == 1 and e.get("type") in {"figure", "table"}]
         explicit_caps: list[tuple[dict[str, Any], str | None, float]] = []
         for elem in page_elems:
-            if elem.get("type") != "text" or _is_ignored_element(elem):
+            if elem.get("type") != "text" or _is_ignored_element(elem) or elem.get("id") in protected_ids:
                 continue
             meta = elem.setdefault("metadata", {})
             label = meta.get("layout_label")
-            if label in _HEADING_LABELS or (label in _NON_HEADING_LABELS and label != "caption"):
+            if not _allow_caption_check_on_label(label, elem, body_font):
                 continue
-            is_prefixed, pref_kind = _parse_caption_prefix(elem.get("text", ""))
+            is_prefixed, pref_kind = _parse_caption_prefix(elem.get("text", ""), learned_prefixes)
             if label == "caption" or meta.get("role") == "caption" or is_prefixed:
                 meta["role"] = "caption"
-                explicit_caps.append((elem, pref_kind, 120.0))
+                explicit_caps.append((elem, pref_kind, 12.0 * em))
 
         claimed_caps: set[str] = set()
         claimed_targets: set[str] = set()
-        _match_caption_pool(explicit_caps, targets, claimed_caps, claimed_targets)
+        _match_caption_pool(explicit_caps, targets, claimed_caps, claimed_targets, em=em)
 
         remaining_targets = [t for t in targets if t["id"] not in claimed_targets]
         if not remaining_targets:
@@ -512,8 +873,8 @@ def _link_captions(
             if elem["id"] in claimed_caps or elem["id"] in protected_ids:
                 continue
             if _is_adjacent_caption_candidate(elem, remaining_targets, body_font):
-                adj_caps.append((elem, None, 18.0))
-        _match_caption_pool(adj_caps, remaining_targets, claimed_caps, claimed_targets)
+                adj_caps.append((elem, None, 1.8 * em))
+        _match_caption_pool(adj_caps, remaining_targets, claimed_caps, claimed_targets, em=em)
 
 
 def _min_cost_bipartite_match(
@@ -590,6 +951,8 @@ def _match_caption_pool(
     targets: list[dict[str, Any]],
     claimed_caps: set[str],
     claimed_targets: set[str],
+    *,
+    em: float = _DEFAULT_EM,
 ) -> None:
     if not captions or not targets:
         return
@@ -609,7 +972,7 @@ def _match_caption_pool(
             tb = tgt.get("bbox")
             if not tb or len(tb) != 4:
                 continue
-            dy, h_ov = _bbox_metrics(cb, tb)
+            dy, h_ov = _bbox_metrics(cb, tb, em=em)
             if dy > max_gap or h_ov <= 0.0:
                 continue
             min_w = max(1.0, min(cb[2] - cb[0], tb[2] - tb[0]))
@@ -672,37 +1035,43 @@ def _parse_numbered_heading(
     cleaned: str,
     meta: dict[str, Any],
     body_font: float | None,
+    *,
+    source: str = "text_layer",
 ) -> int | None:
-    if len(cleaned) > 140 or len(cleaned.split()) > 18 or _sentence_count(cleaned) >= 2:
+    norm = _clean_text(_nfkc(cleaned))
+    if len(norm) > 140 or _effective_word_count(norm) > 18 or _sentence_count(norm) >= 2:
         return None
 
     fs = meta.get("font_size")
     styled = bool(meta.get("bold")) or (
         body_font is not None and isinstance(fs, (int, float)) and fs >= body_font * 1.05
     )
-    explicit_label = meta.get("layout_label") in _HEADING_LABELS
+    label = meta.get("layout_label")
+    explicit_label = label == "title" or (
+        label == "section_header" and _should_trust_section_header({"source": source, "metadata": meta}, body_font)
+    )
 
-    m_chap = _CHAPTER_RE.match(cleaned)
+    m_chap = _CHAPTER_RE.match(norm)
     if m_chap:
         rest = m_chap.group(2).strip()
         if (rest and _has_alpha(rest) and _title_starts_well(rest)) or (not rest and (styled or explicit_label)):
             return 1
 
-    m_app = _APPENDIX_RE.match(cleaned)
+    m_app = _APPENDIX_RE.match(norm)
     if m_app:
         sub = m_app.group(2)
         rest = m_app.group(3).strip()
         if (rest and _has_alpha(rest) and _title_starts_well(rest)) or (not rest and (styled or explicit_label)):
             return 1 if not sub else min(6, 1 + len(sub.split(".")))
 
-    m_asub = _APPENDIX_SUB_RE.match(cleaned)
+    m_asub = _APPENDIX_SUB_RE.match(norm)
     if m_asub:
         parts = m_asub.group(1).split(".")
         rest = m_asub.group(2).strip()
         if _has_alpha(rest) and _title_starts_well(rest):
             return min(6, len(parts))
 
-    m_num = _NUMERIC_HEADING_RE.match(cleaned)
+    m_num = _NUMERIC_HEADING_RE.match(norm)
     if m_num:
         num_str, dot, rest = m_num.groups()
         parts = num_str.split(".")
@@ -717,7 +1086,7 @@ def _parse_numbered_heading(
 
         if len(parts) == 1 and not dot and not (styled or explicit_label):
             return None
-        if not (styled or explicit_label) and _ends_sentence(cleaned):
+        if not (styled or explicit_label) and _ends_sentence(norm):
             return None
         return len(parts)
 
@@ -725,7 +1094,7 @@ def _parse_numbered_heading(
 
 
 def _title_starts_well(rest: str, *, allow_camel: bool = False) -> bool:
-    stripped = rest.lstrip("\"'([")
+    stripped = _nfkc(rest).lstrip("\"'([「『【〈《")
     if not stripped:
         return False
     first = stripped[0]
@@ -752,38 +1121,39 @@ def _is_heading_candidate(
         return False, None
 
     raw = elem.get("text", "")
-    if _BULLET_RE.match(raw.strip()) or len(_MULTI_LIST_LINE_RE.findall(raw)) >= 2:
+    if _is_list_block(raw):
         return False, None
 
     cleaned = _clean_text(raw)
-    if not cleaned or not _has_alpha(cleaned) or len(cleaned) <= 1:
+    norm = _nfkc(cleaned)
+    if not norm or not _has_alpha(norm) or len(norm) <= 1:
         return False, None
 
-    num_depth = _parse_numbered_heading(cleaned, meta, body_font)
+    num_depth = _parse_numbered_heading(cleaned, meta, body_font, source=str(elem.get("source", "text_layer")))
 
     if label == "title":
         return True, 1
-    if label == "section_header":
+    if label == "section_header" and _should_trust_section_header(elem, body_font):
         return True, num_depth
     if num_depth is not None:
         return True, num_depth
 
     if (
-        _REQ_ID_RE.match(cleaned)
-        or cleaned.endswith(":")
-        or _DECORATIVE_RUN_RE.search(cleaned)
-        or _UML_MULTIPLICITY_RE.search(cleaned)
+        _REQ_ID_RE.match(norm)
+        or norm.endswith(":")
+        or _DECORATIVE_RUN_RE.search(norm)
+        or _UML_MULTIPLICITY_RE.search(norm)
     ):
         return False, None
 
-    n_words = len(cleaned.split())
-    if len(cleaned) > 140 or n_words > (_TITLE_BAND_MAX_WORDS if title_band else 16) or _sentence_count(cleaned) >= 2:
+    n_words = _effective_word_count(norm)
+    if len(norm) > 140 or n_words > (_TITLE_BAND_MAX_WORDS if title_band else 16) or _sentence_count(norm) >= 2:
         return False, None
 
     fs = meta.get("font_size")
     bold = bool(meta.get("bold"))
     has_fs = isinstance(fs, (int, float)) and fs > 0
-    bold_ok = bold and not _ends_sentence(cleaned) and n_words <= (_TITLE_BAND_MAX_WORDS if title_band else 12)
+    bold_ok = bold and not _ends_sentence(norm) and n_words <= (_TITLE_BAND_MAX_WORDS if title_band else 12)
 
     if body_font is not None and has_fs:
         return fs >= body_font * 1.15 or (bold_ok and fs >= body_font * 0.98), None
@@ -869,8 +1239,10 @@ def _merge_multiline_headings(
     ordered: list[tuple[int, dict[str, Any]]],
     body_font: float | None,
     top_band_ids: set[str],
+    learned_prefixes: Mapping[str, str | None] | None = None,
 ) -> list[tuple[int, dict[str, Any]]]:
     dropped_ids: set[str] = set()
+    em = _em_size(body_font)
     n = len(ordered)
     i = 0
     while i + 1 < n:
@@ -904,7 +1276,7 @@ def _merge_multiline_headings(
 
         raw1 = e1.get("text", "")
         raw2 = e2.get("text", "")
-        if _parse_caption_prefix(raw1)[0] or _parse_caption_prefix(raw2)[0]:
+        if _parse_caption_prefix(raw1, learned_prefixes)[0] or _parse_caption_prefix(raw2, learned_prefixes)[0]:
             i += 1
             continue
 
@@ -923,18 +1295,24 @@ def _merge_multiline_headings(
             i += 1
             continue
 
-        if not _vertically_adjacent(e1.get("bbox"), e2.get("bbox"), gap_scale=0.55, max_cap=14.0, align_tol=30.0):
+        if not _vertically_adjacent(
+            e1.get("bbox"),
+            e2.get("bbox"),
+            gap_scale=0.55,
+            max_cap=1.4 * em,
+            align_tol=3.0 * em,
+            em=em,
+        ):
             i += 1
             continue
 
-        t1 = _clean_text(raw1)
-        t2 = _clean_text(raw2)
-        if not t1 or not t2 or t1[-1] in ".?!;:":
+        t1 = _nfkc(_clean_text(raw1))
+        t2 = _nfkc(_clean_text(raw2))
+        if not t1 or not t2 or t1[-1] in ".?!;:。！？；：":
             i += 1
             continue
         if (
-            _BULLET_RE.match(raw2.strip())
-            or len(_MULTI_LIST_LINE_RE.findall(raw2)) >= 2
+            _is_list_block(raw2)
             or _REQ_ID_RE.match(t2)
             or t2.endswith(":")
             or _DECORATIVE_RUN_RE.search(t2)
@@ -973,9 +1351,9 @@ def _has_clear_heading_style(
     fs = meta.get("font_size")
     has_fs = isinstance(fs, (int, float)) and fs > 0
     if body_font is not None:
-        if not has_fs or float(fs) < body_font + 1.5:
+        if not has_fs or float(fs) < body_font * 1.15:
             return False
-        if min_top_fs is not None and float(fs) < min_top_fs - 0.5:
+        if min_top_fs is not None and float(fs) < min_top_fs * 0.95:
             return False
         return True
     return bool(meta.get("bold"))
@@ -993,8 +1371,12 @@ def _validate_heading_sequence(
         eid = elem["id"]
         has_toc = eid in toc_matches
         label = (elem.get("metadata") or {}).get("layout_label")
-        is_labeled = label in _HEADING_LABELS or eid in slide_titles
-        m = _LEADING_NUMBER_RE.match(_clean_text(elem.get("text", "")))
+        is_labeled = (
+            label == "title"
+            or (label == "section_header" and _should_trust_section_header(elem, body_font))
+            or eid in slide_titles
+        )
+        m = _LEADING_NUMBER_RE.match(_clean_text(_nfkc(elem.get("text", ""))))
         parts: tuple[int, ...] | None = None
         if m:
             raw_parts = m.group(1).split(".")
@@ -1195,9 +1577,10 @@ def apply_structure(
         enumerate(elements),
         key=lambda pair: (pair[1].get("page", 0), pair[1].get("reading_order", pair[0]), pair[0]),
     )
-    ordered = _merge_multiline_headings(elements, ordered, body_font, top_band_ids)
-    toc_matches, toc_pages = _match_toc_entries(ordered, resolved_toc) if resolved_toc else ({}, set())
-    ordered = _merge_multiline_captions(elements, ordered, body_font)
+    learned_prefixes = _learn_caption_prefixes(elements, body_font, top_band_ids)
+    ordered = _merge_multiline_headings(elements, ordered, body_font, top_band_ids, learned_prefixes)
+    toc_matches, toc_pages = _match_toc_entries(ordered, resolved_toc, body_font)
+    ordered = _merge_multiline_captions(elements, ordered, body_font, learned_prefixes)
 
     def collect_headings() -> list[tuple[dict[str, Any], int | None]]:
         found = []
@@ -1213,7 +1596,7 @@ def apply_structure(
                 found.append((elem, explicit_depth))
         return found
 
-    _link_captions(elements, body_font, _slide_title_ids(collect_headings(), landscape_heights))
+    _link_captions(elements, body_font, _slide_title_ids(collect_headings(), landscape_heights), learned_prefixes)
     _propagate_captions_to_ir(out, elements)
     raw_candidates = collect_headings()
     raw_slide_titles = _slide_title_ids(raw_candidates, landscape_heights)

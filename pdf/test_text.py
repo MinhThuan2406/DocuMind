@@ -15,7 +15,7 @@ from pdf import extract_ir  # noqa: E402
 from pdf._pdf_io import extract_words_raw  # noqa: E402
 from pdf._test_pdf import TestPdfBuilder  # noqa: E402
 from pdf.models import Word  # noqa: E402
-from pdf.text import extract_words, order_blocks, xy_cut_order  # noqa: E402
+from pdf.text import extract_raw_line_segments, extract_words, order_blocks, xy_cut_order  # noqa: E402
 
 
 def _make_two_column_pdf(path: Path) -> None:
@@ -349,6 +349,186 @@ def test_xy_cut_centered_gutter_footer_and_split_header():
         "Formula",
         "Body",
     ]
+
+
+def test_unicode_hanging_indent_and_vertical_outdent():
+    # Hanging-indent markers across Latin, CJK (fullwidth/katakana/circled), and Arabic-Indic scripts.
+    words = [
+        Word("(a)", (50.0, 80.0, 66.0, 90.0), 10.0, False),
+        Word("Latin", (92.0, 80.0, 122.0, 90.0), 10.0, False),
+        Word("item", (126.0, 80.0, 152.0, 90.0), 10.0, False),
+        Word("wraps", (92.0, 94.0, 125.0, 104.0), 10.0, False),
+        Word("cleanly", (129.0, 94.0, 168.0, 104.0), 10.0, False),
+        Word("iv)", (50.0, 110.0, 64.0, 120.0), 10.0, False),
+        Word("Roman", (92.0, 110.0, 128.0, 120.0), 10.0, False),
+        Word("item", (132.0, 110.0, 158.0, 120.0), 10.0, False),
+        Word("ア．", (50.0, 126.0, 68.0, 136.0), 10.0, False),
+        Word("カタカナ項目", (92.0, 126.0, 162.0, 136.0), 10.0, False),
+        Word("①", (50.0, 142.0, 60.0, 152.0), 10.0, False),
+        Word("丸数字項目", (92.0, 142.0, 155.0, 152.0), 10.0, False),
+        Word("١.", (50.0, 158.0, 62.0, 168.0), 10.0, False),
+        Word("Arabic", (92.0, 158.0, 128.0, 168.0), 10.0, False),
+        Word("digit", (132.0, 158.0, 158.0, 168.0), 10.0, False),
+    ]
+    blocks = order_blocks(words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in blocks] == [
+        "(a) Latin item\nwraps cleanly",
+        "iv) Roman item",
+        "ア． カタカナ項目",
+        "① 丸数字項目",
+        "١. Arabic digit",
+    ], [b.text for b in blocks]
+
+    # Raw segments before order_blocks merging remain unmerged for router table_candidate.
+    raw_lines = extract_raw_line_segments(words, page_rect=(0.0, 0.0, 595.0, 842.0))
+    assert len(raw_lines[0]) == 2 and len(raw_lines[2]) == 2
+
+    # Non-ASCII word markers (not in _LIST_MARKER_RE) split cleanly via hanging indent + outdent.
+    clause_words = [
+        Word("第1条", (50.0, 200.0, 76.0, 210.0), 10.0, False),
+        Word("第一項の本文", (100.0, 200.0, 175.0, 210.0), 10.0, False),
+        Word("二行目の本文", (100.0, 214.0, 175.0, 224.0), 10.0, False),
+        Word("第2条", (50.0, 228.0, 76.0, 238.0), 10.0, False),
+        Word("第二項の本文", (100.0, 228.0, 175.0, 238.0), 10.0, False),
+        Word("継続行の本文", (100.0, 242.0, 175.0, 252.0), 10.0, False),
+    ]
+    clause_blocks = order_blocks(clause_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in clause_blocks] == [
+        "第1条 第一項の本文\n二行目の本文",
+        "第2条 第二項の本文\n継続行の本文",
+    ], [b.text for b in clause_blocks]
+
+
+def test_leader_and_right_aligned_merging():
+    # Character leader, stroke leader, and space-separated right-aligned page numbers across >= 3 lines.
+    char_leader_words = [
+        Word("Chapter", (50.0, 100.0, 95.0, 110.0), 10.0, False),
+        Word("1", (99.0, 100.0, 106.0, 110.0), 10.0, False),
+        Word("...........", (130.0, 100.0, 440.0, 110.0), 10.0, False),
+        Word("12", (470.0, 100.0, 484.0, 110.0), 10.0, False),
+    ]
+    assert [b.text for b in order_blocks(char_leader_words, (0.0, 0.0, 595.0, 842.0))] == [
+        "Chapter 1 ........... 12"
+    ]
+
+    stroke_words = [
+        Word("Appendix", (50.0, 130.0, 102.0, 140.0), 10.0, False),
+        Word("A", (106.0, 130.0, 115.0, 140.0), 10.0, False),
+        Word("99", (470.0, 130.0, 484.0, 140.0), 10.0, False),
+    ]
+    stroke_blocks = order_blocks(
+        stroke_words,
+        (0.0, 0.0, 595.0, 842.0),
+        horiz_rules=[(120.0, 138.0, 465.0, 138.8)],
+    )
+    assert [b.text for b in stroke_blocks] == ["Appendix A 99"]
+
+    toc_words = [
+        Word("第1編", (43.0, 200.0, 75.0, 210.0), 10.0, False),
+        Word("ご契約のしおり", (79.0, 200.0, 155.0, 210.0), 10.0, False),
+        Word("4", (468.0, 200.0, 475.0, 210.0), 10.0, False),
+        Word("第2編", (43.0, 216.0, 75.0, 226.0), 10.0, False),
+        Word("普通保険約款", (79.0, 216.0, 148.0, 226.0), 10.0, False),
+        Word("18", (462.0, 216.0, 475.0, 226.0), 10.0, False),
+        Word("第3編", (43.0, 232.0, 75.0, 242.0), 10.0, False),
+        Word("特約条項", (79.0, 232.0, 132.0, 242.0), 10.0, False),
+        Word("104", (456.0, 232.0, 475.0, 242.0), 10.0, False),
+    ]
+    toc_blocks = order_blocks(toc_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in toc_blocks] == [
+        "第1編 ご契約のしおり 4\n第2編 普通保険約款 18\n第3編 特約条項 104"
+    ], [b.text for b in toc_blocks]
+
+
+def test_inline_bold_paragraph_vs_bold_heading():
+    # Line 1 has >= 50% bold inline terms mixed with non-bold text: must stay one paragraph.
+    inline_words = [
+        Word("Important", (50.0, 100.0, 108.0, 111.0), 11.0, True),
+        Word("coverage", (112.0, 100.0, 165.0, 111.0), 11.0, True),
+        Word("terms", (169.0, 100.0, 202.0, 111.0), 11.0, True),
+        Word("apply", (206.0, 100.0, 236.0, 111.0), 11.0, False),
+        Word("when", (240.0, 100.0, 268.0, 111.0), 11.0, False),
+        Word("filing", (50.0, 115.0, 82.0, 126.0), 11.0, False),
+        Word("a", (86.0, 115.0, 93.0, 126.0), 11.0, False),
+        Word("claim", (97.0, 115.0, 128.0, 126.0), 11.0, False),
+        Word("online.", (132.0, 115.0, 172.0, 126.0), 11.0, False),
+    ]
+    inline_blocks = order_blocks(inline_words, (0.0, 0.0, 595.0, 842.0))
+    assert len(inline_blocks) == 1, [b.text for b in inline_blocks]
+    assert inline_blocks[0].text == "Important coverage terms apply when\nfiling a claim online."
+
+    # Truly bold 100% heading at same font size above body text: must stay separate.
+    heading_words = [
+        Word("Section", (50.0, 180.0, 95.0, 191.0), 11.0, True),
+        Word("Overview", (99.0, 180.0, 152.0, 191.0), 11.0, True),
+        Word("This", (50.0, 195.0, 74.0, 206.0), 11.0, False),
+        Word("policy", (78.0, 195.0, 112.0, 206.0), 11.0, False),
+        Word("covers", (116.0, 195.0, 154.0, 206.0), 11.0, False),
+        Word("damages.", (158.0, 195.0, 210.0, 206.0), 11.0, False),
+    ]
+    heading_blocks = order_blocks(heading_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in heading_blocks] == ["Section Overview", "This policy covers damages."]
+
+
+def test_negative_counterexamples_two_col_prose_first_line_indent_and_borderless_table():
+    # 1. Real 2-col prose with short ending line in left column and justified right column must not merge.
+    prose_2col = [
+        Word("Left", (50.0, 100.0, 76.0, 110.0), 10.0, False),
+        Word("column", (80.0, 100.0, 122.0, 110.0), 10.0, False),
+        Word("continues", (126.0, 100.0, 182.0, 110.0), 10.0, False),
+        Word("here", (186.0, 100.0, 215.0, 110.0), 10.0, False),
+        Word("Right", (320.0, 100.0, 352.0, 110.0), 10.0, False),
+        Word("column", (356.0, 100.0, 398.0, 110.0), 10.0, False),
+        Word("full", (402.0, 100.0, 425.0, 110.0), 10.0, False),
+        Word("justified", (429.0, 100.0, 478.0, 110.0), 10.0, False),
+        Word("line", (482.0, 100.0, 540.0, 110.0), 10.0, False),
+        Word("end.", (50.0, 114.0, 72.0, 124.0), 10.0, False),
+        Word("Second", (320.0, 114.0, 362.0, 124.0), 10.0, False),
+        Word("right", (366.0, 114.0, 394.0, 124.0), 10.0, False),
+        Word("justified", (398.0, 114.0, 448.0, 124.0), 10.0, False),
+        Word("line", (452.0, 114.0, 540.0, 124.0), 10.0, False),
+        Word("New", (50.0, 128.0, 76.0, 138.0), 10.0, False),
+        Word("left", (80.0, 128.0, 102.0, 138.0), 10.0, False),
+        Word("prose", (106.0, 128.0, 140.0, 138.0), 10.0, False),
+        Word("sentence", (144.0, 128.0, 200.0, 138.0), 10.0, False),
+        Word("done", (510.0, 128.0, 540.0, 138.0), 10.0, False),
+        Word("fin", (520.0, 142.0, 540.0, 152.0), 10.0, False),
+        Word("end", (520.0, 156.0, 540.0, 166.0), 10.0, False),
+    ]
+    prose_blocks = order_blocks(prose_2col, (0.0, 0.0, 595.0, 842.0))
+    for b in prose_blocks:
+        assert not ("end." in b.text and "Second" in b.text), prose_blocks
+        assert not ("sentence" in b.text and "done" in b.text), prose_blocks
+
+    # 2. Normal paragraph with first-line indent must stay merged into one paragraph.
+    first_indent = [
+        Word("First", (70.0, 200.0, 98.0, 210.0), 10.0, False),
+        Word("indented", (102.0, 200.0, 150.0, 210.0), 10.0, False),
+        Word("line.", (154.0, 200.0, 180.0, 210.0), 10.0, False),
+        Word("Second", (50.0, 214.0, 90.0, 224.0), 10.0, False),
+        Word("unindented", (94.0, 214.0, 154.0, 224.0), 10.0, False),
+        Word("line.", (158.0, 214.0, 184.0, 224.0), 10.0, False),
+        Word("Third", (50.0, 228.0, 80.0, 238.0), 10.0, False),
+        Word("line.", (84.0, 228.0, 110.0, 238.0), 10.0, False),
+    ]
+    assert [b.text for b in order_blocks(first_indent, (0.0, 0.0, 595.0, 842.0))] == [
+        "First indented line.\nSecond unindented line.\nThird line."
+    ]
+
+    # 3. 2-column borderless table (non-marker IDs) must not merge horizontally in order_blocks.
+    table_2col = [
+        Word("ID1", (50.0, 300.0, 70.0, 310.0), 10.0, False),
+        Word("Description", (180.0, 300.0, 245.0, 310.0), 10.0, False),
+        Word("alpha", (249.0, 300.0, 280.0, 310.0), 10.0, False),
+        Word("ID2", (50.0, 316.0, 70.0, 326.0), 10.0, False),
+        Word("Description", (180.0, 316.0, 245.0, 326.0), 10.0, False),
+        Word("beta", (249.0, 316.0, 276.0, 326.0), 10.0, False),
+        Word("ID3", (50.0, 332.0, 70.0, 342.0), 10.0, False),
+        Word("Description", (180.0, 332.0, 245.0, 342.0), 10.0, False),
+        Word("gamma", (249.0, 332.0, 286.0, 342.0), 10.0, False),
+    ]
+    tbl_blocks = order_blocks(table_2col, (0.0, 0.0, 595.0, 842.0))
+    assert not any("ID1" in b.text and "Description" in b.text for b in tbl_blocks), tbl_blocks
 
 
 def main():

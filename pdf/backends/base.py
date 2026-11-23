@@ -83,6 +83,7 @@ class TableExtractor(Protocol):
         words: Sequence[Any] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = 200,
     ) -> list[ExtractedTable]: ...
@@ -101,6 +102,7 @@ class DiagramExtractor(Protocol):
         words: Sequence[Any] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = 150,
     ) -> list[ExtractedDiagram]: ...

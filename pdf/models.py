@@ -27,6 +27,7 @@ class PageProfile:
     suspect_reasons: tuple[str, ...] = ()
     partial_raster_regions: tuple[BBox, ...] = ()
     watermark_word_count: int = 0
+    table_candidate: bool = False
 
 
 @dataclass(frozen=True)

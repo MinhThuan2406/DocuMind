@@ -981,6 +981,7 @@ class TatrOnnxTableExtractor:
         words: Sequence[Word] | None = None,
         is_raster: bool = False,
         ocr_backend: str = "rapidocr-onnx",
+        ocr_lang: str | None = None,
         device: str | None = None,
         dpi: int = 200,
     ) -> list[ExtractedTable]:
@@ -1006,7 +1007,12 @@ class TatrOnnxTableExtractor:
         if is_raster:
             from .registry import get as get_backend
 
-            ocr_rec = get_backend("ocr", ocr_backend, device=self.device_name if device is None else device)
+            ocr_rec = get_backend(
+                "ocr",
+                ocr_backend,
+                device=self.device_name if device is None else device,
+                **({"lang": ocr_lang} if ocr_lang is not None else {}),
+            )
         elif words is None:
             from ..text import extract_words
 

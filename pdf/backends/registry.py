@@ -76,22 +76,34 @@ def _mineru_layout_factory(*, device: str = "auto", python_exe: str | None = Non
     return MinerULayoutBackend(device=device, python_exe=python_exe)
 
 
-def _rapidocr_factory(*, text_score: float = 0.5, **_extra: Any) -> Any:
+def _rapidocr_factory(*, text_score: float = 0.5, lang: str | None = None, **_extra: Any) -> Any:
     from .rapidocr import RapidOcrRecognizer
 
-    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device="cpu")
+    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device="cpu", lang=lang)
 
 
-def _rapidocr_onnx_factory(*, text_score: float = 0.5, device: str = "auto", **_extra: Any) -> Any:
+def _rapidocr_onnx_factory(
+    *,
+    text_score: float = 0.5,
+    device: str = "auto",
+    lang: str | None = None,
+    **_extra: Any,
+) -> Any:
     from .rapidocr import RapidOcrRecognizer
 
-    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device=device)
+    return RapidOcrRecognizer(text_score=text_score, engine="onnxruntime", device=device, lang=lang)
 
 
-def _rapidocr_torch_factory(*, text_score: float = 0.5, device: str = "auto", **_extra: Any) -> Any:
+def _rapidocr_torch_factory(
+    *,
+    text_score: float = 0.5,
+    device: str = "auto",
+    lang: str | None = None,
+    **_extra: Any,
+) -> Any:
     from .rapidocr import RapidOcrRecognizer
 
-    return RapidOcrRecognizer(text_score=text_score, engine="torch", device=device)
+    return RapidOcrRecognizer(text_score=text_score, engine="torch", device=device, lang=lang)
 
 
 def _composed_reader_factory(
@@ -100,28 +112,41 @@ def _composed_reader_factory(
     ocr_backend: str = "rapidocr-onnx",
     device: str = "auto",
     dpi: int = 150,
+    ocr_lang: str | None = None,
     **_extra: Any,
 ) -> Any:
     from .reader_composed import ComposedReader
 
     detector = get("detector", layout, device=device)
-    ocr = get("ocr", ocr_backend, device=device)
+    ocr = get("ocr", ocr_backend, device=device, **({"lang": ocr_lang} if ocr_lang is not None else {}))
     return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
 
 
-def _heron_onnx_rapidocr_onnx_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+def _heron_onnx_rapidocr_onnx_factory(
+    *,
+    device: str = "auto",
+    dpi: int = 150,
+    ocr_lang: str | None = None,
+    **_extra: Any,
+) -> Any:
     from .reader_composed import ComposedReader
 
     detector = get("detector", "heron-onnx", device=device)
-    ocr = get("ocr", "rapidocr-onnx", device=device)
+    ocr = get("ocr", "rapidocr-onnx", device=device, **({"lang": ocr_lang} if ocr_lang is not None else {}))
     return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
 
 
-def _heron_onnx_rapidocr_torch_factory(*, device: str = "auto", dpi: int = 150, **_extra: Any) -> Any:
+def _heron_onnx_rapidocr_torch_factory(
+    *,
+    device: str = "auto",
+    dpi: int = 150,
+    ocr_lang: str | None = None,
+    **_extra: Any,
+) -> Any:
     from .reader_composed import ComposedReader
 
     detector = get("detector", "heron-onnx", device=device)
-    ocr = get("ocr", "rapidocr-torch", device=device)
+    ocr = get("ocr", "rapidocr-torch", device=device, **({"lang": ocr_lang} if ocr_lang is not None else {}))
     return ComposedReader(detector=detector, ocr=ocr, dpi=dpi)
 
 

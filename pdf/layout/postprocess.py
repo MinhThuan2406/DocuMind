@@ -189,9 +189,13 @@ def _handle_cross_type_overlaps(special: list[Cluster]) -> list[Cluster]:
     containers = [c for c in special if c.label in _CONTAINER_TYPES]
 
     drop: set[int] = set()
-    drop |= _resolve_coincident(tables, doc_indices)
-    drop |= _resolve_coincident(pictures, tables + doc_indices)
-    surviving = [c for c in tables + doc_indices + pictures if c.id not in drop]
+    # Keep real tables unless a coincident document_index outscores them by >= 0.20.
+    drop |= _resolve_coincident(tables, doc_indices, conf_tol=-0.20)
+    surviving_tables = [c for c in tables if c.id not in drop]
+    drop |= _resolve_coincident(doc_indices, surviving_tables, conf_tol=0.20)
+    surviving_table_types = surviving_tables + [c for c in doc_indices if c.id not in drop]
+    drop |= _resolve_coincident(pictures, surviving_table_types)
+    surviving = surviving_table_types + [c for c in pictures if c.id not in drop]
     drop |= _resolve_coincident(containers, surviving)
     return [c for c in special if c.id not in drop]
 
@@ -234,10 +238,11 @@ def postprocess_layout(
         special = [c for c in special if not (c.label == "picture" and _area(c.bbox) / page_area > 0.90)]
 
     pictures = _remove_overlapping([c for c in special if c.label == "picture"], "picture")
-    tables = _remove_overlapping([c for c in special if c.label in _TABLE_TYPES], "wrapper")
+    tables = _remove_overlapping([c for c in special if c.label == "table"], "wrapper")
+    doc_indices = _remove_overlapping([c for c in special if c.label == "document_index"], "wrapper")
     containers = _remove_overlapping([c for c in special if c.label in _CONTAINER_TYPES], "wrapper")
 
-    special = _handle_cross_type_overlaps(pictures + tables + containers)
+    special = _handle_cross_type_overlaps(pictures + tables + doc_indices + containers)
     pictures = [c for c in special if c.label == "picture"]
     tables = [c for c in special if c.label in _TABLE_TYPES]
     containers = [c for c in special if c.label in _CONTAINER_TYPES]

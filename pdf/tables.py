@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from typing import Any
 
@@ -223,6 +224,7 @@ def extract_tables_on_page(
     is_raster: bool = False,
     extractor: str | TableExtractor = "auto",
     ocr_backend: str = "rapidocr-onnx",
+    ocr_lang: str | None = None,
     device: str = "auto",
     dpi: int = DEFAULT_TABLE_DPI,
 ) -> list[ExtractedTable]:
@@ -231,6 +233,11 @@ def extract_tables_on_page(
     backend = get_backend("table", extractor, device=device) if isinstance(extractor, str) else extractor
     extract_page = getattr(backend, "extract_from_page", None)
     if callable(extract_page):
+        extra_kwargs: dict[str, Any] = {}
+        if ocr_lang is not None:
+            params = inspect.signature(extract_page).parameters
+            if "ocr_lang" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                extra_kwargs["ocr_lang"] = ocr_lang
         return list(
             extract_page(
                 page,
@@ -240,10 +247,15 @@ def extract_tables_on_page(
                 ocr_backend=ocr_backend,
                 device=device,
                 dpi=dpi,
+                **extra_kwargs,
             )
         )
 
-    ocr_rec = get_backend("ocr", ocr_backend, device=device) if is_raster else None
+    ocr_rec = (
+        get_backend("ocr", ocr_backend, device=device, **({"lang": ocr_lang} if ocr_lang is not None else {}))
+        if is_raster
+        else None
+    )
     if is_raster:
         native_tokens: list[tuple[str, BBox]] = []
     elif words is None:
