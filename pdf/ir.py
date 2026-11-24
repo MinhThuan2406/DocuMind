@@ -4,7 +4,7 @@ import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pdfplumber
 
@@ -17,7 +17,12 @@ from .assemble import (
     tag_running_headers_footers,
 )
 from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
-from .hierarchy import _project_semantic_regions, _weighted_median_font_size, apply_structure
+from .hierarchy import (
+    _project_semantic_regions,
+    _weighted_median_font_size,
+    apply_structure,
+    soft_merge_semantic_elements,
+)
 from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
 from .router import classify_page
 from .text import extract_horiz_rules, extract_words, infer_medium_bold_families, xy_cut_order
@@ -345,7 +350,10 @@ def extract_ir(
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
+    semantic_layout: Literal["auto", "always", "off"] = "auto",
 ) -> dict[str, Any]:
+    if semantic_layout not in ("auto", "always", "off"):
+        raise ValueError(f"invalid semantic_layout: {semantic_layout!r}; expected 'auto', 'always', or 'off'")
     pdf_path = Path(path)
     source_file = pdf_path.name
 
@@ -387,27 +395,57 @@ def extract_ir(
 
         figures_by_page: dict[int, list[FigureBox]] = {}
         semantic_regions: dict[int, list[SemanticRegion]] = {}
-        candidate_pages = [
+        non_raster_pages = [
             p.page
             for p in profiles
-            if not _uses_ocr_fallback(p, ocr)
-            and p.kind != "raster"
-            and ((figures and p.figure_candidate) or (tables and p.table_candidate) or formulas)
+            if not _uses_ocr_fallback(p, ocr) and p.kind != "raster"
         ]
-        if (figures or tables or formulas) and candidate_pages:
+        if semantic_layout == "always":
+            candidate_pages = non_raster_pages if (figures or tables or formulas or structure) else []
+        elif semantic_layout == "off":
+            candidate_pages = [
+                p.page
+                for p in profiles
+                if not _uses_ocr_fallback(p, ocr)
+                and p.kind != "raster"
+                and ((figures and p.figure_candidate) or (tables and p.table_candidate))
+            ]
+        else:
+            candidate_pages = [
+                p.page
+                for p in profiles
+                if not _uses_ocr_fallback(p, ocr)
+                and p.kind != "raster"
+                and ((figures and p.figure_candidate) or (tables and p.table_candidate) or formulas)
+            ]
+        if candidate_pages:
             from .figures import detect_figures
+
+            detect_kwargs: dict[str, Any] = {
+                "layout": layout,
+                "grouper": grouper,
+                "device": device,
+                "pdfium_doc": ctx.pdfium,
+                "pdf_hash": ctx.pdf_hash,
+                "warnings_out": warnings,
+                "semantic_regions_out": semantic_regions if (semantic_layout != "off" and (structure or formulas)) else None,
+                "page_boxes": {p: page_boxes[p] for p in candidate_pages},
+            }
+            if semantic_layout == "always":
+                detect_kwargs["figure_pages"] = {p.page for p in profiles if figures and p.figure_candidate}
+                detect_kwargs["raw_picture_pages"] = {
+                    p.page
+                    for p in profiles
+                    if figures and not p.figure_candidate and not _uses_ocr_fallback(p, ocr) and p.kind != "raster"
+                }
+                detect_kwargs["table_pages"] = {
+                    p.page for p in profiles if p.table_candidate or (figures and p.figure_candidate)
+                }
 
             figures_by_page = detect_figures(
                 pdf_path,
                 candidate_pages,
-                layout=layout,
-                grouper=grouper,
-                device=device,
-                pdfium_doc=ctx.pdfium,
-                pdf_hash=ctx.pdf_hash,
-                warnings_out=warnings,
-                semantic_regions_out=semantic_regions if (structure or formulas) else None,
-                page_boxes={p: page_boxes[p] for p in candidate_pages},
+                **detect_kwargs,
             )
             if not figures and not tables:
                 figures_by_page = {}
@@ -624,6 +662,12 @@ def extract_ir(
                         extracted_diagrams.append(diag_dict)
 
             if formulas:
+                if semantic_layout != "off" and semantic_regions.get(prof.page):
+                    soft_merge_semantic_elements(
+                        page_elems,
+                        {prof.page: semantic_regions[prof.page]},
+                        labels=("formula",),
+                    )
                 formula_targets = _locate_formula_targets(page_elems, semantic_regions.get(prof.page, ()))
                 if formula_targets:
                     from .formulas import extract_formulas_on_page, formula_to_ir_dict
@@ -683,7 +727,7 @@ def extract_ir(
             elements.extend(page_elems)
 
     page_heights = {p["number"]: float(p["height_pt"]) for p in page_sizes}
-    if structure and semantic_regions:
+    if structure and semantic_layout != "off" and semantic_regions:
         _project_semantic_regions(
             elements,
             semantic_regions,
@@ -697,6 +741,8 @@ def extract_ir(
         toc_titles=toc_titles,
         horiz_rules_by_page=horiz_rules_by_page,
     )
+    if structure and semantic_layout != "off" and semantic_regions:
+        soft_merge_semantic_elements(elements, semantic_regions)
 
     ir = {
         "doc_id": pdf_path.stem,
@@ -716,7 +762,12 @@ def extract_ir(
         "formulas": extracted_formulas,
     }
     if structure:
-        apply_structure(ir, toc=toc, semantic_regions=semantic_regions, inplace=True)
+        apply_structure(
+            ir,
+            toc=toc,
+            semantic_regions=semantic_regions if semantic_layout != "off" else None,
+            inplace=True,
+        )
     if tables and ir["tables"]:
         from .tables import link_table_continuations
 

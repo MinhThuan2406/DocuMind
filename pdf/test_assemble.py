@@ -820,6 +820,138 @@ def test_text_layer_margin_font_lock_and_short_doc_page_number_footer():
     assert non_iso[1]["metadata"].get("role") is None
 
 
+def test_extract_ir_semantic_layout_modes_and_validation():
+    import pdf.figures as figures_mod
+    from pdf.backends import PageLayout, RunStats
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "modes.pdf"
+        b = TestPdfBuilder()
+        p1 = b.new_page(width=600, height=800)
+        p1.insert_text((50, 50), "Plain text page", fontsize=12)
+        p1.insert_text((50, 120), "x = 1", fontsize=10)
+        p1.insert_text((50, 150), "y = 2", fontsize=10)
+
+        p2 = b.new_page(width=600, height=800)
+        p2.insert_text((50, 50), "Diagram candidate page", fontsize=12)
+        for i in range(8):
+            p2.draw_rect((60 + i * 30, 200, 80 + i * 30, 220))
+        b.save(pdf_path)
+
+        try:
+            ir_mod.extract_ir(pdf_path, semantic_layout="invalid")  # type: ignore[arg-type]
+            raise AssertionError("expected ValueError for invalid semantic_layout")
+        except ValueError:
+            pass
+
+        class _ModeBackend:
+            name = "mode_mock"
+            revision = "m1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def __init__(self) -> None:
+                self.analyzed_pages: list[int] = []
+
+            def analyze(self, _pdf_path, pages):
+                self.analyzed_pages.extend(pages)
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                out = {}
+                for p in pages:
+                    if p == 1:
+                        out[p] = PageLayout(
+                            items=[
+                                {"order": 0, "label": "code", "bbox": [40.0, 110.0, 220.0, 180.0], "text": "", "score": 0.92},
+                                {"order": 1, "label": "table", "bbox": [40.0, 200.0, 500.0, 320.0], "text": "", "score": 0.85},
+                            ],
+                            frame=(600.0, 800.0),
+                        )
+                    else:
+                        out[p] = PageLayout(
+                            items=[
+                                {"order": 0, "label": "picture", "bbox": [50.0, 180.0, 350.0, 320.0], "text": "", "score": 0.90},
+                            ],
+                            frame=(600.0, 800.0),
+                        )
+                return out
+
+        class _NoNonCandGrouper:
+            name = "no_non_cand"
+            source = "v2_vector_vision"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def group(self, bgr, layout, min_area=0.015):
+                del bgr, layout, min_area
+                self.calls += 1
+                from pdf.models import GroupedFigure
+
+                return [GroupedFigure(bbox=(50.0, 180.0, 350.0, 320.0), score=0.90, source="v2_vector_vision")]
+
+        orig_root = figures_mod._REPO_ROOT
+        try:
+            # auto: only page 2 (figure_candidate=True) runs layout.
+            figures_mod._REPO_ROOT = Path(tmp) / "auto_root"
+            b_auto = _ModeBackend()
+            g_auto = _NoNonCandGrouper()
+            ir_auto = ir_mod.extract_ir(
+                pdf_path, figures=True, ocr=False, layout=b_auto, grouper=g_auto, semantic_layout="auto"
+            )
+            assert b_auto.analyzed_pages == [2]
+            assert g_auto.calls == 1
+            p1_auto = [e for e in ir_auto["elements"] if e["page"] == 1]
+            assert all(e["metadata"].get("layout_label") is None for e in p1_auto)
+
+            # always: both page 1 and page 2 run layout, grouper only runs on page 2,
+            # non-table_candidate page 1 does NOT emit layout_table, and page 1 code lines soft-merge.
+            figures_mod._REPO_ROOT = Path(tmp) / "always_root"
+            b_always = _ModeBackend()
+            g_always = _NoNonCandGrouper()
+            ir_always = ir_mod.extract_ir(
+                pdf_path, figures=True, ocr=False, layout=b_always, grouper=g_always, semantic_layout="always"
+            )
+            assert sorted(b_always.analyzed_pages) == [1, 2]
+            assert g_always.calls == 1
+            p1_always = [e for e in ir_always["elements"] if e["page"] == 1]
+            assert not any(e["type"] == "table" for e in p1_always)
+            code_elems = [e for e in p1_always if e["metadata"].get("layout_label") == "code"]
+            assert len(code_elems) == 1
+            assert code_elems[0]["text"] == "x = 1\ny = 2"
+
+            # off: semantic_regions are not collected or projected even on candidate pages.
+            figures_mod._REPO_ROOT = Path(tmp) / "off_root"
+            b_off = _ModeBackend()
+            g_off = _NoNonCandGrouper()
+            seen_sem_outs = []
+            orig_detect = figures_mod.detect_figures
+
+            def _spy_detect(p, pages, **kw):
+                seen_sem_outs.append(kw.get("semantic_regions_out"))
+                return orig_detect(p, pages, **kw)
+
+            figures_mod.detect_figures = _spy_detect
+            try:
+                ir_off = ir_mod.extract_ir(
+                    pdf_path,
+                    figures=True,
+                    ocr=False,
+                    formulas=True,
+                    layout=b_off,
+                    grouper=g_off,
+                    semantic_layout="off",
+                )
+            finally:
+                figures_mod.detect_figures = orig_detect
+
+            assert seen_sem_outs == [None]
+            assert b_off.analyzed_pages == [2]
+            assert ir_off["formulas"] == []
+            assert all(e["metadata"].get("layout_label") is None for e in ir_off["elements"])
+        finally:
+            figures_mod._REPO_ROOT = orig_root
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

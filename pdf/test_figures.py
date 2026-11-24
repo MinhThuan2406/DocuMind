@@ -890,6 +890,84 @@ def test_v2_vector_vision_narrow_non_mergeable_prose_and_n_col_cross_column():
     assert col2_fig.bbox[0] >= 198.0 and col2_fig.bbox[2] <= 362.0, col2_fig.bbox
 
 
+def test_detect_figures_gating_skips_grouper_on_non_figure_pages():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pdf_path = tmp_path / "gated.pdf"
+        b = TestPdfBuilder()
+        b.new_page(width=600, height=400).insert_text((40, 40), "Page 1 with diagram", fontsize=12)
+        b.new_page(width=600, height=400).insert_text((40, 40), "Page 2 plain text", fontsize=12)
+        b.new_page(width=600, height=400).insert_text((40, 40), "Page 3 noise picture", fontsize=12)
+        b.save(pdf_path)
+
+        class _GatedLayout:
+            name = "gated_mock"
+            revision = "g1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def analyze(self, _pdf_path, pages):
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                return {
+                    1: PageLayout(
+                        items=[
+                            {"order": 0, "label": "picture", "bbox": [50.0, 60.0, 250.0, 220.0], "text": "", "score": 0.90},
+                            {"order": 1, "label": "table", "bbox": [300.0, 60.0, 550.0, 220.0], "text": "", "score": 0.88},
+                        ],
+                        frame=(600.0, 400.0),
+                    ),
+                    2: PageLayout(
+                        items=[
+                            {"order": 0, "label": "code", "bbox": [40.0, 70.0, 400.0, 140.0], "text": "", "score": 0.91},
+                            {"order": 1, "label": "picture", "bbox": [50.0, 160.0, 260.0, 300.0], "text": "", "score": 0.86},
+                            {"order": 2, "label": "table", "bbox": [300.0, 160.0, 550.0, 300.0], "text": "", "score": 0.85},
+                        ],
+                        frame=(600.0, 400.0),
+                    ),
+                    3: PageLayout(
+                        items=[
+                            {"order": 0, "label": "picture", "bbox": [50.0, 80.0, 250.0, 200.0], "text": "", "score": 0.55},
+                            {"order": 1, "label": "picture", "bbox": [50.0, 360.0, 250.0, 395.0], "text": "", "score": 0.92},
+                        ],
+                        frame=(600.0, 400.0),
+                    ),
+                }
+
+        class _CountingGrouper:
+            name = "counting"
+            source = "v2_vector_vision"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def group(self, bgr, layout, min_area=0.015):
+                del bgr, layout, min_area
+                self.calls += 1
+                from pdf.models import GroupedFigure
+
+                return [GroupedFigure(bbox=(50.0, 60.0, 250.0, 220.0), score=0.90, source="v2_vector_vision")]
+
+        grouper = _CountingGrouper()
+        sem_out: dict[int, list[SemanticRegion]] = {}
+        res = detect_figures(
+            pdf_path,
+            [1, 2, 3],
+            layout=_GatedLayout(),
+            grouper=grouper,
+            cache_dir=tmp_path / "cache",
+            semantic_regions_out=sem_out,
+            figure_pages={1},
+            raw_picture_pages={2, 3},
+            table_pages={1},
+        )
+        assert grouper.calls == 1
+        assert [b.source for b in res[1]] == ["v2_vector_vision", "layout_table"]
+        assert len(res[2]) == 1
+        assert res[2][0].kind == "figure" and res[2][0].source == "layout_picture"
+        assert res[3] == []
+        assert [r.label for r in sem_out[2]] == ["code"]
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

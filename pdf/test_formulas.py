@@ -488,6 +488,55 @@ def test_extract_ir_raster_formula_and_empty_warning():
         }
 
 
+def test_extract_ir_multiline_formula_soft_merge_single_target():
+    import pdf.figures as figures_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "multi_fml.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=500, height=400)
+        p.insert_text((60, 100), "a = b + c", fontsize=12)
+        p.insert_text((60, 130), "d = e + f", fontsize=12)
+        b.save(pdf_path)
+
+        raw_ir = ir_mod.extract_ir(pdf_path, figures=False, ocr=False, formulas=False)
+        fml_boxes = [e["bbox"] for e in raw_ir["elements"]]
+        assert len(fml_boxes) == 2
+        sem_box = (
+            min(bx[0] for bx in fml_boxes) - 4.0,
+            min(bx[1] for bx in fml_boxes) - 4.0,
+            max(bx[2] for bx in fml_boxes) + 4.0,
+            max(bx[3] for bx in fml_boxes) + 4.0,
+        )
+
+        def _fake_detect(_p, pages, **kw):
+            sem_out = kw.get("semantic_regions_out")
+            if sem_out is not None and 1 in pages:
+                sem_out[1] = [SemanticRegion(sem_box, "formula", 0.94)]
+            return {}
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = _fake_detect
+        try:
+            ext = _MockFormulaExtractor([(r"a = b + c \\ d = e + f", 0.95)])
+            ir = ir_mod.extract_ir(
+                pdf_path,
+                figures=False,
+                ocr=False,
+                formulas=True,
+                formula_backend=ext,
+                semantic_layout="auto",
+            )
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+        assert len(ir["formulas"]) == 1
+        assert len(ir["elements"]) == 1
+        assert ir["formulas"][0]["element_id"] == ir["elements"][0]["id"]
+        assert ir["elements"][0]["text"] == "a = b + c\nd = e + f"
+        assert ir["elements"][0]["metadata"]["layout_label"] == "formula"
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

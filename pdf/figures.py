@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,7 @@ from .models import FIGURE_FOOTER_FRAC, FIGURE_MIN_AREA, BBox, FigureBox, Semant
 DEFAULT_DPI = 150
 DEFAULT_RENDER_BATCH_SIZE = 16
 LAYOUT_BOX_CONFIDENCE = 0.95
+_RAW_PICTURE_FALLBACK_MIN_SCORE = 0.70
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SEMANTIC_LABELS = frozenset(
@@ -43,26 +44,46 @@ def _to_page_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_box
     return round_bbox(pdfium_box_to_page_box(_to_pt_box(box_px, img_size, page_size_pt), page_box))
 
 
-def _table_boxes_px(
+def _layout_boxes_px(
     items: list[dict[str, Any]],
+    labels: Collection[str],
     img_size: tuple[int, int],
     page_size: tuple[float, float],
     footer_frac: float,
+    *,
+    min_area: float = 0.0,
+    min_score: float = 0.0,
+    clamp: bool = False,
 ) -> list[tuple[BBox, float]]:
     iw, ih = img_size
     dw, dh = page_size
     sx = iw / dw if dw > 0 else 1.0
     sy = ih / dh if dh > 0 else 1.0
-    tables: list[tuple[BBox, float]] = []
+    area_thresh = min_area * iw * ih
+    boxes: list[tuple[BBox, float]] = []
     for it in items:
-        if it.get("label") != "table" or not it.get("bbox") or len(it["bbox"]) != 4:
+        label = str(it.get("label", "")).lower()
+        if label not in labels or not it.get("bbox") or len(it["bbox"]) != 4:
             continue
-        b = (it["bbox"][0] * sx, it["bbox"][1] * sy, it["bbox"][2] * sx, it["bbox"][3] * sy)
-        if b[2] > b[0] and b[3] > b[1] and b[1] < footer_frac * ih:
-            raw_score = it.get("score")
-            score = round(float(raw_score), 4) if raw_score is not None else LAYOUT_BOX_CONFIDENCE
-            tables.append((b, score))
-    return tables
+        x0, y0, x1, y1 = (
+            float(it["bbox"][0]) * sx,
+            float(it["bbox"][1]) * sy,
+            float(it["bbox"][2]) * sx,
+            float(it["bbox"][3]) * sy,
+        )
+        if clamp:
+            x0, x1 = max(0.0, min(float(iw), x0)), max(0.0, min(float(iw), x1))
+            y0, y1 = max(0.0, min(float(ih), y0)), max(0.0, min(float(ih), y1))
+        if x1 <= x0 or y1 <= y0 or y0 >= footer_frac * ih:
+            continue
+        if area_thresh > 0.0 and (x1 - x0) * (y1 - y0) < area_thresh:
+            continue
+        raw_score = it.get("score")
+        score = round(float(raw_score), 4) if raw_score is not None else LAYOUT_BOX_CONFIDENCE
+        if min_score > 0.0 and score < min_score:
+            continue
+        boxes.append(((x0, y0, x1, y1), score))
+    return boxes
 
 
 def _semantic_regions_pt(
@@ -114,6 +135,9 @@ def detect_figures(
     warnings_out: list[dict[str, Any]] | None = None,
     semantic_regions_out: dict[int, list[SemanticRegion]] | None = None,
     page_boxes: Mapping[int, BBox] | None = None,
+    figure_pages: Collection[int] | None = None,
+    raw_picture_pages: Collection[int] | None = None,
+    table_pages: Collection[int] | None = None,
 ) -> dict[int, list[FigureBox]]:
     path = Path(pdf_path)
     cache_root = (
@@ -166,39 +190,69 @@ def detect_figures(
                         if (page_boxes is not None and pno in page_boxes)
                         else pdfium_page_box(page)
                     )
+                    run_grouper = figure_pages is None or pno in figure_pages
                     bgr = rendered_cache.pop(pno, None) if can_reuse_bgr else None
                     if bgr is not None:
                         ih, iw = bgr.shape[:2]
                         img_size = (iw, ih)
-                    else:
+                    elif run_grouper:
                         bgr, img_size = render_bgr(page, dpi)
                         iw, ih = img_size
+                    else:
+                        iw = max(1, round(max(0.0, page_box[2] - page_box[0]) * dpi / 72.0))
+                        ih = max(1, round(max(0.0, page_box[3] - page_box[1]) * dpi / 72.0))
+                        img_size = (iw, ih)
                     page_layout = layouts[pno]
                     if semantic_regions_out is not None:
                         semantic_regions_out[pno] = _semantic_regions_pt(
                             page_layout.items, img_size, page_layout.frame, page_box
                         )
 
-                    raw_figs = fig_grouper.group(bgr, page_layout, min_area)
-                    kept_figs = [
-                        g
-                        for g in raw_figs
-                        if (g.bbox[2] - g.bbox[0]) * (g.bbox[3] - g.bbox[1]) >= min_area * iw * ih
-                        and g.bbox[1] < footer_frac * ih
-                    ]
-                    kept_figs.sort(key=lambda g: (g.bbox[1], g.bbox[0]))
-
-                    detected_boxes: list[FigureBox] = [
-                        FigureBox(
-                            bbox=_to_page_pt_box(g.bbox, img_size, page_box),
-                            kind="figure",
-                            source=g.source,
-                            confidence=round(float(g.score), 4),
+                    detected_boxes: list[FigureBox] = []
+                    if run_grouper:
+                        raw_figs = fig_grouper.group(bgr, page_layout, min_area)
+                        kept_figs = [
+                            g
+                            for g in raw_figs
+                            if (g.bbox[2] - g.bbox[0]) * (g.bbox[3] - g.bbox[1]) >= min_area * iw * ih
+                            and g.bbox[1] < footer_frac * ih
+                        ]
+                        kept_figs.sort(key=lambda g: (g.bbox[1], g.bbox[0]))
+                        detected_boxes.extend(
+                            FigureBox(
+                                bbox=_to_page_pt_box(g.bbox, img_size, page_box),
+                                kind="figure",
+                                source=g.source,
+                                confidence=round(float(g.score), 4),
+                            )
+                            for g in kept_figs
                         )
-                        for g in kept_figs
-                    ]
-                    if include_tables:
-                        raw_tables = _table_boxes_px(page_layout.items, img_size, page_layout.frame, footer_frac)
+                    elif raw_picture_pages is not None and pno in raw_picture_pages:
+                        raw_pics = _layout_boxes_px(
+                            page_layout.items,
+                            ("picture", "figure"),
+                            img_size,
+                            page_layout.frame,
+                            footer_frac,
+                            min_area=min_area,
+                            min_score=_RAW_PICTURE_FALLBACK_MIN_SCORE,
+                            clamp=True,
+                        )
+                        raw_pics.sort(key=lambda item: (item[0][1], item[0][0]))
+                        detected_boxes.extend(
+                            FigureBox(
+                                bbox=_to_page_pt_box(box, img_size, page_box),
+                                kind="figure",
+                                source="layout_picture",
+                                confidence=score,
+                            )
+                            for box, score in raw_pics
+                        )
+
+                    if include_tables and (table_pages is None or pno in table_pages):
+                        raw_tables = _layout_boxes_px(
+                            page_layout.items, ("table",), img_size, page_layout.frame, footer_frac
+                        )
                         raw_tables.sort(key=lambda item: (item[0][1], item[0][0]))
                         detected_boxes.extend(
                             FigureBox(

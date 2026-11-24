@@ -1046,6 +1046,64 @@ def test_single_letter_appendix_and_native_list_item_labels():
     assert by_id["cit"]["metadata"].get("layout_label") is None
 
 
+def test_soft_merge_semantic_elements_code_formula_footnote_and_guardrails():
+    from pdf.hierarchy import soft_merge_semantic_elements
+
+    elements = [
+        _elem("c1", page=1, bbox=[50.0, 50.0, 200.0, 65.0], reading_order=0, text="def foo():", font_size=9.5),
+        _elem("c2", page=1, bbox=[50.0, 68.0, 210.0, 83.0], reading_order=1, text="    return 1", font_size=9.5),
+        _elem("p1", page=1, bbox=[50.0, 100.0, 450.0, 120.0], reading_order=2, text="Normal paragraph one.", font_size=11.0),
+        _elem("p2", page=1, bbox=[50.0, 125.0, 450.0, 145.0], reading_order=3, text="Normal paragraph two.", font_size=11.0),
+        _elem("f1", page=1, bbox=[120.0, 170.0, 200.0, 188.0], reading_order=4, text="a^2 + b^2", font_size=11.0),
+        _elem("f2", page=1, bbox=[120.0, 192.0, 200.0, 210.0], reading_order=5, text="= c^2", font_size=11.0),
+        _elem("fn_a1", page=1, bbox=[50.0, 680.0, 62.0, 694.0], reading_order=6, text="1", font_size=8.5),
+        _elem("fn_a2", page=1, bbox=[66.0, 680.0, 320.0, 694.0], reading_order=7, text="First footnote text.", font_size=8.5),
+        _elem("fn_b1", page=1, bbox=[50.0, 702.0, 320.0, 716.0], reading_order=8, text="2 Second distinct footnote.", font_size=8.5),
+        _elem("fn_p2", page=2, bbox=[50.0, 702.0, 320.0, 716.0], reading_order=0, text="Page 2 footnote.", font_size=8.5),
+        _elem("hdr", page=2, bbox=[50.0, 50.0, 200.0, 70.0], reading_order=1, text="1.1 Protected Heading", font_size=12.0, role="heading"),
+        _elem("c_p2", page=2, bbox=[50.0, 74.0, 200.0, 90.0], reading_order=2, text="x = y", font_size=9.5),
+        _elem("ocr_c", page=2, bbox=[50.0, 94.0, 200.0, 110.0], reading_order=3, text="z = 0", source="ocr", font_size=9.5),
+    ]
+    regions = {
+        1: [
+            SemanticRegion((45.0, 45.0, 220.0, 88.0), "code", 0.94),
+            SemanticRegion((45.0, 95.0, 460.0, 150.0), "text", 0.95),
+            SemanticRegion((110.0, 165.0, 215.0, 215.0), "formula", 0.91),
+            SemanticRegion((45.0, 676.0, 330.0, 698.0), "footnote", 0.89),
+            SemanticRegion((45.0, 699.0, 330.0, 720.0), "footnote", 0.88),
+        ],
+        2: [
+            SemanticRegion((45.0, 699.0, 330.0, 720.0), "footnote", 0.88),
+            SemanticRegion((45.0, 45.0, 220.0, 115.0), "code", 0.90),
+        ],
+    }
+
+    soft_merge_semantic_elements(elements, regions)
+    by_id = {e["id"]: e for e in elements}
+
+    assert "c2" not in by_id
+    assert by_id["c1"]["text"] == "def foo():\n    return 1"
+    assert by_id["c1"]["bbox"] == [50.0, 50.0, 210.0, 83.0]
+    assert by_id["c1"]["metadata"]["layout_label"] == "code"
+
+    assert "p1" in by_id and "p2" in by_id
+
+    assert "f2" not in by_id
+    assert by_id["f1"]["text"] == "a^2 + b^2\n= c^2"
+    assert by_id["f1"]["metadata"]["layout_label"] == "formula"
+
+    assert "fn_a2" not in by_id
+    assert by_id["fn_a1"]["text"] == "1 First footnote text."
+    assert by_id["fn_a1"]["metadata"]["layout_label"] == "footnote"
+    assert "fn_b1" in by_id and by_id["fn_b1"]["text"] == "2 Second distinct footnote."
+    assert "fn_p2" in by_id and "hdr" in by_id and "c_p2" in by_id and "ocr_c" in by_id
+
+    p1_ros = [e["reading_order"] for e in elements if e["page"] == 1]
+    p2_ros = [e["reading_order"] for e in elements if e["page"] == 2]
+    assert p1_ros == list(range(len(p1_ros)))
+    assert p2_ros == list(range(len(p2_ros)))
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

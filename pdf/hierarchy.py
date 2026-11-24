@@ -3,12 +3,12 @@ from __future__ import annotations
 import copy
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from ._pdf_io import extract_toc
+from ._pdf_io import extract_toc, round_bbox
 
 _IGNORED_ROLES = frozenset({"page_header", "page_footer"})
 _NON_HEADING_LABELS = frozenset(
@@ -25,6 +25,8 @@ _NON_HEADING_LABELS = frozenset(
     }
 )
 _HEADING_LABELS = frozenset({"title", "section_header"})
+_SOFT_MERGE_LABELS = frozenset({"code", "formula", "footnote"})
+_SOFT_MERGE_PROTECTED_ROLES = frozenset({"heading", "caption", "page_header", "page_footer"})
 
 _CAPTION_PREFIX_RE = re.compile(
     r"^(?P<kind>(?i:figure|fig\.?|diagram|diag\.?|chart|listing|abb\.?|abbildung|grafik|graph|plate|exhibit|"
@@ -532,6 +534,18 @@ def _weighted_median_font_size(elements: Sequence[dict[str, Any]]) -> float | No
     return samples[-1][0]
 
 
+def _region_fields(reg: Any) -> tuple[Sequence[float] | None, str | None, float]:
+    if isinstance(reg, Mapping):
+        rb = reg.get("bbox")
+        label = reg.get("label")
+        conf = float(reg.get("confidence", 1.0))
+    else:
+        rb = getattr(reg, "bbox", None)
+        label = getattr(reg, "label", None)
+        conf = float(getattr(reg, "confidence", 1.0))
+    return rb, str(label) if label else None, conf
+
+
 def _project_semantic_regions(
     elements: Sequence[dict[str, Any]],
     semantic_regions: Mapping[int, Sequence[Any]] | None,
@@ -567,17 +581,9 @@ def _project_semantic_regions(
         best_score: tuple[float, float] | None = None
         best_label: str | None = None
         for reg in regions:
-            if isinstance(reg, Mapping):
-                rb = reg.get("bbox")
-                label = reg.get("label")
-                conf = float(reg.get("confidence", 1.0))
-            else:
-                rb = getattr(reg, "bbox", None)
-                label = getattr(reg, "label", None)
-                conf = float(getattr(reg, "confidence", 1.0))
-            if not rb or len(rb) != 4 or not label:
+            rb, lbl_str, conf = _region_fields(reg)
+            if not rb or len(rb) != 4 or not lbl_str:
                 continue
-            lbl_str = str(label)
             if lbl_str.lower() in _IGNORED_ROLES and page_h > 0.0:
                 in_margin = cy <= 0.12 * page_h or cy >= 0.88 * page_h
                 fs_ok = not (
@@ -599,6 +605,155 @@ def _project_semantic_regions(
                     best_label = lbl_str
         if best_label is not None:
             meta["layout_label"] = best_label
+
+
+def _join_soft_merged_text(run: Sequence[dict[str, Any]], label: str) -> str:
+    if label == "code":
+        return "\n".join(t for e in run if (t := str(e.get("text") or "").rstrip("\r\n")))
+    if label == "footnote":
+        acc = ""
+        for e in run:
+            t = str(e.get("text") or "").strip()
+            if t:
+                acc = _join_wrapped_text(acc, t) if acc else t
+        return acc
+    parts: list[str] = []
+    prev_b: Sequence[float] | None = None
+    for e in run:
+        t = str(e.get("text") or "").strip()
+        if not t:
+            continue
+        cur_b = e.get("bbox")
+        if not parts:
+            parts.append(t)
+        elif prev_b is not None and cur_b is not None and len(prev_b) == 4 and len(cur_b) == 4:
+            h1 = max(1.0, float(prev_b[3]) - float(prev_b[1]))
+            h2 = max(1.0, float(cur_b[3]) - float(cur_b[1]))
+            min_h = min(h1, h2)
+            cy1 = 0.5 * (float(prev_b[1]) + float(prev_b[3]))
+            cy2 = 0.5 * (float(cur_b[1]) + float(cur_b[3]))
+            stacked = float(cur_b[1]) >= float(prev_b[3]) - 0.25 * min_h or abs(cy2 - cy1) > 0.5 * min_h
+            parts.append(("\n" if stacked else " ") + t)
+        else:
+            parts.append(" " + t)
+        prev_b = cur_b
+    return "".join(parts)
+
+
+def soft_merge_semantic_elements(
+    elements: list[dict[str, Any]],
+    semantic_regions: Mapping[int, Sequence[Any]] | None,
+    *,
+    labels: Collection[str] = _SOFT_MERGE_LABELS,
+    min_ioa: float = 0.50,
+) -> list[dict[str, Any]]:
+    if not elements or not semantic_regions:
+        return elements
+    allowed = frozenset(str(lbl).lower() for lbl in labels) & _SOFT_MERGE_LABELS
+    if not allowed:
+        return elements
+
+    ordered = sorted(
+        enumerate(elements),
+        key=lambda pair: (pair[1].get("page", 0), pair[1].get("reading_order", pair[0]), pair[0]),
+    )
+
+    def _match_key(elem: dict[str, Any]) -> tuple[int, int, str] | None:
+        if elem.get("type") != "text" or elem.get("level", 1) != 1:
+            return None
+        if elem.get("source", "text_layer") != "text_layer":
+            return None
+        meta = elem.get("metadata") or {}
+        if meta.get("role") in _SOFT_MERGE_PROTECTED_ROLES:
+            return None
+        if meta.get("table_id") or meta.get("diagram_id") or meta.get("formula_id"):
+            return None
+        bbox = elem.get("bbox")
+        if not bbox or len(bbox) != 4:
+            return None
+        ex0, ey0, ex1, ey1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+        elem_area = max(0.0, ex1 - ex0) * max(0.0, ey1 - ey0)
+        if elem_area <= 0.0:
+            return None
+        pno = elem.get("page", 0)
+        regions = semantic_regions.get(pno)
+        if not regions:
+            return None
+        best_score: tuple[float, float] | None = None
+        best_idx = -1
+        best_lbl = ""
+        for r_idx, reg in enumerate(regions):
+            rb, lbl_str, conf = _region_fields(reg)
+            if not rb or len(rb) != 4 or not lbl_str:
+                continue
+            ix = max(0.0, min(ex1, float(rb[2])) - max(ex0, float(rb[0])))
+            iy = max(0.0, min(ey1, float(rb[3])) - max(ey0, float(rb[1])))
+            ioa = (ix * iy) / elem_area
+            if ioa >= min_ioa:
+                score = (ioa, conf)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_idx = r_idx
+                    best_lbl = lbl_str.lower()
+        if best_idx < 0 or best_lbl not in allowed:
+            return None
+        cur_lbl = meta.get("layout_label")
+        if cur_lbl is not None and str(cur_lbl).lower() != best_lbl:
+            return None
+        return (int(pno), best_idx, best_lbl)
+
+    dropped_ptrs: set[int] = set()
+    cur_key: tuple[int, int, str] | None = None
+    cur_run: list[dict[str, Any]] = []
+
+    def _flush_run() -> None:
+        if cur_key is None or len(cur_run) < 2:
+            return
+        primary = cur_run[0]
+        target_lbl = cur_key[2]
+        primary["text"] = _join_soft_merged_text(cur_run, target_lbl)
+        boxes = [e["bbox"] for e in cur_run if e.get("bbox") and len(e["bbox"]) == 4]
+        if boxes:
+            merged_box = [
+                v + 0.0
+                for v in round_bbox((
+                    min(float(b[0]) for b in boxes),
+                    min(float(b[1]) for b in boxes),
+                    max(float(b[2]) for b in boxes),
+                    max(float(b[3]) for b in boxes),
+                ))
+            ]
+            primary["bbox"] = merged_box
+            src_ref = primary.get("source_ref")
+            if isinstance(src_ref, dict) and "bbox" in src_ref:
+                src_ref["bbox"] = list(merged_box)
+        primary["confidence"] = round(min(float(e.get("confidence", 1.0)) for e in cur_run), 4)
+        pmeta = primary.setdefault("metadata", {})
+        pmeta["layout_label"] = target_lbl
+        for extra in cur_run[1:]:
+            dropped_ptrs.add(id(extra))
+
+    for _, elem in ordered:
+        key = _match_key(elem)
+        if key is not None and key == cur_key:
+            cur_run.append(elem)
+        else:
+            _flush_run()
+            cur_key = key
+            cur_run = [elem] if key is not None else []
+    _flush_run()
+
+    if dropped_ptrs:
+        elements[:] = [e for e in elements if id(e) not in dropped_ptrs]
+        page_ro: dict[Any, int] = {}
+        for _, elem in ordered:
+            if id(elem) in dropped_ptrs:
+                continue
+            page = elem.get("page", 0)
+            ro = page_ro.get(page, 0)
+            elem["reading_order"] = ro
+            page_ro[page] = ro + 1
+    return elements
 
 
 def _should_trust_section_header(elem: dict[str, Any], body_font: float | None) -> bool:
