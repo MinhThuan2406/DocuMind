@@ -43,7 +43,38 @@ _CAPTION_PROSE_START_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CHAPTER_RE = re.compile(r"^(?:chapter|part)\s+([0-9]+|[IVXLCDM]+)\b[:.\-\s]*(.*)$", re.IGNORECASE)
+_STRUCT_EN_TIERS = {
+    "part": 0,
+    "title": 0,
+    "book": 0,
+    "chapter": 1,
+    "division": 1,
+    "section": 2,
+    "subpart": 2,
+    "subsection": 3,
+    "article": 4,
+    "rule": 4,
+    "clause": 4,
+    "schedule": 4,
+}
+_STRUCT_CJK_TIERS = {"編": 0, "章": 1, "節": 2, "款": 3, "条": 4}
+_STRUCT_EN_RE = re.compile(
+    r"^(part|title|book|chapter|division|section|subpart|subsection|article|rule|clause|schedule)"
+    r"\s+(?-i:([0-9]+(?:\.[0-9]+)*|[IVXLCDM]+|[A-Z](?=\s*[:.\-\s]|$)))(?:\b|(?=\s|$))[:.\-\s]*(.*)$",
+    re.IGNORECASE,
+)
+_STRUCT_CJK_RE = re.compile(r"^(第\s*[0-9一二三四五六七八九十百千]+\s*(編|章|節|款|条))(.*)$")
+_STRUCT_PROSE_START_RE = re.compile(
+    r"^(?:specifies|shall|is|are|was|were|requires|defines|provides|states|applies|"
+    r"may|must|can|will|has|have|of|to|in|for|and|or)\b",
+    re.IGNORECASE,
+)
+_CJK_PARTICLES = ("の", "に", "を", "は", "が", "で", "と", "へ", "も", "より", "から", "まで")
+_SINGLE_LETTER_APP_RE = re.compile(r"^([A-Z])\s+([A-Z].*)$")
+_NATIVE_LIST_ITEM_RE = re.compile(
+    r"^(?:[•●○◦▪▫‣⁃・･■□◆◇★☆△▽▲▼▶▷▸▹∙※✓✔➢➣➤]\s*\S|"
+    r"[-–—*+]\s+\S|\(\d{1,3}\)\s+\S|\d{1,3}[.)]\s+\S)"
+)
 _APPENDIX_RE = re.compile(r"^appendix\s+([A-Z])(?:\.([0-9]+(?:\.[0-9]+)*))?\b[:.\-\s]*(.*)$", re.IGNORECASE)
 _APPENDIX_SUB_RE = re.compile(r"^([A-Z]\.[0-9]+(?:\.[0-9]+)*)\.?\s+(.+)$")
 _NUMERIC_HEADING_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(?:(\.)\s*|\s+)(.+)$")
@@ -504,13 +535,17 @@ def _weighted_median_font_size(elements: Sequence[dict[str, Any]]) -> float | No
 def _project_semantic_regions(
     elements: Sequence[dict[str, Any]],
     semantic_regions: Mapping[int, Sequence[Any]] | None,
+    *,
+    page_heights: Mapping[int, float] | None = None,
+    body_font: float | None = None,
 ) -> None:
     if not semantic_regions:
         return
     for elem in elements:
         if elem.get("type") != "text" or elem.get("level", 1) != 1:
             continue
-        if elem.get("source", "text_layer") != "text_layer":
+        source = elem.get("source", "text_layer")
+        if source != "text_layer":
             continue
         meta = elem.setdefault("metadata", {})
         if meta.get("layout_label") is not None:
@@ -522,9 +557,13 @@ def _project_semantic_regions(
         elem_area = max(0.0, ex1 - ex0) * max(0.0, ey1 - ey0)
         if elem_area <= 0.0:
             continue
-        regions = semantic_regions.get(elem.get("page", 0))
+        pno = elem.get("page", 0)
+        regions = semantic_regions.get(pno)
         if not regions:
             continue
+        page_h = float(page_heights.get(pno, 0.0)) if page_heights else 0.0
+        cy = 0.5 * (ey0 + ey1)
+        fs = meta.get("font_size")
         best_score: tuple[float, float] | None = None
         best_label: str | None = None
         for reg in regions:
@@ -538,6 +577,18 @@ def _project_semantic_regions(
                 conf = float(getattr(reg, "confidence", 1.0))
             if not rb or len(rb) != 4 or not label:
                 continue
+            lbl_str = str(label)
+            if lbl_str.lower() in _IGNORED_ROLES and page_h > 0.0:
+                in_margin = cy <= 0.12 * page_h or cy >= 0.88 * page_h
+                fs_ok = not (
+                    body_font is not None
+                    and body_font > 0.0
+                    and isinstance(fs, (int, float))
+                    and fs > 0.0
+                    and float(fs) > body_font * 1.05
+                )
+                if not (in_margin and fs_ok):
+                    continue
             ix = max(0.0, min(ex1, float(rb[2])) - max(ex0, float(rb[0])))
             iy = max(0.0, min(ey1, float(rb[3])) - max(ey0, float(rb[1])))
             ioa = (ix * iy) / elem_area
@@ -545,7 +596,7 @@ def _project_semantic_regions(
                 score = (ioa, conf)
                 if best_score is None or score > best_score:
                     best_score = score
-                    best_label = str(label)
+                    best_label = lbl_str
         if best_label is not None:
             meta["layout_label"] = best_label
 
@@ -645,6 +696,7 @@ def _learn_caption_prefixes(
                 or _sentence_count(cleaned) >= 2
                 or _parse_caption_prefix(cleaned)[0]
                 or _parse_numbered_heading(cleaned, meta, body_font) is not None
+                or _parse_structural_keyword(cleaned, meta, body_font) is not None
             ):
                 continue
             fs = meta.get("font_size")
@@ -809,7 +861,7 @@ def _is_adjacent_caption_candidate(
         return False
     if cleaned[-1] in ":;?" or _sentence_count(cleaned) >= 2 or (eff_words > 8 and _ends_sentence(cleaned)):
         return False
-    if _parse_numbered_heading(cleaned, meta, body_font) is not None:
+    if _parse_numbered_heading(cleaned, meta, body_font) is not None or _parse_structural_keyword(cleaned, meta, body_font) is not None:
         return False
     fs = meta.get("font_size")
     if body_font and isinstance(fs, (int, float)) and fs >= body_font * 1.15:
@@ -882,6 +934,7 @@ def _merge_multiline_captions(
             or _sentence_count(t2) >= 2
             or _parse_caption_prefix(t2, learned_prefixes)[0]
             or _parse_numbered_heading(t2, m2, body_font) is not None
+            or _parse_structural_keyword(t2, m2, body_font) is not None
         ):
             i += 1
             continue
@@ -1123,6 +1176,66 @@ def _propagate_captions_to_ir(out: dict[str, Any], elements: Sequence[dict[str, 
             meta["caption_text"] = cap_text
 
 
+def _parse_structural_keyword(
+    cleaned: str,
+    meta: Mapping[str, Any],
+    body_font: float | None,
+    *,
+    source: str = "text_layer",
+) -> tuple[int, int] | None:
+    norm = _clean_text(_nfkc(cleaned))
+    if not norm or len(norm) > 140:
+        return None
+    fs = meta.get("font_size")
+    styled = bool(meta.get("bold")) or (
+        body_font is not None and isinstance(fs, (int, float)) and fs >= body_font * 1.05
+    )
+    label = meta.get("layout_label")
+    explicit_label = label == "title" or (
+        label == "section_header" and _should_trust_section_header({"source": source, "metadata": meta}, body_font)
+    )
+    eff_words = _effective_word_count(norm)
+    if eff_words > (16 if (styled or explicit_label) else 12):
+        return None
+
+    m_en = _STRUCT_EN_RE.match(norm)
+    if m_en:
+        tier = _STRUCT_EN_TIERS[m_en.group(1).lower()]
+        num_tok = m_en.group(2)
+        rest = m_en.group(3).strip()
+        if not rest:
+            if not (styled or explicit_label):
+                return None
+        else:
+            if _STRUCT_PROSE_START_RE.match(rest):
+                return None
+            if _sentence_count(rest) >= 2 or not _has_alpha(rest) or not _title_starts_well(rest):
+                return None
+            if not (styled or explicit_label) and _ends_sentence(norm):
+                return None
+        parts_len = min(6, len(num_tok.split("."))) if num_tok[0].isdigit() else 1
+        return tier, parts_len
+
+    m_cjk = _STRUCT_CJK_RE.match(norm)
+    if m_cjk:
+        tier = _STRUCT_CJK_TIERS[m_cjk.group(2)]
+        sub_tail = re.sub(r"^(?:の|-)\d+", "", m_cjk.group(3))
+        if sub_tail.startswith(_CJK_PARTICLES):
+            return None
+        rest = sub_tail.lstrip(" :.\t-–—")
+        if not rest:
+            if not (styled or explicit_label):
+                return None
+        else:
+            if _sentence_count(rest) >= 2 or not _has_alpha(rest) or not _title_starts_well(rest):
+                return None
+            if not (styled or explicit_label) and _ends_sentence(norm):
+                return None
+        return tier, 1
+
+    return None
+
+
 def _parse_numbered_heading(
     cleaned: str,
     meta: dict[str, Any],
@@ -1131,7 +1244,7 @@ def _parse_numbered_heading(
     source: str = "text_layer",
 ) -> int | None:
     norm = _clean_text(_nfkc(cleaned))
-    if len(norm) > 140 or _effective_word_count(norm) > 18 or _sentence_count(norm) >= 2:
+    if len(norm) > 140 or _effective_word_count(norm) > 18:
         return None
 
     fs = meta.get("font_size")
@@ -1143,18 +1256,17 @@ def _parse_numbered_heading(
         label == "section_header" and _should_trust_section_header({"source": source, "metadata": meta}, body_font)
     )
 
-    m_chap = _CHAPTER_RE.match(norm)
-    if m_chap:
-        rest = m_chap.group(2).strip()
-        if (rest and _has_alpha(rest) and _title_starts_well(rest)) or (not rest and (styled or explicit_label)):
-            return 1
-
     m_app = _APPENDIX_RE.match(norm)
     if m_app:
         sub = m_app.group(2)
         rest = m_app.group(3).strip()
+        if _sentence_count(rest) >= 2:
+            return None
         if (rest and _has_alpha(rest) and _title_starts_well(rest)) or (not rest and (styled or explicit_label)):
             return 1 if not sub else min(6, 1 + len(sub.split(".")))
+
+    if _sentence_count(norm) >= 2:
+        return None
 
     m_asub = _APPENDIX_SUB_RE.match(norm)
     if m_asub:
@@ -1198,6 +1310,15 @@ def _title_starts_well(rest: str, *, allow_camel: bool = False) -> bool:
     return False
 
 
+def _is_native_list_item(raw: str) -> bool:
+    s = _nfkc(raw).lstrip()
+    if not s or s.startswith("["):
+        return False
+    if _NATIVE_LIST_ITEM_RE.match(s):
+        return True
+    return unicodedata.category(s[0]) == "No" and len(s) > 1
+
+
 def _is_heading_candidate(
     elem: dict[str, Any],
     body_font: float | None,
@@ -1221,7 +1342,9 @@ def _is_heading_candidate(
     if not norm or not _has_alpha(norm) or len(norm) <= 1:
         return False, None
 
-    num_depth = _parse_numbered_heading(cleaned, meta, body_font, source=str(elem.get("source", "text_layer")))
+    src = str(elem.get("source", "text_layer"))
+    num_depth = _parse_numbered_heading(cleaned, meta, body_font, source=src)
+    struct_info = _parse_structural_keyword(cleaned, meta, body_font, source=src)
 
     if label == "title":
         return True, 1
@@ -1229,6 +1352,10 @@ def _is_heading_candidate(
         return True, num_depth
     if num_depth is not None:
         return True, num_depth
+    if struct_info is not None:
+        return True, None
+    if _STRUCT_EN_RE.match(norm) or _STRUCT_CJK_RE.match(norm):
+        return False, None
 
     if (
         _REQ_ID_RE.match(norm)
@@ -1239,12 +1366,24 @@ def _is_heading_candidate(
         return False, None
 
     n_words = _effective_word_count(norm)
-    if len(norm) > 140 or n_words > (_TITLE_BAND_MAX_WORDS if title_band else 16) or _sentence_count(norm) >= 2:
+    if len(norm) > 140 or n_words > (_TITLE_BAND_MAX_WORDS if title_band else 16):
         return False, None
 
     fs = meta.get("font_size")
     bold = bool(meta.get("bold"))
     has_fs = isinstance(fs, (int, float)) and fs > 0
+    styled_app = bold or (body_font is not None and has_fs and fs >= body_font * 1.05)
+    if (
+        _SINGLE_LETTER_APP_RE.match(norm)
+        and styled_app
+        and n_words <= 12
+        and not _ends_sentence(norm)
+        and _sentence_count(norm) < 2
+    ):
+        return True, None
+
+    if _sentence_count(norm) >= 2:
+        return False, None
     bold_ok = bold and not _ends_sentence(norm) and n_words <= (_TITLE_BAND_MAX_WORDS if title_band else 12)
 
     if body_font is not None and has_fs:
@@ -1409,11 +1548,11 @@ def _merge_multiline_headings(
             or t2.endswith(":")
             or _DECORATIVE_RUN_RE.search(t2)
             or _UML_MULTIPLICITY_RE.search(t2)
-            or _CHAPTER_RE.match(t2)
             or _APPENDIX_RE.match(t2)
             or _APPENDIX_SUB_RE.match(t2)
             or _LEADING_NUMBER_RE.match(t2)
             or _parse_numbered_heading(t2, m2, body_font) is not None
+            or _parse_structural_keyword(t2, m2, body_font) is not None
         ):
             i += 1
             continue
@@ -1459,6 +1598,8 @@ def _validate_heading_sequence(
 ) -> list[tuple[dict[str, Any], int | None]]:
     parsed: list[tuple[dict[str, Any], int | None, tuple[int, ...] | None, bool, bool]] = []
     top_counts: dict[int, int] = {}
+    sub_app_letters: set[str] = set()
+    single_app_letters_by_style: dict[tuple[float, bool] | None, set[str]] = {}
     for elem, explicit_depth in headings:
         eid = elem["id"]
         has_toc = eid in toc_matches
@@ -1468,7 +1609,8 @@ def _validate_heading_sequence(
             or (label == "section_header" and _should_trust_section_header(elem, body_font))
             or eid in slide_titles
         )
-        m = _LEADING_NUMBER_RE.match(_clean_text(_nfkc(elem.get("text", ""))))
+        norm = _clean_text(_nfkc(elem.get("text", "")))
+        m = _LEADING_NUMBER_RE.match(norm)
         parts: tuple[int, ...] | None = None
         if m:
             raw_parts = m.group(1).split(".")
@@ -1476,15 +1618,47 @@ def _validate_heading_sequence(
                 parts = tuple(int(p) for p in raw_parts)
                 if (1 <= parts[0] <= 99) or (parts[0] == 0 and len(parts) >= 2):
                     top_counts[parts[0]] = top_counts.get(parts[0], 0) + 1
+        m_asub = _APPENDIX_SUB_RE.match(norm)
+        if m_asub:
+            sub_app_letters.add(m_asub.group(1).split(".")[0])
+        elif explicit_depth is None:
+            m_let = _SINGLE_LETTER_APP_RE.match(norm)
+            if m_let:
+                single_app_letters_by_style.setdefault(_style_key(elem), set()).add(m_let.group(1))
         parsed.append((elem, explicit_depth, parts, has_toc, is_labeled))
 
     validated: list[tuple[dict[str, Any], int | None]] = []
     prev_top = 0
+    seen_numbered = False
     max_top_fs: float | None = None
     for elem, explicit_depth, parts, has_toc, is_labeled in parsed:
         if parts is None or has_toc or is_labeled:
             if parts is not None and (has_toc or is_labeled) and 1 <= parts[0] <= 99:
                 prev_top = max(prev_top, parts[0])
+                seen_numbered = True
+            if explicit_depth is None and not has_toc and not is_labeled:
+                norm = _clean_text(_nfkc(_heading_text(elem)))
+                m_let = _SINGLE_LETTER_APP_RE.match(norm)
+                if m_let:
+                    meta = elem.get("metadata") or {}
+                    letter = m_let.group(1)
+                    st = _style_key(elem)
+                    has_ab_seq = st is not None and {"A", "B"}.issubset(single_app_letters_by_style.get(st, set()))
+                    fs = meta.get("font_size")
+                    bold = bool(meta.get("bold"))
+                    has_fs = isinstance(fs, (int, float)) and fs > 0
+                    styled_app = bold or (body_font is not None and has_fs and float(fs) >= body_font * 1.05)
+                    if styled_app and seen_numbered and (letter in sub_app_letters or has_ab_seq):
+                        explicit_depth = 1
+                    else:
+                        bold_ok = bold and not _ends_sentence(norm) and _effective_word_count(norm) <= 12
+                        normal_ok = (
+                            (float(fs) >= body_font * 1.15 or (bold_ok and float(fs) >= body_font * 0.98))
+                            if (body_font is not None and has_fs)
+                            else bold_ok
+                        )
+                        if not normal_ok:
+                            continue
             validated.append((elem, explicit_depth))
             continue
 
@@ -1509,6 +1683,7 @@ def _validate_heading_sequence(
             else:
                 continue
 
+        seen_numbered = True
         if 1 <= first <= 99:
             prev_top = max(prev_top, first)
         if len(parts) == 1:
@@ -1529,18 +1704,39 @@ def _assign_heading_levels(
     slide_pages = {elem.get("page") for elem, _ in headings if elem["id"] in slide_titles}
     has_title = any((elem.get("metadata") or {}).get("layout_label") == "title" for elem, _ in headings)
 
+    struct_items: dict[str, tuple[int, int]] = {}
+    struct_pos: dict[str, int] = {}
+    numeric_entries: list[tuple[int, dict[str, Any], int]] = []
+    has_numeric_lvl1 = False
+
     anchor_votes: dict[tuple[float, bool], dict[int, int]] = {}
     toc_anchor_keys: set[tuple[float, bool]] = set()
     unanchored_counts: dict[tuple[float, bool], int] = {}
-    for elem, explicit_depth in headings:
+    for pos, (elem, explicit_depth) in enumerate(headings):
         eid = elem["id"]
-        if eid in slide_titles or (elem.get("metadata") or {}).get("layout_label") == "title":
+        meta = elem.get("metadata") or {}
+        if eid in slide_titles or meta.get("layout_label") == "title":
             continue
+        if explicit_depth is None and eid not in toc_ids:
+            s_info = _parse_structural_keyword(
+                _clean_text(_heading_text(elem)),
+                meta,
+                body_font,
+                source=str(elem.get("source", "text_layer")),
+            )
+            if s_info is not None:
+                struct_items[eid] = s_info
+                struct_pos[eid] = pos
+                continue
         key = _style_key(elem)
         if key is None:
             continue
         if explicit_depth is not None:
             in_toc = eid in toc_ids
+            if not in_toc:
+                numeric_entries.append((pos, elem, explicit_depth))
+                if explicit_depth == 1:
+                    has_numeric_lvl1 = True
             if not in_toc and (
                 elem.get("page") in slide_pages
                 or (body_font is not None and key[0] < body_font * 0.98)
@@ -1552,6 +1748,36 @@ def _assign_heading_levels(
             bucket[explicit_depth] = bucket.get(explicit_depth, 0) + 1
         else:
             unanchored_counts[key] = unanchored_counts.get(key, 0) + 1
+
+    struct_levels: dict[str, int] = {}
+    if struct_items:
+        struct_tiers = sorted({tier for tier, _ in struct_items.values()})
+        tier_rank = {tier: idx + 1 for idx, tier in enumerate(struct_tiers)}
+        base_shift = 1 if (has_title and not has_numeric_lvl1) else 0
+        min_top_lvl = 1 + base_shift
+        top_tier = struct_tiers[0]
+        top_eids = [eid for eid, (t, _) in struct_items.items() if t == top_tier]
+        first_top_eid = min(top_eids, key=lambda e: struct_pos[e])
+        pos_t0 = struct_pos[first_top_eid]
+        key_t0 = _style_key(headings[pos_t0][0])
+        if numeric_entries and key_t0 is not None:
+            fs_t0, bold_t0 = key_t0
+            for n_pos, n_elem, n_depth in numeric_entries:
+                if n_pos >= pos_t0:
+                    continue
+                n_key = _style_key(n_elem)
+                if n_key is None:
+                    continue
+                n_fs, n_bold = n_key
+                if n_fs > fs_t0 * (1.0 + size_tolerance):
+                    min_top_lvl = max(min_top_lvl, n_depth + 1)
+                elif abs(n_fs - fs_t0) / max(n_fs, fs_t0) <= size_tolerance and (
+                    (n_bold and not bold_t0) or (n_bold == bold_t0 and top_tier >= 2)
+                ):
+                    min_top_lvl = max(min_top_lvl, n_depth + 1)
+        for eid, (tier, parts_len) in struct_items.items():
+            lvl = tier_rank[tier] + (min_top_lvl - 1) + (parts_len - 1)
+            struct_levels[eid] = min(_MAX_HEADING_LEVEL, lvl)
 
     anchor_levels: dict[tuple[float, bool], tuple[int, int]] = {}
     if not (len(slide_pages) >= 2 and not toc_anchor_keys):
@@ -1610,20 +1836,24 @@ def _assign_heading_levels(
 
     levels: dict[str, int] = {}
     for elem, explicit_depth in headings:
+        eid = elem["id"]
         if explicit_depth is not None:
-            levels[elem["id"]] = explicit_depth
+            levels[eid] = explicit_depth
+            continue
+        if eid in struct_levels:
+            levels[eid] = struct_levels[eid]
             continue
         meta = elem.get("metadata") or {}
-        if meta.get("layout_label") == "title" or elem["id"] in slide_titles:
-            levels[elem["id"]] = 1
+        if meta.get("layout_label") == "title" or eid in slide_titles:
+            levels[eid] = 1
             continue
         key = _style_key(elem)
         if key is not None:
             shift = int(not anchor_levels and (has_title or elem.get("page") in slide_pages))
-            levels[elem["id"]] = min(_MAX_HEADING_LEVEL, style_rank[key] + shift)
+            levels[eid] = min(_MAX_HEADING_LEVEL, style_rank[key] + shift)
         else:
             base_lvl = 2 if has_title else 1
-            levels[elem["id"]] = base_lvl + int(not has_title and elem.get("page") in slide_pages)
+            levels[eid] = base_lvl + int(not has_title and elem.get("page") in slide_pages)
     return levels
 
 
@@ -1645,7 +1875,18 @@ def apply_structure(
         doc_meta["outline"] = []
         return out
 
-    _project_semantic_regions(elements, semantic_regions)
+    page_heights = {
+        int(p["number"]): float(p["height_pt"])
+        for p in doc_meta.get("pages", ())
+        if isinstance(p, Mapping) and p.get("number") is not None and p.get("height_pt")
+    }
+    pre_body_font = _weighted_median_font_size(elements)
+    _project_semantic_regions(
+        elements,
+        semantic_regions,
+        page_heights=page_heights,
+        body_font=pre_body_font,
+    )
 
     resolved_toc: list[tuple[int, str, int]] = []
     if use_bookmarks:
@@ -1728,6 +1969,15 @@ def apply_structure(
             )
         else:
             meta["section_parent_id"] = stack[-1][1] if stack else None
+            if (
+                elem.get("type") == "text"
+                and eid not in toc_elem_ids
+                and elem.get("page") not in toc_pages
+                and meta.get("role") is None
+                and meta.get("layout_label") is None
+                and _is_native_list_item(elem.get("text", ""))
+            ):
+                meta["layout_label"] = "list_item"
 
     doc_meta["outline"] = outline
     return out

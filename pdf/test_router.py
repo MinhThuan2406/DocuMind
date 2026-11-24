@@ -521,6 +521,48 @@ def test_table_candidate_collinear_rules_and_signal_b_bridging():
         assert not classify_page(doc.pages[2]).table_candidate
 
 
+def test_three_column_prose_vs_three_column_table():
+    b = TestPdfBuilder()
+
+    # 1. Three-column prose with wide columns, >= 5.5 words/line, uniform spacing, and a footnote rule -> False.
+    prose3 = b.new_page(width=600, height=842)
+    prose3.draw_line((40, 210), (560, 210), width=0.6)
+    for row in range(6):
+        y = 120 + row * 14
+        prose3.insert_text((40, y), "This is left column prose text line", fontsize=9)
+        prose3.insert_text((220, y), "This is middle column prose text line", fontsize=9)
+        prose3.insert_text((400, y), "This is right column prose text line", fontsize=9)
+
+    # 2. Three-column borderless table (short key/numeric columns) -> True.
+    tbl3 = b.new_page(width=600, height=842)
+    rows = [
+        ("Item", "2023", "2024"),
+        ("Alpha", "10", "12"),
+        ("Beta", "24", "28"),
+        ("Gamma", "31", "35"),
+    ]
+    for r_idx, (c1, c2, c3) in enumerate(rows):
+        y = 120 + r_idx * 16
+        tbl3.insert_text((50, y), c1, fontsize=10)
+        tbl3.insert_text((220, y), c2, fontsize=10)
+        tbl3.insert_text((360, y), c3, fontsize=10)
+
+    # 3. Three-column ruled table with >= 2 short cells near rule -> True.
+    ruled3 = b.new_page(width=600, height=842)
+    ruled3.draw_line((50, 140), (520, 140), width=0.8)
+    ruled3.insert_text((55, 124), "Code", fontsize=10)
+    ruled3.insert_text((210, 124), "Metric", fontsize=10)
+    ruled3.insert_text((390, 124), "Score", fontsize=10)
+    ruled3.insert_text((55, 150), "M1", fontsize=10)
+    ruled3.insert_text((210, 150), "Precision", fontsize=10)
+    ruled3.insert_text((390, 150), "0.94", fontsize=10)
+
+    with pdfplumber.open(io.BytesIO(b.to_bytes())) as doc:
+        assert not classify_page(doc.pages[0]).table_candidate
+        assert classify_page(doc.pages[1]).table_candidate
+        assert classify_page(doc.pages[2]).table_candidate
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

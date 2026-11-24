@@ -980,6 +980,72 @@ def test_heading_clean_text_used_for_matching_and_outline_title():
     assert out["elements"][0]["text"] == "1. Coverage Overview BadgeA BadgeB"
 
 
+def test_dynamic_structural_keywords_cross_ref_guard_and_mixed_numeric():
+    body = "Regular explanatory body paragraph establishing the median body font size accurately. " * 3
+    elements = [
+        _elem("b0", page=1, reading_order=0, text=body, font_size=10.0, bold=False),
+        _elem("ch1", page=1, reading_order=1, text="CHAPTER I General Provisions", font_size=12.0, bold=True),
+        _elem("sec1", page=1, reading_order=2, text="Section 1 Scope", font_size=12.0, bold=True),
+        _elem("art1", page=1, reading_order=3, text="Article 21. Definitions", font_size=12.0, bold=True),
+        _elem("xref1", page=1, reading_order=4, text="Article 21 specifies the rules for claims.", font_size=12.0, bold=True),
+        _elem("xref2", page=1, reading_order=5, text="Section 1 of the act applies here.", font_size=12.0, bold=True),
+        _elem("jp_art", page=1, reading_order=6, text="第1条 適用範囲", font_size=12.0, bold=True),
+        _elem("jp_xref", page=1, reading_order=7, text="第1条の規定により適用する。", font_size=12.0, bold=True),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert by_id["ch1"]["metadata"]["heading_level"] == 1
+    assert by_id["sec1"]["metadata"]["heading_level"] == 2
+    assert by_id["art1"]["metadata"]["heading_level"] == 3
+    assert by_id["jp_art"]["metadata"]["heading_level"] == 3
+    assert by_id["xref1"]["metadata"].get("role") is None
+    assert by_id["xref2"]["metadata"].get("role") is None
+    assert by_id["jp_xref"]["metadata"].get("role") is None
+
+    # Mixed numeric + structural: Section inside 1. must not invert above or equal to 1.; 1.4.2 stays level 3.
+    mixed = [
+        _elem("b0", page=1, reading_order=0, text=body, font_size=10.0, bold=False),
+        _elem("n1", page=1, reading_order=1, text="1. Architecture", font_size=12.0, bold=True),
+        _elem("s1", page=1, reading_order=2, text="Section 1 Core", font_size=12.0, bold=True),
+        _elem("a1", page=1, reading_order=3, text="Article 1 Interfaces", font_size=12.0, bold=True),
+        _elem("n14", page=1, reading_order=4, text="1.4 Details", font_size=12.0, bold=True),
+        _elem("n142", page=1, reading_order=5, text="1.4.2 Specification Items", font_size=11.0, bold=True),
+    ]
+    mixed_out = apply_structure(_ir(mixed))
+    m_by_id = {e["id"]: e for e in mixed_out["elements"]}
+    assert m_by_id["n1"]["metadata"]["heading_level"] == 1
+    assert m_by_id["s1"]["metadata"]["heading_level"] > m_by_id["n1"]["metadata"]["heading_level"]
+    assert m_by_id["a1"]["metadata"]["heading_level"] > m_by_id["s1"]["metadata"]["heading_level"]
+    assert m_by_id["n142"]["metadata"]["heading_level"] == 3
+
+
+def test_single_letter_appendix_and_native_list_item_labels():
+    body = "Regular explanatory body paragraph establishing the median body font size accurately. " * 3
+    elements = [
+        _elem("pre", page=1, reading_order=0, text="A Survey Before Numbers", font_size=11.0, bold=False),
+        _elem("b0", page=1, reading_order=1, text=body, font_size=10.0, bold=False),
+        _elem("n1", page=1, reading_order=2, text="1. Introduction", font_size=14.0, bold=True),
+        _elem("app_a", page=1, reading_order=3, text="A Glossary", font_size=11.0, bold=True),
+        _elem("app_a1", page=1, reading_order=4, text="A.1 Terms", font_size=10.5, bold=True),
+        _elem("li1", page=1, reading_order=5, text="- First bullet point item", font_size=10.0, bold=False),
+        _elem("li2", page=1, reading_order=6, text="1) Step one in procedure", font_size=10.0, bold=False),
+        _elem("sws", page=1, reading_order=7, text="[SWS_Os_00001] Requirement text", font_size=10.0, bold=False),
+        _elem("cit", page=1, reading_order=8, text="[1] Author et al., 2024.", font_size=10.0, bold=False),
+    ]
+    out = apply_structure(_ir(elements))
+    by_id = {e["id"]: e for e in out["elements"]}
+    assert by_id["pre"]["metadata"].get("role") is None
+    assert by_id["app_a"]["metadata"]["role"] == "heading"
+    assert by_id["app_a"]["metadata"]["heading_level"] == 1
+    assert by_id["app_a1"]["metadata"]["heading_level"] == 2
+    assert by_id["li1"]["metadata"].get("layout_label") == "list_item"
+    assert by_id["li1"]["metadata"].get("role") is None
+    assert by_id["li2"]["metadata"].get("layout_label") == "list_item"
+    assert by_id["li2"]["metadata"].get("role") is None
+    assert by_id["sws"]["metadata"].get("layout_label") is None
+    assert by_id["cit"]["metadata"].get("layout_label") is None
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

@@ -858,6 +858,38 @@ def test_groupers_ignore_caption_and_wide_prose_text_over_visual_containers():
         assert y0 >= 260.0 and y1 <= 470.0, (grouper.name, grouped[0].bbox)
 
 
+def test_v2_vector_vision_narrow_non_mergeable_prose_and_n_col_cross_column():
+    import cv2
+    import numpy as np
+
+    from pdf.grouping import V2VectorVisionGrouper
+
+    # 3-column page: Col 1 has a picture (+ small internal label) inside a visual_container that overlaps
+    # >= 50% (without fully enclosing) Col 2 narrow prose; Col 2 & Col 3 have narrow prose columns.
+    bgr = np.full((800, 600, 3), 255, dtype=np.uint8)
+    cv2.rectangle(bgr, (38, 98), (290, 265), (0, 0, 0), 2)
+    cv2.rectangle(bgr, (45, 110), (185, 250), (0, 0, 0), 2)
+
+    layout = PageLayout(
+        items=[
+            {"order": 0, "label": "picture", "bbox": [45.0, 110.0, 185.0, 250.0], "text": "", "score": 0.92},
+            {"order": 1, "label": "text", "bbox": [60.0, 140.0, 120.0, 160.0], "text": "", "score": 0.85},
+            {"order": 2, "label": "text", "bbox": [205.0, 105.0, 355.0, 260.0], "text": "", "score": 0.90},
+            {"order": 3, "label": "text", "bbox": [375.0, 105.0, 525.0, 260.0], "text": "", "score": 0.90},
+            {"order": 4, "label": "picture", "bbox": [205.0, 300.0, 355.0, 440.0], "text": "", "score": 0.91},
+            {"order": 5, "label": "text", "bbox": [375.0, 300.0, 525.0, 440.0], "text": "", "score": 0.90},
+        ],
+        frame=(600.0, 800.0),
+    )
+
+    grouped = V2VectorVisionGrouper().group(bgr, layout, min_area=0.015)
+    assert len(grouped) == 2, grouped
+    col1_fig = min(grouped, key=lambda g: g.bbox[0])
+    col2_fig = max(grouped, key=lambda g: g.bbox[0])
+    assert col1_fig.bbox[2] <= 198.0, col1_fig.bbox
+    assert col2_fig.bbox[0] >= 198.0 and col2_fig.bbox[2] <= 362.0, col2_fig.bbox
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

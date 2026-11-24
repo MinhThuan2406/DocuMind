@@ -655,6 +655,129 @@ def test_paragraph_splitting_hanging_indent_two_col_and_one_line_indented():
     assert len(ind_blocks) == 3, [b.text for b in ind_blocks]
 
 
+def test_narrow_gutter_with_full_width_abstract_and_cjk_med_space_clamp():
+    # 1. Narrow 1.3x gutter (13pt at 10pt font) below a full-width abstract must split columns without splitting the abstract.
+    words: list[Word] = [
+        Word("Abstract:", (50.0, 40.0, 100.0, 52.0), 10.0, True),
+        Word("This", (103.0, 40.0, 125.0, 52.0), 10.0, False),
+        Word("full", (128.0, 40.0, 148.0, 52.0), 10.0, False),
+        Word("width", (151.0, 40.0, 180.0, 52.0), 10.0, False),
+        Word("summary", (183.0, 40.0, 230.0, 52.0), 10.0, False),
+        Word("spans", (233.0, 40.0, 265.0, 52.0), 10.0, False),
+        Word("across", (268.0, 40.0, 305.0, 52.0), 10.0, False),
+        Word("the", (308.0, 40.0, 325.0, 52.0), 10.0, False),
+        Word("entire", (328.0, 40.0, 360.0, 52.0), 10.0, False),
+        Word("page.", (363.0, 40.0, 400.0, 52.0), 10.0, False),
+    ]
+    for row in range(6):
+        y0 = 70.0 + row * 14.0
+        y1 = y0 + 10.0
+        words.extend([
+            Word(f"L{row}a", (50.0, y0, 140.0, y1), 10.0, False),
+            Word(f"L{row}b", (143.0, y0, 240.0, y1), 10.0, False),
+            Word(f"R{row}a", (253.0, y0, 350.0, y1), 10.0, False),
+            Word(f"R{row}b", (353.0, y0, 450.0, y1), 10.0, False),
+        ])
+    blocks = order_blocks(words, (0.0, 0.0, 595.0, 842.0))
+    assert len(blocks) == 3, [b.text for b in blocks]
+    assert blocks[0].text.startswith("Abstract: This full width summary")
+    assert all(f"L{r}a" in blocks[1].text and f"R{r}a" not in blocks[1].text for r in range(6))
+    assert all(f"R{r}a" in blocks[2].text and f"L{r}a" not in blocks[2].text for r in range(6))
+
+    # 2. CJK sparse wide-space samples (~0.8*ref_fs) are clamped to 0.45*ref_fs so 1.35x CJK gutter splits.
+    cjk_words: list[Word] = []
+    for row in range(6):
+        y0 = 60.0 + row * 14.0
+        y1 = y0 + 10.0
+        cjk_words.extend([
+            Word("保険", (50.0, y0, 80.0, y1), 10.0, False),
+            Word("契約", (88.0, y0, 120.0, y1), 10.0, False),
+            Word("内容", (128.0, y0, 200.0, y1), 10.0, False),
+            Word("約款", (213.5, y0, 250.0, y1), 10.0, False),
+            Word("条項", (258.0, y0, 380.0, y1), 10.0, False),
+        ])
+    cjk_blocks = order_blocks(cjk_words, (0.0, 0.0, 595.0, 842.0))
+    assert len(cjk_blocks) == 2, [b.text for b in cjk_blocks]
+    assert "約款" not in cjk_blocks[0].text and "保険" not in cjk_blocks[1].text
+
+    # 3. Single-column justified prose with occasional 1.0x spaces must NOT falsely split.
+    just_words: list[Word] = []
+    for row in range(5):
+        y0 = 60.0 + row * 14.0
+        y1 = y0 + 10.0
+        just_words.extend([
+            Word("Single", (50.0, y0, 150.0, y1), 10.0, False),
+            Word("column", (159.0, y0, 260.0, y1), 10.0, False),
+            Word("justified", (263.0, y0, 360.0, y1), 10.0, False),
+            Word("prose.", (363.0, y0, 450.0, y1), 10.0, False),
+        ])
+    just_blocks = order_blocks(just_words, (0.0, 0.0, 595.0, 842.0))
+    assert len(just_blocks) == 1, [b.text for b in just_blocks]
+
+
+def test_bold_font_subset_prefix_medium_promotion_and_monospace_preservation():
+    from pdf.text import _is_bold_font, _is_monospace_font, infer_medium_bold_families, raw_words_to_words
+
+    # Subset prefix QWBXZT+ must not trigger false TeX bx bold match; NimbusRomNo9L-Medi promotes only against lighter body.
+    assert not _is_bold_font("QWBXZT+Times-Roman")
+    assert _is_bold_font("ABCDEF+CMBX10")
+    assert _is_bold_font("ABCDEF+Arial-BD")
+    assert _is_bold_font("ABCDEF+HiraginoSans-W6")
+
+    reg_plus_med = [
+        {"x0": 50, "top": 50, "x1": 350, "bottom": 62, "text": "Regular body text establishing dominant light weight.", "size": 10.0, "fontname": "AAAAAA+NimbusRomNo9L-Regu"},
+        {"x0": 50, "top": 80, "x1": 200, "bottom": 92, "text": "1. Introduction", "size": 10.0, "fontname": "BBBBBB+NimbusRomNo9L-Medi"},
+        {"x0": 50, "top": 100, "x1": 200, "bottom": 112, "text": "FakeBold", "size": 10.0, "fontname": "QWBXZT+Times-Roman"},
+    ]
+    mbf = infer_medium_bold_families(reg_plus_med)
+    assert "nimbusromno9l" in mbf
+    words_promoted = raw_words_to_words(reg_plus_med, (0.0, 0.0, 595.0, 842.0), medium_bold_families=mbf)
+    assert not words_promoted[0].bold
+    assert words_promoted[1].bold
+    assert not words_promoted[2].bold
+
+    # Negative: when the document dominant body weight is itself Medium, Medium must NOT be promoted to bold.
+    med_body_doc = [
+        {"x0": 50, "top": 50, "x1": 400, "bottom": 62, "text": "Document body written entirely in medium font weight across lines.", "size": 10.0, "fontname": "CCCCCC+NotoSans-Medium"},
+        {"x0": 50, "top": 80, "x1": 160, "bottom": 92, "text": "True Bold", "size": 10.0, "fontname": "DDDDDD+NotoSans-Bold"},
+    ]
+    assert infer_medium_bold_families(med_body_doc) == frozenset()
+    words_med_body = raw_words_to_words(med_body_doc, (0.0, 0.0, 595.0, 842.0))
+    assert not words_med_body[0].bold
+    assert words_med_body[1].bold
+
+    # Word.monospace preserves multi-line indented code blocks without merging 1-line indented prose paragraphs.
+    assert _is_monospace_font("ABCDEF+CourierNewPSMT")
+    assert _is_monospace_font("ABCDEF+DejaVuSansMono")
+    assert not _is_monospace_font("ABCDEF+FiraSans-Regular")
+
+    code_words = [
+        Word("Anchor", (50.0, 46.0, 95.0, 56.0), 10.0, False, monospace=False),
+        Word("prose", (99.0, 46.0, 140.0, 56.0), 10.0, False, monospace=False),
+        Word("one.", (144.0, 46.0, 420.0, 56.0), 10.0, False, monospace=False),
+        Word("Second", (50.0, 60.0, 95.0, 70.0), 10.0, False, monospace=False),
+        Word("prose", (99.0, 60.0, 140.0, 70.0), 10.0, False, monospace=False),
+        Word("line.", (144.0, 60.0, 420.0, 70.0), 10.0, False, monospace=False),
+        Word("def", (70.0, 86.0, 90.0, 96.0), 10.0, False, monospace=True),
+        Word("foo():", (96.0, 86.0, 130.0, 96.0), 10.0, False, monospace=True),
+        Word("return", (85.0, 100.0, 120.0, 110.0), 10.0, False, monospace=True),
+        Word("42.", (126.0, 100.0, 145.0, 110.0), 10.0, False, monospace=True),
+        Word("First", (70.0, 130.0, 100.0, 140.0), 10.0, False, monospace=False),
+        Word("indented", (104.0, 130.0, 155.0, 140.0), 10.0, False, monospace=False),
+        Word("prose.", (159.0, 130.0, 220.0, 140.0), 10.0, False, monospace=False),
+        Word("Second", (70.0, 144.0, 112.0, 154.0), 10.0, False, monospace=False),
+        Word("indented", (116.0, 144.0, 167.0, 154.0), 10.0, False, monospace=False),
+        Word("prose.", (171.0, 144.0, 230.0, 154.0), 10.0, False, monospace=False),
+    ]
+    code_blocks = order_blocks(code_words, (0.0, 0.0, 595.0, 842.0))
+    assert [b.text for b in code_blocks] == [
+        "Anchor prose one.\nSecond prose line.",
+        "def foo():\nreturn 42.",
+        "First indented prose.",
+        "Second indented prose.",
+    ], [b.text for b in code_blocks]
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

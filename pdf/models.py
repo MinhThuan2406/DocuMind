@@ -30,7 +30,7 @@ class PageProfile:
     table_candidate: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Word:
     text: str
     bbox: BBox
@@ -38,6 +38,7 @@ class Word:
     bold: bool
     upright: bool = True
     direction: str = "ltr"
+    monospace: bool = False
 
 
 @dataclass(frozen=True)

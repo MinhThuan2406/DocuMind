@@ -17,10 +17,10 @@ from .assemble import (
     tag_running_headers_footers,
 )
 from .backends import DiagramExtractor, FigureGrouper, LayoutBackend, PageReader, TableExtractor, get as get_backend
-from .hierarchy import apply_structure
+from .hierarchy import _project_semantic_regions, _weighted_median_font_size, apply_structure
 from .models import BBox, FigureBox, PageProfile, RasterPage, SemanticRegion, TextBlock
 from .router import classify_page
-from .text import extract_horiz_rules, extract_words, xy_cut_order
+from .text import extract_horiz_rules, extract_words, infer_medium_bold_families, xy_cut_order
 
 
 def _element_dict(
@@ -498,6 +498,9 @@ def extract_ir(
         resolved_diagram_backend: DiagramExtractor | None = None
         resolved_formula_backend: Any = None
 
+        medium_bold_families = infer_medium_bold_families(
+            [w for p_words in raw_words_by_page.values() for w in p_words]
+        )
         horiz_rules_by_page: dict[int, tuple[BBox, ...]] = {}
         for prof in profiles:
             page = doc.pages[prof.page - 1]
@@ -505,7 +508,12 @@ def extract_ir(
             words = (
                 []
                 if use_ocr
-                else extract_words(page, min_font_size=min_font_size, raw_words=raw_words_by_page[prof.page])
+                else extract_words(
+                    page,
+                    min_font_size=min_font_size,
+                    raw_words=raw_words_by_page[prof.page],
+                    medium_bold_families=medium_bold_families,
+                )
             )
             region_ocr_blocks = region_ocr_by_page.get(prof.page, ())
             kept_ocr: list[TextBlock] = []
@@ -674,10 +682,18 @@ def extract_ir(
                 })
             elements.extend(page_elems)
 
+    page_heights = {p["number"]: float(p["height_pt"]) for p in page_sizes}
+    if structure and semantic_regions:
+        _project_semantic_regions(
+            elements,
+            semantic_regions,
+            page_heights=page_heights,
+            body_font=_weighted_median_font_size(elements),
+        )
     toc_titles = [title for _, title, _ in toc] if structure else ()
     tag_running_headers_footers(
         elements,
-        {p["number"]: float(p["height_pt"]) for p in page_sizes},
+        page_heights,
         toc_titles=toc_titles,
         horiz_rules_by_page=horiz_rules_by_page,
     )

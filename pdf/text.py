@@ -24,11 +24,109 @@ _LIST_MARKER_RE = re.compile(
     r")$"
 )
 _ROT_CHAR_GAP_RATIO = 0.35
+_SUBSET_PREFIX_RE = re.compile(r"^[A-Z]{6}\+")
+_BOLD_TOKEN_RE = re.compile(r"(?:bold|black|heavy|semibold|demi)")
+_BOLD_SHORT_RE = re.compile(r"(?:^|[-_])(?:bd|bo|w[6-9])(?:$|[-_\d])")
+_TEX_BOLD_RE = re.compile(
+    r"(?:^|[-_])(?:cm|lm|sf|ec|tc|cs|la|tx|px|ptm|phv|bch|put|pnc|ppl|pbk|pag|pcr)(?:ss|tt|rm)?bx\d*"
+)
+_MEDIUM_FONT_RE = re.compile(r"(?:^|[-_])(?:medi(?:um)?|med|w5)(?:ital(?:ic)?|oblique|obl)?(?:$|[-_\d])")
+_FAMILY_SPLIT_RE = re.compile(
+    r"[-_](?=(?:regu(?:lar)?|roman|book|light|normal|medi(?:um)?|med|bold|bd|bo|black|heavy|semibold|demi|ital(?:ic)?|oblique|obl|w\d)(?:$|[-_\d]|ital|obl))"
+)
+_MONOSPACE_TOKENS = (
+    "courier",
+    "consola",
+    "menlo",
+    "monaco",
+    "inconsolata",
+    "firacode",
+    "cascadiacode",
+    "sourcecode",
+    "jetbrains",
+    "lucidaconsole",
+    "andale",
+    "mono",
+    "fixedsys",
+    "typewriter",
+)
+_TEX_MONO_RE = re.compile(r"(?:^|[-_])(?:cm|lm|ec|tc|tx|px|pcr)(?:ss)?tt\d*|(?:^|[-_])pcr[rb]")
 
 
-def _is_bold_font(fontname: str) -> bool:
-    lower = fontname.lower()
-    return any(tok in lower for tok in ("bold", "black", "heavy", "semibold", "demi"))
+def _strip_subset_prefix(fontname: str) -> str:
+    return _SUBSET_PREFIX_RE.sub("", fontname).strip().lower()
+
+
+def _font_family_key(fontname: str) -> str:
+    base = _strip_subset_prefix(fontname)
+    if not base:
+        return ""
+    return _FAMILY_SPLIT_RE.split(base, maxsplit=1)[0]
+
+
+def _is_medium_font(fontname: str) -> bool:
+    base = _strip_subset_prefix(fontname)
+    return bool(base and _MEDIUM_FONT_RE.search(base))
+
+
+def _is_bold_font(
+    fontname: str,
+    medium_bold_families: frozenset[str] = frozenset(),
+) -> bool:
+    base = _strip_subset_prefix(fontname)
+    if not base:
+        return False
+    if _BOLD_TOKEN_RE.search(base) or _BOLD_SHORT_RE.search(base) or _TEX_BOLD_RE.search(base):
+        return True
+    if medium_bold_families and _MEDIUM_FONT_RE.search(base):
+        return _font_family_key(fontname) in medium_bold_families
+    return False
+
+
+def _is_monospace_font(fontname: str) -> bool:
+    base = _strip_subset_prefix(fontname)
+    if not base:
+        return False
+    return any(tok in base for tok in _MONOSPACE_TOKENS) or bool(_TEX_MONO_RE.search(base))
+
+
+def infer_medium_bold_families(raw_words: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    if not raw_words:
+        return frozenset()
+    fam_kind_chars: dict[tuple[str, str], int] = {}
+    fam_med_chars: dict[str, int] = {}
+    fam_light_chars: dict[str, int] = {}
+    total_chars = 0
+    for item in raw_words:
+        fname = str(item.get("fontname") or "")
+        fam = _font_family_key(fname)
+        if not fam:
+            continue
+        n_chars = len(str(item.get("text") or "").strip())
+        if n_chars <= 0:
+            continue
+        total_chars += n_chars
+        if _is_bold_font(fname):
+            kind = "bold"
+        elif _is_medium_font(fname):
+            kind = "medium"
+            fam_med_chars[fam] = fam_med_chars.get(fam, 0) + n_chars
+        else:
+            kind = "light"
+            fam_light_chars[fam] = fam_light_chars.get(fam, 0) + n_chars
+        fam_kind_chars[(fam, kind)] = fam_kind_chars.get((fam, kind), 0) + n_chars
+    if not fam_kind_chars or not fam_med_chars:
+        return frozenset()
+    (dom_fam, dom_kind), _ = max(fam_kind_chars.items(), key=lambda kv: kv[1])
+    if dom_kind != "light":
+        return frozenset()
+    promoted = {
+        fam
+        for fam, med_cnt in fam_med_chars.items()
+        if fam_light_chars.get(fam, 0) > med_cnt
+        or (fam != dom_fam and fam_light_chars.get(fam, 0) == 0 and med_cnt <= 0.40 * max(1, total_chars))
+    }
+    return frozenset(promoted)
 
 
 def _is_vert_matrix_char(char: Mapping[str, Any]) -> bool:
@@ -78,6 +176,7 @@ def _rot_chars_to_words(
     bounds: BBox,
     *,
     min_font_size: float = 0.0,
+    medium_bold_families: frozenset[str] = frozenset(),
 ) -> list[Word]:
     words: list[Word] = []
     for is_btt in (True, False):
@@ -111,7 +210,8 @@ def _rot_chars_to_words(
                     max(float(c["bottom"]) for c in cur),
                 )
                 box = clip_box(raw_box, bounds) or raw_box
-                bold = any(_is_bold_font(str(c.get("fontname", ""))) for c in cur)
+                bold = any(_is_bold_font(str(c.get("fontname", "")), medium_bold_families) for c in cur)
+                monospace = any(_is_monospace_font(str(c.get("fontname", ""))) for c in cur)
                 words.append(
                     Word(
                         text=text,
@@ -120,6 +220,7 @@ def _rot_chars_to_words(
                         bold=bold,
                         upright=False,
                         direction=direction,
+                        monospace=monospace,
                     )
                 )
 
@@ -152,13 +253,17 @@ def raw_words_to_words(
     bounds: BBox,
     *,
     min_font_size: float = 0.0,
+    medium_bold_families: frozenset[str] | None = None,
 ) -> list[Word]:
+    resolved_mbf = infer_medium_bold_families(items) if medium_bold_families is None else medium_bold_families
     words: list[Word] = []
     for item in items:
         raw_box = (float(item["x0"]), float(item["top"]), float(item["x1"]), float(item["bottom"]))
         box = clip_box(raw_box, bounds) or raw_box
         font_size = float(item.get("size", 0.0) or 0.0)
-        bold = _is_bold_font(str(item.get("fontname", "")))
+        fontname = str(item.get("fontname", ""))
+        bold = _is_bold_font(fontname, resolved_mbf)
+        monospace = _is_monospace_font(fontname)
         upright = bool(item.get("upright", True))
         if min_font_size > 0.0 and font_size > 0.0 and font_size < min_font_size:
             continue
@@ -170,6 +275,7 @@ def raw_words_to_words(
                 bold=bold,
                 upright=upright,
                 direction=str(item.get("direction", "ltr")),
+                monospace=monospace,
             )
         )
     return words
@@ -253,12 +359,14 @@ def extract_words(
     *,
     min_font_size: float = 0.0,
     raw_words: list[dict[str, Any]] | None = None,
+    medium_bold_families: frozenset[str] | None = None,
 ) -> list[Word]:
     bounds = page_bbox(page)
     items = extract_words_raw(page, with_style=True) if raw_words is None else raw_words
     objects = getattr(page, "objects", None)
     page_chars = objects.get("char") if isinstance(objects, dict) else None
     rot_words: list[Word] = []
+    resolved_mbf = medium_bold_families
     if isinstance(page_chars, list) and any(_is_vert_matrix_char(c) for c in page_chars):
         horiz_chars = [c for c in page_chars if not _is_vert_matrix_char(c)]
         rot_chars = [c for c in page_chars if _is_vert_matrix_char(c)]
@@ -271,11 +379,23 @@ def extract_words(
             ).extract_words(horiz_chars)
         else:
             items = []
-        rot_words = _rot_chars_to_words(rot_chars, bounds, min_font_size=min_font_size)
+        if resolved_mbf is None:
+            resolved_mbf = infer_medium_bold_families(items or rot_chars)
+        rot_words = _rot_chars_to_words(
+            rot_chars,
+            bounds,
+            min_font_size=min_font_size,
+            medium_bold_families=resolved_mbf,
+        )
 
     if not items and not rot_words:
         return []
-    words = raw_words_to_words(items, bounds, min_font_size=min_font_size)
+    words = raw_words_to_words(
+        items,
+        bounds,
+        min_font_size=min_font_size,
+        medium_bold_families=resolved_mbf,
+    )
     words.extend(rot_words)
     return words
 
@@ -407,6 +527,92 @@ def _partition_orientation(words: Sequence[Word]) -> tuple[list[Word], list[Word
     return horiz, vert
 
 
+def _detect_vertical_gutters(
+    sorted_lines: Sequence[tuple[float, float, list[Word]]],
+    ref_fs: float,
+    gutter_min_w: float,
+) -> list[tuple[float, float, float]]:
+    if len(sorted_lines) < 4:
+        return []
+    line_chunks: list[list[tuple[float, float]]] = []
+    for _, _, line in sorted_lines:
+        chunks: list[tuple[float, float]] = []
+        cx0, cx1 = line[0].bbox[0], line[0].bbox[2]
+        for w in line[1:]:
+            if w.bbox[0] - cx1 < gutter_min_w:
+                cx1 = max(cx1, w.bbox[2])
+            else:
+                chunks.append((cx0, cx1))
+                cx0, cx1 = w.bbox[0], w.bbox[2]
+        chunks.append((cx0, cx1))
+        line_chunks.append(chunks)
+
+    xs = sorted({x for chs in line_chunks for cx0, cx1 in chs for x in (cx0, cx1)})
+    if len(xs) < 2:
+        return []
+
+    gutters: list[tuple[float, float, float]] = []
+    seen_runs: set[tuple[float, float, int, int]] = set()
+    min_side_w = 4.0 * ref_fs
+    n_lines = len(sorted_lines)
+
+    def _emit_run(mx: float, s_idx: int, e_idx: int) -> None:
+        if e_idx - s_idx + 1 < 4:
+            return
+        gy0 = min(sorted_lines[i][0] for i in range(s_idx, e_idx + 1))
+        gy1 = max(sorted_lines[i][1] for i in range(s_idx, e_idx + 1))
+        if gy1 - gy0 < 5.0 * ref_fs:
+            return
+        left_wide = right_wide = 0
+        ly0_min, ly1_max = float("inf"), float("-inf")
+        ry0_min, ry1_max = float("inf"), float("-inf")
+        band_x0, band_x1 = float("-inf"), float("inf")
+        for i in range(s_idx, e_idx + 1):
+            y0, y1, _ = sorted_lines[i]
+            l_segs = [c for c in line_chunks[i] if c[1] <= mx]
+            r_segs = [c for c in line_chunks[i] if c[0] >= mx]
+            if l_segs:
+                ly0_min = min(ly0_min, y0)
+                ly1_max = max(ly1_max, y1)
+                band_x0 = max(band_x0, max(c[1] for c in l_segs))
+                if any(c[1] - c[0] >= min_side_w for c in l_segs):
+                    left_wide += 1
+            if r_segs:
+                ry0_min = min(ry0_min, y0)
+                ry1_max = max(ry1_max, y1)
+                band_x1 = min(band_x1, min(c[0] for c in r_segs))
+                if any(c[1] - c[0] >= min_side_w for c in r_segs):
+                    right_wide += 1
+        if left_wide < 4 or right_wide < 4:
+            return
+        if min(ly1_max, ry1_max) - max(ly0_min, ry0_min) < 3.0 * ref_fs:
+            return
+        if band_x1 - band_x0 < gutter_min_w:
+            return
+        key = (round(band_x0, 2), round(band_x1, 2), s_idx, e_idx)
+        if key not in seen_runs:
+            seen_runs.add(key)
+            gutters.append((0.5 * (band_x0 + band_x1), gy0, gy1))
+
+    for k in range(len(xs) - 1):
+        if xs[k + 1] - xs[k] <= 1e-4:
+            continue
+        mx = 0.5 * (xs[k] + xs[k + 1])
+        run_start: int | None = None
+        for li in range(n_lines):
+            bridged = any(cx0 < mx < cx1 for cx0, cx1 in line_chunks[li])
+            if not bridged:
+                if run_start is None:
+                    run_start = li
+            else:
+                if run_start is not None:
+                    _emit_run(mx, run_start, li - 1)
+                    run_start = None
+        if run_start is not None:
+            _emit_run(mx, run_start, n_lines - 1)
+    return gutters
+
+
 def _words_to_raw_lines(
     words: Sequence[Word],
     *,
@@ -417,16 +623,46 @@ def _words_to_raw_lines(
     ref_fs = median_font_size if median_font_size > 0.0 else _median_font_size(words)
     lines = cluster_by_overlap(words, lambda w: (w.bbox[1], w.bbox[3]), lambda w: w.bbox[0])
 
-    raw_lines: list[list[tuple[BBox, list[Word]]]] = []
+    sorted_lines: list[tuple[float, float, list[Word]]] = []
+    space_samples: list[float] = []
     for line in lines:
         line.sort(key=lambda w: w.bbox[0])
+        ly0 = min(w.bbox[1] for w in line)
+        ly1 = max(w.bbox[3] for w in line)
+        sorted_lines.append((ly0, ly1, line))
+        for idx in range(1, len(line)):
+            gap = line[idx].bbox[0] - line[idx - 1].bbox[2]
+            if 0.0 < gap <= 1.0 * ref_fs:
+                space_samples.append(gap)
+    sorted_lines.sort(key=lambda it: (it[0], it[2][0].bbox[0]))
+
+    if len(space_samples) >= 10:
+        space_samples.sort()
+        med_space = min(space_samples[len(space_samples) // 2], 0.45 * ref_fs)
+    else:
+        med_space = 0.28 * ref_fs
+    gutter_min_w = max(0.95 * ref_fs, 2.8 * med_space)
+    gutters = _detect_vertical_gutters(sorted_lines, ref_fs, gutter_min_w)
+
+    raw_lines: list[list[tuple[BBox, list[Word]]]] = []
+    for ly0, ly1, line in sorted_lines:
+        line_cy = 0.5 * (ly0 + ly1)
+        active_gutters = [
+            gx for gx, gy0, gy1 in gutters if gy0 - 1.5 * ref_fs <= line_cy <= gy1 + 1.5 * ref_fs
+        ]
         segs: list[tuple[BBox, list[Word]]] = []
         cur: list[Word] = [line[0]]
         for word in line[1:]:
             prev = cur[-1]
             ref_size = max(prev.font_size, word.font_size, prev.bbox[3] - prev.bbox[1], 0.6 * ref_fs, 1.0)
             gap_thr = max(1.8 * ref_size, 1.8 * ref_fs)
-            if word.bbox[0] - prev.bbox[2] > gap_thr:
+            gap = word.bbox[0] - prev.bbox[2]
+            hit_gutter = bool(
+                active_gutters
+                and gap >= gutter_min_w
+                and any(prev.bbox[2] <= gx <= word.bbox[0] for gx in active_gutters)
+            )
+            if gap > gap_thr or hit_gutter:
                 segs.append((_union_bbox([w.bbox for w in cur]), cur))
                 cur = [word]
             else:
@@ -504,6 +740,14 @@ def _segment_style(words: Sequence[Word]) -> tuple[float, bool]:
     bold_chars = sum(len(w.text) for w in words if w.bold)
     total_chars = sum(len(w.text) for w in words)
     return round(median_size, 2), (total_chars > 0 and bold_chars >= 0.5 * total_chars)
+
+
+def _is_monospace_line(words: Sequence[Word]) -> bool:
+    total_chars = sum(len(w.text) for w in words)
+    if total_chars <= 0:
+        return False
+    mono_chars = sum(len(w.text) for w in words if getattr(w, "monospace", False))
+    return mono_chars >= 0.5 * total_chars
 
 
 def _make_text_block(
@@ -854,6 +1098,57 @@ def _split_into_column_groups(
                 return cols
         return None
 
+    def _find_mid_span(
+        grp: list[tuple[int, BBox, list[Word], float | None]],
+        group_w: float,
+    ) -> tuple[
+        list[tuple[int, BBox, list[Word], float | None]],
+        list[tuple[int, BBox, list[Word], float | None]],
+        list[tuple[int, BBox, list[Word], float | None]],
+    ] | None:
+        y1s = sorted(p[1][3] for p in grp)
+        y0s = sorted(p[1][1] for p in grp)
+        n = len(grp)
+        best_score: tuple[int, float, float] | None = None
+        best_cand: tuple[int, BBox, list[Word], float | None] | None = None
+        for cand in grp:
+            cb = cand[1]
+            cw = cb[2] - cb[0]
+            if cw < 0.60 * group_w:
+                continue
+            n_upper = bisect_right(y1s, cb[1] + y_gap_tol)
+            if cb[3] <= cb[1] + y_gap_tol:
+                n_upper = max(0, n_upper - 1)
+            n_lower = n - bisect_left(y0s, cb[3] - y_gap_tol)
+            if cb[1] >= cb[3] - y_gap_tol and cb[3] > cb[1] + y_gap_tol:
+                n_lower = max(0, n_lower - 1)
+            balance = min(n_upper, n_lower)
+            if balance == 0:
+                continue
+            score = (balance, cw, -cb[1])
+            if best_score is None or score > best_score:
+                best_score = score
+                best_cand = cand
+        if best_cand is None:
+            return None
+        cb = best_cand[1]
+        upper: list[tuple[int, BBox, list[Word], float | None]] = []
+        middle: list[tuple[int, BBox, list[Word], float | None]] = [best_cand]
+        lower: list[tuple[int, BBox, list[Word], float | None]] = []
+        for p in grp:
+            if p is best_cand:
+                continue
+            pb = p[1]
+            if pb[3] <= cb[1] + y_gap_tol:
+                upper.append(p)
+            elif pb[1] >= cb[3] - y_gap_tol:
+                lower.append(p)
+            else:
+                middle.append(p)
+        if not upper or not lower:
+            return None
+        return upper, middle, lower
+
     def _recurse(
         grp: list[tuple[int, BBox, list[Word], float | None]],
         depth: int,
@@ -866,6 +1161,16 @@ def _split_into_column_groups(
             for c in cols:
                 out.extend(_recurse(c, depth + 1))
             return out
+        group_w = max(p[1][2] for p in grp) - min(p[1][0] for p in grp)
+        if len(grp) >= 3 and group_w > 0.0:
+            mid_split = _find_mid_span(grp, group_w)
+            if mid_split is not None:
+                upper, middle, lower = mid_split
+                if (
+                    all(len(part) < len(grp) for part in (upper, middle, lower))
+                    and ((len(upper) >= 3 and _split_x(upper) is not None) or (len(lower) >= 3 and _split_x(lower) is not None))
+                ):
+                    return _recurse(upper, depth + 1) + _recurse(middle, depth + 1) + _recurse(lower, depth + 1)
         y_sorted = sorted(grp, key=lambda p: (p[1][1], p[1][0]))
         bands: list[list[tuple[int, BBox, list[Word], float | None]]] = []
         cur_band = [y_sorted[0]]
@@ -1004,20 +1309,29 @@ def _segments_to_blocks(
                     continue
                 last_w = last_box[2] - last_box[0]
                 last_ends = _ends_sentence(last_words)
+                both_mono = _is_monospace_line(last_words) and _is_monospace_line(line_words)
+                allow_indented_cont = (
+                    (both_mono and gap_y <= max(1.25 * typical_gap, 0.35 * max_lh))
+                    or (last_box[0] >= col_x0 + 0.6 * ref_fs and not last_ends)
+                )
                 hanging_first_wrap = (
                     len(group) == 1
                     and last_w >= 0.80 * col_w
                     and ((not last_ends) or _is_list_item_start(first_words))
                 )
                 first_line_indent_break = (
-                    not has_hanging
+                    not allow_indented_cont
+                    and not has_hanging
                     and not hanging_first_wrap
                     and not is_centered
                     and bbox[0] >= col_x0 + 0.6 * ref_fs
                     and (last_ends or last_box[2] < col_x1 - 1.5 * ref_fs)
                 )
                 short_last_line_break = (
-                    last_ends and last_w < 0.78 * col_w and gap_y > 1.05 * typical_gap
+                    not allow_indented_cont
+                    and last_ends
+                    and last_w < 0.78 * col_w
+                    and gap_y > 1.05 * typical_gap
                 )
                 if first_line_indent_break or short_last_line_break:
                     continue

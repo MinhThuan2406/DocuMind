@@ -483,6 +483,77 @@ class V2VectorVisionGrouper:
                 for ti in standalone_tables
             )
 
+        usable_vcs: list[list[float]] = []
+        for vc in visual_containers:
+            vc_area = bbox_area(vc)
+            if vc_area > 0.35 * canon_w * canon_h or (vc[2] - vc[0]) >= 0.95 * canon_w or vc[1] >= 0.88 * canon_h:
+                continue
+            n_headers = sum(
+                1
+                for it in canon_items
+                if it["label"] in ("section_header", "title") and _box_inside(it["bbox"], vc, tolerance=0.15)
+            )
+            if n_headers >= 2 or vc_hits_separator(vc):
+                continue
+            usable_vcs.append(vc)
+
+        non_mergeable_text: set[int] = set()
+        for idx, it in enumerate(canon_items):
+            if it["label"] != "text":
+                continue
+            tb = it["bbox"]
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            if not ((tw >= 0.22 * canon_w and th >= 0.04 * canon_h) or bbox_area(tb) >= 0.015 * canon_w * canon_h):
+                continue
+            if any(_box_inside(tb, canon_items[pi]["bbox"], tolerance=0.15) for pi in pic_indices):
+                continue
+            if any(_box_inside(tb, vc, tolerance=0.15) for vc in usable_vcs):
+                continue
+            non_mergeable_text.add(idx)
+
+        non_mergeable_boxes = [canon_items[idx]["bbox"] for idx in non_mergeable_text]
+
+        def swallows_non_mergeable(cand_box: Sequence[float]) -> bool:
+            for tb in non_mergeable_boxes:
+                tb_area = max(1.0, bbox_area(tb))
+                if bbox_inter_area(tb, cand_box) / tb_area >= 0.50:
+                    if not any(bbox_inter_area(tb, canon_items[pi]["bbox"]) / tb_area >= 0.50 for pi in pic_indices):
+                        return True
+            return False
+
+        lane_boxes = [
+            it["bbox"]
+            for idx, it in enumerate(canon_items)
+            if it["label"] in ("text", "list_item")
+            and (it["bbox"][2] - it["bbox"][0]) < 0.48 * canon_w
+            and not any(_box_inside(it["bbox"], canon_items[pi]["bbox"], tolerance=0.15) for pi in pic_indices)
+            and not any(_box_inside(it["bbox"], vc, tolerance=0.15) for vc in usable_vcs)
+        ]
+        text_lanes: list[tuple[float, float]] = []
+        if lane_boxes:
+            lane_boxes.sort(key=lambda b: (b[0], b[1]))
+            cur_x0, cur_x1 = lane_boxes[0][0], lane_boxes[0][2]
+            cur_h = lane_boxes[0][3] - lane_boxes[0][1]
+            cur_n = 1
+            for lb in lane_boxes[1:]:
+                if lb[0] < cur_x1 - 1.0:
+                    cur_x1 = max(cur_x1, lb[2])
+                    cur_h += lb[3] - lb[1]
+                    cur_n += 1
+                else:
+                    if (cur_x1 - cur_x0) >= 0.12 * canon_w and (cur_h >= 0.04 * canon_h or cur_n >= 2):
+                        text_lanes.append((cur_x0, cur_x1))
+                    cur_x0, cur_x1 = lb[0], lb[2]
+                    cur_h = lb[3] - lb[1]
+                    cur_n = 1
+            if (cur_x1 - cur_x0) >= 0.12 * canon_w and (cur_h >= 0.04 * canon_h or cur_n >= 2):
+                text_lanes.append((cur_x0, cur_x1))
+        col_boundaries = [
+            0.5 * (text_lanes[k][1] + text_lanes[k + 1][0])
+            for k in range(len(text_lanes) - 1)
+            if (text_lanes[k + 1][0] - text_lanes[k][1]) >= 0.012 * canon_w
+        ]
+
         def has_intervening_separator(b1: Sequence[float], b2: Sequence[float]) -> bool:
             y_top = min(b1[3], b2[3])
             y_bot = max(b1[1], b2[1])
@@ -507,26 +578,34 @@ class V2VectorVisionGrouper:
         def is_cross_column(b1: Sequence[float], b2: Sequence[float]) -> bool:
             cx1 = 0.5 * (b1[0] + b1[2])
             cx2 = 0.5 * (b2[0] + b2[2])
-            return (cx1 < canon_w * 0.48 and cx2 > canon_w * 0.52) or (cx2 < canon_w * 0.48 and cx1 > canon_w * 0.52)
+            if any((cx1 < gx < cx2) or (cx2 < gx < cx1) for gx in col_boundaries):
+                return True
+            if not col_boundaries and (
+                (cx1 < canon_w * 0.48 and cx2 > canon_w * 0.52)
+                or (cx2 < canon_w * 0.48 and cx1 > canon_w * 0.52)
+            ):
+                return True
+            gap_x = max(0.0, max(b1[0], b2[0]) - min(b1[2], b2[2]))
+            if gap_x >= 0.02 * canon_w and text_lanes:
+                for lx0, lx1 in text_lanes:
+                    for tb, ob in ((b1, b2), (b2, b1)):
+                        if (
+                            tb[0] >= lx0 - 2.0
+                            and tb[2] <= lx1 + 2.0
+                            and (ob[2] <= lx0 - 0.015 * canon_w or ob[0] >= lx1 + 0.015 * canon_w)
+                        ):
+                            return True
+            return False
 
         dsu = _DisjointSetUnion(n_items)
         item_vcs: dict[int, list[list[float]]] = {}
 
-        for vc in visual_containers:
-            vc_area = bbox_area(vc)
-            if vc_area > 0.35 * canon_w * canon_h or (vc[2] - vc[0]) >= 0.95 * canon_w or vc[1] >= 0.88 * canon_h:
-                continue
-            n_headers = sum(
-                1
-                for it in canon_items
-                if it["label"] in ("section_header", "title") and _box_inside(it["bbox"], vc, tolerance=0.15)
-            )
-            if n_headers >= 2 or vc_hits_separator(vc):
-                continue
+        for vc in usable_vcs:
             contained = [
                 i
                 for i, it in enumerate(canon_items)
                 if not is_blocked_item(i)
+                and i not in non_mergeable_text
                 and it["bbox"][1] < 0.88 * canon_h
                 and _box_inside(it["bbox"], vc, tolerance=0.15)
             ]
@@ -548,7 +627,7 @@ class V2VectorVisionGrouper:
                         item_vcs.setdefault(idx, []).append(vc)
 
         for i in range(n_items):
-            if is_blocked_item(i):
+            if is_blocked_item(i) or i in non_mergeable_text:
                 continue
             it1 = canon_items[i]
             lbl1 = it1["label"]
@@ -556,12 +635,15 @@ class V2VectorVisionGrouper:
             if lbl1 not in ("picture", "figure", "formula") and (b1[2] - b1[0] >= 0.45 * canon_w):
                 continue
             for j in range(i + 1, n_items):
-                if is_blocked_item(j):
+                if is_blocked_item(j) or j in non_mergeable_text:
                     continue
                 it2 = canon_items[j]
                 lbl2 = it2["label"]
                 b2 = it2["bbox"]
                 if has_intervening_separator(b1, b2) or is_cross_column(b1, b2):
+                    continue
+                cand_u = [min(b1[0], b2[0]), min(b1[1], b2[1]), max(b1[2], b2[2]), max(b1[3], b2[3])]
+                if swallows_non_mergeable(cand_u):
                     continue
                 gap_x = max(0.0, max(b1[0], b2[0]) - min(b1[2], b2[2]))
                 if lbl1 in ("picture", "figure") or lbl2 in ("picture", "figure"):
@@ -595,16 +677,18 @@ class V2VectorVisionGrouper:
             for idx in idx_list:
                 expanded_vcs.extend(item_vcs.get(idx, ()))
             for vc in expanded_vcs:
-                if not has_intervening_separator(u_box, vc):
-                    u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
+                cand_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
+                if not has_intervening_separator(u_box, vc) and not swallows_non_mergeable(cand_box):
+                    u_box = cand_box
 
-            for vc in visual_containers:
+            for vc in usable_vcs:
                 vc_area = max(1.0, bbox_area(vc))
                 if bbox_iou(u_box, vc) > 0.6 or (
                     _box_inside(u_box, vc, tolerance=0.1) and vc_area < 1.35 * u_area
                 ):
-                    if not vc_hits_separator(vc):
-                        u_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
+                    cand_box = [min(u_box[0], vc[0]), min(u_box[1], vc[1]), max(u_box[2], vc[2]), max(u_box[3], vc[3])]
+                    if not swallows_non_mergeable(cand_box):
+                        u_box = cand_box
                     break
 
             total_w = 0.0

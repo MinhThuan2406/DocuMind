@@ -26,6 +26,10 @@ _ROMAN_LABEL_PREFIX_RE = re.compile(
     r"(?:appendix|section|table|figure|annex|part|chapter|exhibit)\s+$",
     re.IGNORECASE,
 )
+_PAGE_NUMBER_FOOTER_RE = re.compile(
+    r"^\s*(?:page\s*)?\d{1,4}(?:\s*(?:/|of)\s*\d{1,4})?\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -590,12 +594,46 @@ def tag_running_headers_footers(
             in_margin = False
             if has_box and page_h > 0.0:
                 cy = 0.5 * (float(bbox[1]) + float(bbox[3]))
-                in_margin = cy <= _HEADER_BAND_FRAC * page_h or cy >= _FOOTER_BAND_FRAC * page_h
+                in_margin = cy <= 0.12 * page_h or cy >= 0.88 * page_h
+            fs_ok = body_font <= 0.0 or fs <= 0.0 or fs <= body_font * 1.05
             is_protected = bool(protected_titles and _norm_toc_title(raw_text) in protected_titles)
-            if not is_protected or (in_margin and (body_font <= 0.0 or fs <= 0.0 or fs <= body_font * 1.02)):
+            if elem.get("source", "text_layer") == "text_layer":
+                if has_box and page_h > 0.0 and not (in_margin and fs_ok):
+                    meta.pop("layout_label", None)
+                    if meta.get("role") in ("page_header", "page_footer"):
+                        meta.pop("role", None)
+                elif not is_protected or fs <= body_font * 1.02 or body_font <= 0.0 or fs <= 0.0:
+                    meta["role"] = layout_label
+            elif not is_protected or (in_margin and (body_font <= 0.0 or fs <= 0.0 or fs <= body_font * 1.02)):
                 meta["role"] = layout_label
 
     if num_pages < _MIN_MULTI_PAGE_DOCS:
+        for pno, items in by_page_lvl1.items():
+            page_h = page_heights.get(pno, 0.0)
+            if page_h <= 0.0:
+                continue
+            for box_t, elem in items:
+                meta = elem.setdefault("metadata", {})
+                if meta.get("role") is not None:
+                    continue
+                cy = 0.5 * (box_t[1] + box_t[3])
+                if cy < _FOOTER_BAND_FRAC * page_h:
+                    continue
+                raw_text = str(elem.get("text", ""))
+                if protected_titles and _norm_toc_title(raw_text) in protected_titles:
+                    continue
+                fs = float(meta.get("font_size") or 0.0)
+                if body_font > 0.0 and fs > body_font * 1.05:
+                    continue
+                if not _PAGE_NUMBER_FOOTER_RE.match(unicodedata.normalize("NFKC", raw_text)):
+                    continue
+                em = fs if fs > 0.0 else (body_font if body_font > 0.0 else 10.0)
+                isolated = not any(
+                    other is not elem and min(ob[3], box_t[3]) - max(ob[1], box_t[1]) > -0.3 * em
+                    for ob, other in items
+                )
+                if isolated:
+                    meta["role"] = "page_footer"
         return
 
     # Identify the top-band baseline y0 across pages for strict positional running-header verification.

@@ -20,7 +20,9 @@ DEFAULT_RENDER_BATCH_SIZE = 16
 LAYOUT_BOX_CONFIDENCE = 0.95
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_SEMANTIC_LABELS = frozenset({"title", "section_header", "caption", "footnote", "list_item", "formula", "code"})
+_SEMANTIC_LABELS = frozenset(
+    {"title", "section_header", "caption", "footnote", "list_item", "formula", "code", "page_header", "page_footer"}
+)
 
 
 def _to_pt_box(box_px: Sequence[float], img_size: tuple[int, int], page_size_pt: tuple[float, float]) -> BBox:

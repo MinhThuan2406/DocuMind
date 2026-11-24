@@ -707,6 +707,119 @@ def test_trailing_badge_stripping_and_negative_unit_suffix():
     assert unit_items[0].heading_clean_text is None
 
 
+def test_text_layer_margin_font_lock_and_short_doc_page_number_footer():
+    import pdf.figures as figures_mod
+
+    # 1. Direct tag_running_headers_footers lock clears both role and layout_label on out-of-margin or oversized text_layer.
+    direct = [
+        {
+            "id": "hdr_ok",
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "source": "text_layer",
+            "bbox": [50.0, 20.0, 240.0, 34.0],
+            "text": "Valid Top Margin Header",
+            "metadata": {"font_size": 9.5, "layout_label": "page_header"},
+        },
+        {
+            "id": "mid_fp",
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "source": "text_layer",
+            "bbox": [50.0, 350.0, 400.0, 370.0],
+            "text": "Mid-page body sentence mislabeled as header.",
+            "metadata": {"font_size": 10.0, "layout_label": "page_header", "role": "page_header"},
+        },
+        {
+            "id": "big_fp",
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "source": "text_layer",
+            "bbox": [50.0, 25.0, 350.0, 45.0],
+            "text": "Large Document Title",
+            "metadata": {"font_size": 18.0, "layout_label": "page_header"},
+        },
+        {
+            "id": "body",
+            "type": "text",
+            "page": 1,
+            "level": 1,
+            "source": "text_layer",
+            "bbox": [50.0, 150.0, 500.0, 280.0],
+            "text": "Main body text establishing 10pt font size cleanly. " * 4,
+            "metadata": {"font_size": 10.0},
+        },
+    ]
+    tag_running_headers_footers(direct, {1: 800.0})
+    assert direct[0]["metadata"].get("role") == "page_header"
+    assert direct[0]["metadata"].get("layout_label") == "page_header"
+    assert "role" not in direct[1]["metadata"] and "layout_label" not in direct[1]["metadata"]
+    assert "role" not in direct[2]["metadata"] and "layout_label" not in direct[2]["metadata"]
+
+    # 2. End-to-end 2-page PDF: mid-page page_header SemanticRegion is blocked, and isolated bottom page numbers
+    #    on < 3 page docs are tagged page_footer without touching footnotes.
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "short_lock.pdf"
+        b = TestPdfBuilder()
+        p1 = b.new_page(width=600, height=800)
+        p1.insert_text((50, 24), "Small Header", fontsize=9)
+        p1.insert_text((50, 350), "Important middle body clause that must survive.", fontsize=11)
+        for i in range(8):
+            p1.draw_rect((60 + i * 30, 500, 75 + i * 30, 520))
+        p1.insert_text((280, 760), "1", fontsize=10)
+
+        p2 = b.new_page(width=600, height=800)
+        p2.insert_text((50, 120), "Second page body paragraph of sufficient length. " * 2, fontsize=11)
+        p2.insert_text((50, 730), "1 Footnote explanation text at bottom.", fontsize=9)
+        p2.insert_text((270, 760), "Page 2 of 2", fontsize=10)
+        b.save(pdf_path)
+
+        def _fake_detect(_p, _pages, **kw):
+            sem_out = kw.get("semantic_regions_out")
+            if sem_out is not None:
+                sem_out[1] = [
+                    SemanticRegion((40.0, 15.0, 200.0, 40.0), "page_header", 0.94),
+                    SemanticRegion((40.0, 340.0, 480.0, 380.0), "page_header", 0.95),
+                ]
+            return {}
+
+        orig_detect = figures_mod.detect_figures
+        figures_mod.detect_figures = _fake_detect
+        try:
+            ir = ir_mod.extract_ir(pdf_path, figures=True, ocr=False, structure=True)
+        finally:
+            figures_mod.detect_figures = orig_detect
+
+    elems = ir["elements"]
+    mid_elem = next(e for e in elems if "Important middle body clause" in e["text"])
+    assert mid_elem["metadata"].get("layout_label") is None
+    assert mid_elem["metadata"].get("role") is None
+    plain = extract_plain_text(ir, include_furniture=False)
+    assert "Important middle body clause" in plain[1]
+
+    hdr_elem = next(e for e in elems if e["text"] == "Small Header")
+    assert hdr_elem["metadata"].get("layout_label") == "page_header"
+    assert hdr_elem["metadata"].get("role") == "page_header"
+
+    ftr1 = next(e for e in elems if e["page"] == 1 and e["text"] == "1")
+    ftr2 = next(e for e in elems if e["page"] == 2 and e["text"] == "Page 2 of 2")
+    fn2 = next(e for e in elems if e["page"] == 2 and "Footnote explanation" in e["text"])
+    assert ftr1["metadata"].get("role") == "page_footer"
+    assert ftr2["metadata"].get("role") == "page_footer"
+    assert fn2["metadata"].get("role") is None
+
+    # Negative: bottom number sharing the same row with another element must NOT be tagged page_footer.
+    non_iso = [
+        {"type": "text", "page": 1, "level": 1, "bbox": [50.0, 755.0, 200.0, 770.0], "text": "Footnote text", "metadata": {"font_size": 10.0}},
+        {"type": "text", "page": 1, "level": 1, "bbox": [520.0, 755.0, 540.0, 770.0], "text": "1", "metadata": {"font_size": 10.0}},
+    ]
+    tag_running_headers_footers(non_iso, {1: 800.0})
+    assert non_iso[1]["metadata"].get("role") is None
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

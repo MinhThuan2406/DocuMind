@@ -164,7 +164,9 @@ def _is_table_candidate(
                 and abs(o[1] - ry0) <= 0.5 * page_h
                 for o in wide_rules
             )
-            has_3plus_cols = any(len(segs) >= 3 for segs in adj_multi)
+            has_3plus_cols = any(len(segs) >= 3 for segs in adj_multi) and any(
+                sum(1 for sb, sw in segs if _is_short_cell(sb, sw)) >= 2 for segs in adj_multi
+            )
             short_cell_lines = sum(
                 1 for segs in adj_multi if any(_is_short_cell(sb, sw) and (sb[2] - sb[0]) < 0.35 * rw for sb, sw in segs)
             )
@@ -255,7 +257,21 @@ def _is_table_candidate(
                         all_segs = [s for hits in active_cols for s in hits]
                         short_frac = sum(1 for sb, sw in all_segs if _is_short_cell(sb, sw)) / len(all_segs)
                         avg_words = sum(len(sw) for _, sw in all_segs) / len(all_segs)
-                        if short_frac >= 0.25 or avg_words < 6.0:
+                        all_col_gaps = sorted(
+                            hits[k][0][1] - hits[k - 1][0][3]
+                            for hits in active_cols
+                            for k in range(1, len(hits))
+                        )
+                        median_gap_y = all_col_gaps[len(all_col_gaps) // 2] if all_col_gaps else 0.0
+                        is_multi_col_prose = (
+                            all(
+                                (sum(sb[2] - sb[0] for sb, _ in hits) / len(hits)) >= 0.22 * page_w
+                                and (sum(len(sw) for _, sw in hits) / len(hits)) >= 5.5
+                                for hits in active_cols
+                            )
+                            and median_gap_y <= 1.2 * ref_fs
+                        )
+                        if not is_multi_col_prose and (short_frac >= 0.25 or avg_words < 6.0):
                             return True
                     elif len(active_cols) == 2:
                         col_short_fracs = [
