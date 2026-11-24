@@ -1679,6 +1679,549 @@ def test_tatr_low_conf_span_guard_bordered_and_borderless():
     assert by_rc[(0, 0)].colspan == 2
 
 
+def test_g4_empty_track_gate_protects_sparse_matrix_and_catches_oversegmented():
+    import pdfplumber
+    from pdf.backends.table_pdfplumber import PdfPlumberTableExtractor
+
+    class _CompactTatr:
+        def __init__(self):
+            self.detect_calls = 0
+
+        def detect_objects(self, crop: Image.Image):
+            self.detect_calls += 1
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.94),
+                ("table row", (0.0, 0.0, cw, ch * 0.5), 0.92),
+                ("table row", (0.0, ch * 0.5, cw, ch), 0.92),
+                ("table column", (0.0, 0.0, cw * 0.5, ch), 0.92),
+                ("table column", (cw * 0.5, 0.0, cw, ch), 0.92),
+                ("table column header", (0.0, 0.0, cw, ch * 0.5), 0.92),
+            ]
+
+        def extract(self, *_args, **_kwargs):
+            raise AssertionError("TATR extract() must not run when detect_objects() result is reused")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "g4_tracks.pdf"
+        b = TestPdfBuilder()
+        # Page 1: 4x4 sparse ruled matrix (empty_cell_frac=12/16=0.75, empty_row_frac=0, empty_col_frac=0).
+        p1 = b.new_page(width=400, height=300)
+        for x in (40, 100, 160, 220, 280):
+            p1.draw_line((x, 40), (x, 200), width=0.5)
+        for y in (40, 80, 120, 160, 200):
+            p1.draw_line((40, y), (280, y), width=0.5)
+        p1.insert_text((50, 64), "M0", fontsize=10)
+        p1.insert_text((110, 104), "M1", fontsize=10)
+        p1.insert_text((170, 144), "M2", fontsize=10)
+        p1.insert_text((230, 184), "M3", fontsize=10)
+
+        # Page 2: 2x2 table over-segmented by extra empty spacer rows (5x2, 3/5 empty rows >= 0.25).
+        p2 = b.new_page(width=400, height=300)
+        for x in (40, 160, 280):
+            p2.draw_line((x, 40), (x, 200), width=0.5)
+        for y in (40, 60, 100, 120, 160, 200):
+            p2.draw_line((40, y), (280, y), width=0.5)
+        p2.insert_text((55, 84), "H1", fontsize=10)
+        p2.insert_text((175, 84), "H2", fontsize=10)
+        p2.insert_text((55, 144), "V1", fontsize=10)
+        p2.insert_text((175, 144), "V2", fontsize=10)
+
+        # Page 3: non-strict filled rects only (used_strict_lines=False), 1 empty row in 5 (0.20) + 1 empty col in 6 (0.167) >= 0.30.
+        p3 = b.new_page(width=400, height=300)
+        for c_i, x0 in enumerate((40, 80, 120, 160, 200, 240)):
+            for r_i, y0 in enumerate((40, 70, 100, 130, 160)):
+                p3.draw_rect((x0, y0, x0 + 40, y0 + 30), fill=True, stroke=False, width=0.0)
+        for x in (40, 280):
+            p3.draw_line((x, 40), (x, 190), width=0.5)
+        p3.insert_text((50, 58), "A1", fontsize=9)
+        p3.insert_text((130, 58), "B1", fontsize=9)
+        p3.insert_text((50, 118), "A2", fontsize=9)
+        p3.insert_text((130, 118), "B2", fontsize=9)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            pl_ext = PdfPlumberTableExtractor()
+            pl_sparse = pl_ext.extract_from_page(doc.pages[0], [(38.0, 38.0, 282.0, 202.0)])
+            assert pl_sparse[0].num_rows == 4 and pl_sparse[0].num_cols == 4
+            assert pl_ext.last_used_strict_lines == [True]
+
+            tatr1 = _CompactTatr()
+            out_sparse = AutoTableExtractor(tatr_extractor=tatr1).extract_from_page(
+                doc.pages[0], [(38.0, 38.0, 282.0, 202.0)]
+            )[0]
+            assert out_sparse.source == "auto_refined"
+            assert out_sparse.num_rows == 4 and out_sparse.num_cols == 4
+            assert tatr1.detect_calls == 1
+
+            tatr2 = _CompactTatr()
+            out_overseg = AutoTableExtractor(tatr_extractor=tatr2).extract_from_page(
+                doc.pages[1], [(38.0, 38.0, 282.0, 202.0)]
+            )[0]
+            assert out_overseg.source == "auto_tatr"
+            assert out_overseg.num_rows == 2 and out_overseg.num_cols == 2
+            assert tatr2.detect_calls == 1
+
+            class _FakeNonStrictPlumber:
+                last_used_strict_lines = [False]
+
+                def extract_from_page(self, _page, table_boxes_pt, **_kw):
+                    bx = table_boxes_pt[0]
+                    cells = []
+                    for r in range(5):
+                        for c in range(6):
+                            txt = ""
+                            if r in (0, 2) and c in (0, 2):
+                                txt = f"R{r}C{c}"
+                            elif r in (1, 4) and c in (1, 3, 5):
+                                txt = f"X{r}{c}"
+                            cells.append(
+                                TableCell(
+                                    r, c, 1, 1, txt,
+                                    (bx[0] + c * 40.0, bx[1] + r * 30.0, bx[0] + (c + 1) * 40.0, bx[1] + (r + 1) * 30.0),
+                                    is_header=(r == 0),
+                                )
+                            )
+                    # Leave row 3 and col 4 completely empty -> 1/5 + 1/6 = 0.367 >= 0.30.
+                    for i, cell in enumerate(list(cells)):
+                        if cell.row == 3 or cell.col == 4:
+                            cells[i] = TableCell(cell.row, cell.col, 1, 1, "", cell.bbox, cell.is_header)
+                    return [ExtractedTable(bx, 5, 6, tuple(cells), "pdfplumber", 1.0)]
+
+            from pdf.models import Word
+
+            fake_words = [
+                Word("R0C0", (45.0, 50.0, 75.0, 62.0), 9.0, False),
+                Word("R0C2", (125.0, 50.0, 155.0, 62.0), 9.0, False),
+                Word("X11", (85.0, 80.0, 115.0, 92.0), 9.0, False),
+                Word("R2C0", (45.0, 110.0, 75.0, 122.0), 9.0, False),
+                Word("R2C2", (125.0, 110.0, 155.0, 122.0), 9.0, False),
+                Word("X43", (165.0, 170.0, 195.0, 182.0), 9.0, False),
+                Word("X45", (245.0, 170.0, 275.0, 182.0), 9.0, False),
+            ]
+            tatr3 = _CompactTatr()
+            out_nonstrict = AutoTableExtractor(
+                pdfplumber_extractor=_FakeNonStrictPlumber(),
+                tatr_extractor=tatr3,
+            ).extract_from_page(doc.pages[2], [(40.0, 40.0, 280.0, 190.0)], words=fake_words)[0]
+            assert out_nonstrict.source == "auto_tatr"
+            assert out_nonstrict.num_rows == 2 and out_nonstrict.num_cols == 2
+
+
+def test_g4_booktabs_geometric_gate_and_single_eval_box_call():
+    import pdfplumber
+
+    class _BooktabsTatr:
+        def __init__(self):
+            self.detect_calls = 0
+
+        def detect_objects(self, crop: Image.Image):
+            self.detect_calls += 1
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.95),
+                ("table row", (0.0, 0.0, cw, ch * 0.25), 0.94),
+                ("table row", (0.0, ch * 0.25, cw, ch * 0.50), 0.93),
+                ("table row", (0.0, ch * 0.50, cw, ch * 0.75), 0.92),
+                ("table row", (0.0, ch * 0.75, cw, ch), 0.91),
+                ("table column", (0.0, 0.0, cw / 3.0, ch), 0.94),
+                ("table column", (cw / 3.0, 0.0, 2.0 * cw / 3.0, ch), 0.94),
+                ("table column", (2.0 * cw / 3.0, 0.0, cw, ch), 0.94),
+                ("table column header", (0.0, 0.0, cw, ch * 0.25), 0.94),
+            ]
+
+        def extract(self, *_args, **_kwargs):
+            raise AssertionError("extract() should not be called when single detect_objects() on eval_box suffices")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "booktabs.pdf"
+        b = TestPdfBuilder()
+        # Page 1: booktabs 2x3 in pdfplumber (header + 1 body row spanning 3 data rows across 3 cols).
+        p1 = b.new_page(width=400, height=300)
+        for x in (40, 140, 240, 340):
+            p1.draw_line((x, 40), (x, 200), width=0.5)
+        for y in (40, 80, 200):
+            p1.draw_line((40, y), (340, y), width=0.5)
+        p1.insert_text((55, 64), "Item", fontsize=9)
+        p1.insert_text((155, 64), "Q1", fontsize=9)
+        p1.insert_text((255, 64), "Q2", fontsize=9)
+        for r_idx, (name, v1, v2, y_pt) in enumerate([("A", "10", "11", 104), ("B", "20", "21", 144), ("C", "30", "31", 184)]):
+            p1.insert_text((55, y_pt), name, fontsize=9)
+            p1.insert_text((155, y_pt), v1, fontsize=9)
+            p1.insert_text((255, y_pt), v2, fontsize=9)
+
+        # Page 2: 2x3 where ONLY 1 column has 2 vertical clusters (wrapped note) -> must stay auto_refined.
+        p2 = b.new_page(width=400, height=300)
+        for x in (40, 140, 240, 340):
+            p2.draw_line((x, 40), (x, 160), width=0.5)
+        for y in (40, 80, 160):
+            p2.draw_line((40, y), (340, y), width=0.5)
+        p2.insert_text((55, 64), "Key", fontsize=9)
+        p2.insert_text((155, 64), "Note", fontsize=9)
+        p2.insert_text((255, 64), "Val", fontsize=9)
+        p2.insert_text((55, 118), "K1", fontsize=9)
+        p2.insert_text((155, 102), "Line one", fontsize=9)
+        p2.insert_text((155, 138), "Line two", fontsize=9)
+        p2.insert_text((255, 118), "99", fontsize=9)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            tatr_bt = _BooktabsTatr()
+            tbl_bt = AutoTableExtractor(tatr_extractor=tatr_bt).extract_from_page(
+                doc.pages[0], [(36.0, 36.0, 344.0, 204.0)]
+            )[0]
+            assert tatr_bt.detect_calls == 1
+            assert tbl_bt.source == "auto_tatr"
+            assert tbl_bt.num_rows == 4 and tbl_bt.num_cols == 3
+
+            tatr_wrap = _BooktabsTatr()
+            tbl_wrap = AutoTableExtractor(tatr_extractor=tatr_wrap).extract_from_page(
+                doc.pages[1], [(36.0, 36.0, 344.0, 164.0)]
+            )[0]
+            assert tatr_wrap.detect_calls == 1
+            assert tbl_wrap.source == "auto_refined"
+            assert tbl_wrap.num_rows == 2 and tbl_wrap.num_cols == 3
+
+
+def test_g4_borderline_header_rescue_bold_and_shaded_vs_kv():
+    import pdfplumber
+    from pdf.backends.table_auto import _is_row0_styled
+
+    class _BorderlineHdrTatr:
+        def detect_objects(self, crop: Image.Image):
+            cw, ch = float(crop.width), float(crop.height)
+            return [
+                ("table", (0.0, 0.0, cw, ch), 0.96),
+                ("table row", (0.0, 0.0, cw, ch / 3.0), 0.94),
+                ("table row", (0.0, ch / 3.0, cw, 2.0 * ch / 3.0), 0.94),
+                ("table row", (0.0, 2.0 * ch / 3.0, cw, ch), 0.94),
+                ("table column header", (0.0, 0.0, cw, ch / 3.0), 0.45),
+            ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "hdr_rescue.pdf"
+        b = TestPdfBuilder()
+        # Page 1: unstyled KV table -> 0.45 header must NOT be rescued.
+        p1 = b.new_page(width=400, height=300)
+        for x in (40, 160, 280):
+            p1.draw_line((x, 40), (x, 130), width=0.5)
+        for y in (40, 70, 100, 130):
+            p1.draw_line((40, y), (280, y), width=0.5)
+        p1.insert_text((50, 58), "Name", fontsize=10, bold=False)
+        p1.insert_text((170, 58), "DocuMind", fontsize=10, bold=False)
+        p1.insert_text((50, 88), "Mode", fontsize=10, bold=False)
+        p1.insert_text((170, 88), "Auto", fontsize=10, bold=False)
+        p1.insert_text((50, 118), "Ver", fontsize=10, bold=False)
+        p1.insert_text((170, 118), "2.0", fontsize=10, bold=False)
+
+        # Page 2: bold header row 0 + regular body -> 0.45 header MUST be rescued.
+        p2 = b.new_page(width=400, height=300)
+        for x in (40, 160, 280):
+            p2.draw_line((x, 40), (x, 130), width=0.5)
+        for y in (40, 70, 100, 130):
+            p2.draw_line((40, y), (280, y), width=0.5)
+        p2.insert_text((50, 58), "Metric", fontsize=10, bold=True)
+        p2.insert_text((170, 58), "Score", fontsize=10, bold=True)
+        p2.insert_text((50, 88), "Acc", fontsize=10, bold=False)
+        p2.insert_text((170, 88), "0.95", fontsize=10, bold=False)
+        p2.insert_text((50, 118), "F1", fontsize=10, bold=False)
+        p2.insert_text((170, 118), "0.93", fontsize=10, bold=False)
+        b.save(pdf_path)
+
+        with pdfplumber.open(str(pdf_path)) as doc:
+            kv_tbl = AutoTableExtractor(tatr_extractor=_BorderlineHdrTatr()).extract_from_page(
+                doc.pages[0], [(38.0, 38.0, 282.0, 132.0)]
+            )[0]
+            assert kv_tbl.source == "auto_refined"
+            assert all(not c.is_header for c in kv_tbl.cells)
+
+            bold_tbl = AutoTableExtractor(tatr_extractor=_BorderlineHdrTatr()).extract_from_page(
+                doc.pages[1], [(38.0, 38.0, 282.0, 132.0)]
+            )[0]
+            assert bold_tbl.source == "auto_refined"
+            assert all(c.is_header == (c.row == 0) for c in bold_tbl.cells)
+
+    # Shaded row 0 vs zebra striping via _is_row0_styled + refine_table_headers.
+    from PIL import ImageDraw
+
+    tbl_3x2 = ExtractedTable(
+        bbox=(0.0, 0.0, 200.0, 90.0),
+        num_rows=3,
+        num_cols=2,
+        cells=(
+            TableCell(0, 0, 1, 1, "H1", (0.0, 0.0, 100.0, 30.0), False),
+            TableCell(0, 1, 1, 1, "H2", (100.0, 0.0, 200.0, 30.0), False),
+            TableCell(1, 0, 1, 1, "A", (0.0, 30.0, 100.0, 60.0), False),
+            TableCell(1, 1, 1, 1, "1", (100.0, 30.0, 200.0, 60.0), False),
+            TableCell(2, 0, 1, 1, "B", (0.0, 60.0, 100.0, 90.0), False),
+            TableCell(2, 1, 1, 1, "2", (100.0, 60.0, 200.0, 90.0), False),
+        ),
+        source="pdfplumber",
+        confidence=1.0,
+    )
+    shaded_img = Image.new("RGB", (200, 90), (255, 255, 255))
+    ImageDraw.Draw(shaded_img).rectangle([0, 0, 200, 30], fill=(215, 225, 235))
+    assert _is_row0_styled(tbl_3x2, (), shaded_img, (0.0, 0.0, 200.0, 90.0)) is True
+    rescued = refine_table_headers(
+        tbl_3x2,
+        [("table column header", (0.0, 0.0, 200.0, 30.0), 0.45), ("table row", (0.0, 30.0, 200.0, 60.0), 0.9)],
+        (200, 90),
+        (0.0, 0.0, 200.0, 90.0),
+        row0_styled=True,
+    )
+    assert all(c.is_header == (c.row == 0) for c in rescued.cells)
+
+    zebra_img = Image.new("RGB", (200, 90), (255, 255, 255))
+    ImageDraw.Draw(zebra_img).rectangle([0, 0, 200, 30], fill=(230, 230, 230))
+    ImageDraw.Draw(zebra_img).rectangle([0, 60, 200, 90], fill=(230, 230, 230))
+    assert _is_row0_styled(tbl_3x2, (), zebra_img, (0.0, 0.0, 200.0, 90.0)) is False
+
+
+def test_g5_split_undersegmented_rows_rule_and_borderless_guards():
+    from PIL import ImageDraw
+    from pdf.backends.tatr_onnx import _crop_to_gray, _split_undersegmented_rows
+
+    # 1. Bordered table: wrapped 2-line body row WITHOUT internal horizontal line stays unsplit;
+    # WITH internal horizontal line between sub-lines splits cleanly.
+    row_ivs = [(0.0, 40.0), (40.0, 80.0), (80.0, 160.0)]
+    row_sc = [0.95, 0.94, 0.92]
+    col_ivs = [(0.0, 150.0), (150.0, 300.0)]
+    toks = [
+        (10.0, 10.0, 50.0, 26.0),
+        (160.0, 10.0, 200.0, 26.0),
+        (10.0, 50.0, 50.0, 66.0),
+        (160.0, 50.0, 200.0, 66.0),
+        (10.0, 90.0, 90.0, 106.0),
+        (160.0, 90.0, 240.0, 106.0),
+        (10.0, 128.0, 90.0, 144.0),
+        (160.0, 128.0, 240.0, 144.0),
+    ]
+    img_bordered_no_internal = Image.new("RGB", (300, 160), (255, 255, 255))
+    d1 = ImageDraw.Draw(img_bordered_no_internal)
+    d1.line([(0, 40), (300, 40)], fill=(0, 0, 0), width=2)
+    d1.line([(0, 80), (300, 80)], fill=(0, 0, 0), width=2)
+    out_r, _, did_split = _split_undersegmented_rows(
+        row_ivs, row_sc, col_ivs, toks, 160.0, {0}, _crop_to_gray(img_bordered_no_internal)
+    )
+    assert did_split is False and len(out_r) == 3
+
+    img_bordered_with_internal = img_bordered_no_internal.copy()
+    ImageDraw.Draw(img_bordered_with_internal).line([(0, 117), (300, 117)], fill=(0, 0, 0), width=2)
+    out_r2, _, did_split2 = _split_undersegmented_rows(
+        row_ivs, row_sc, col_ivs, toks, 160.0, {0}, _crop_to_gray(img_bordered_with_internal)
+    )
+    assert did_split2 is True and len(out_r2) == 4
+
+    # 2. Borderless table: tall row with wide gap splits on non-prose, stays unsplit on wrapped continuous prose.
+    img_borderless = Image.new("RGB", (300, 160), (255, 255, 255))
+    out_bl, _, did_bl = _split_undersegmented_rows(
+        row_ivs,
+        row_sc,
+        col_ivs,
+        toks,
+        160.0,
+        {0},
+        _crop_to_gray(img_borderless),
+        tok_texts=["H1", "H2", "R1", "10", "R2", "20", "R3", "30"],
+    )
+    assert did_bl is True and len(out_bl) == 4
+
+    out_prose, _, did_prose = _split_undersegmented_rows(
+        row_ivs,
+        row_sc,
+        col_ivs,
+        toks,
+        160.0,
+        {0},
+        _crop_to_gray(img_borderless),
+        tok_texts=["H1", "H2", "R1", "10", "Total operating cost", "Quarterly revenue note", "for current period.", "excluding tax items."],
+    )
+    assert did_prose is False and len(out_prose) == 3
+
+
+def test_g5_multitier_header_split_and_span_synthesis():
+    from pdf.backends.tatr_onnx import _has_valid_grid
+
+    # Single TATR header row [0..60] containing 2 tiers without spanning cell -> splits & synthesizes colspan + rowspan.
+    objects = [
+        ("table", (0.0, 0.0, 360.0, 120.0), 0.98),
+        ("table column", (0.0, 0.0, 90.0, 120.0), 0.95),
+        ("table column", (90.0, 0.0, 180.0, 120.0), 0.95),
+        ("table column", (180.0, 0.0, 270.0, 120.0), 0.95),
+        ("table column", (270.0, 0.0, 360.0, 120.0), 0.95),
+        ("table row", (0.0, 0.0, 360.0, 60.0), 0.96),
+        ("table row", (0.0, 60.0, 360.0, 120.0), 0.95),
+        ("table column header", (0.0, 0.0, 360.0, 60.0), 0.96),
+    ]
+    tokens = [
+        ("Param", (15.0, 22.0, 65.0, 38.0)),
+        ("Limits", (155.0, 8.0, 205.0, 24.0)),
+        ("Unit", (290.0, 22.0, 330.0, 38.0)),
+        ("Min", (115.0, 36.0, 150.0, 52.0)),
+        ("Max", (205.0, 36.0, 240.0, 52.0)),
+        ("Voltage", (15.0, 82.0, 70.0, 98.0)),
+        ("1.0", (120.0, 82.0, 145.0, 98.0)),
+        ("5.0", (210.0, 82.0, 235.0, 98.0)),
+        ("V", (305.0, 82.0, 320.0, 98.0)),
+    ]
+    tbl = objects_to_table(objects, (360, 120), (0.0, 0.0, 360.0, 120.0), tokens)
+    assert _has_valid_grid(tbl)
+    assert tbl.num_rows == 3 and tbl.num_cols == 4
+    by_rc = {(c.row, c.col): c for c in tbl.cells}
+    assert by_rc[(0, 0)].rowspan == 2 and by_rc[(0, 0)].text == "Param" and by_rc[(0, 0)].is_header
+    assert by_rc[(0, 1)].colspan == 2 and by_rc[(0, 1)].text == "Limits" and by_rc[(0, 1)].is_header
+    assert by_rc[(0, 3)].rowspan == 2 and by_rc[(0, 3)].text == "Unit" and by_rc[(0, 3)].is_header
+    assert by_rc[(1, 1)].text == "Min" and by_rc[(1, 2)].text == "Max"
+
+    # Normal 2-line wrapped headers per column (no upper X-cluster spanning >= 2 cols) must NOT split.
+    wrapped_objs = [
+        ("table", (0.0, 0.0, 200.0, 100.0), 0.98),
+        ("table column", (0.0, 0.0, 100.0, 100.0), 0.95),
+        ("table column", (100.0, 0.0, 200.0, 100.0), 0.95),
+        ("table row", (0.0, 0.0, 200.0, 55.0), 0.96),
+        ("table row", (0.0, 55.0, 200.0, 100.0), 0.95),
+        ("table column header", (0.0, 0.0, 200.0, 55.0), 0.96),
+    ]
+    wrapped_toks = [
+        ("Total", (20.0, 8.0, 60.0, 24.0)),
+        ("Revenue", (20.0, 30.0, 75.0, 46.0)),
+        ("Net", (120.0, 8.0, 150.0, 24.0)),
+        ("Income", (120.0, 30.0, 175.0, 46.0)),
+        ("100", (30.0, 70.0, 60.0, 86.0)),
+        ("20", (130.0, 70.0, 155.0, 86.0)),
+    ]
+    tbl_wrapped = objects_to_table(wrapped_objs, (200, 100), (0.0, 0.0, 200.0, 100.0), wrapped_toks)
+    assert tbl_wrapped.num_rows == 2 and tbl_wrapped.num_cols == 2
+
+    # Caption line above table column header inside row 0 must NOT split off into a fake leading row.
+    cap_objs = [
+        ("table", (0.0, 0.0, 300.0, 110.0), 0.98),
+        ("table column", (0.0, 0.0, 100.0, 110.0), 0.95),
+        ("table column", (100.0, 0.0, 200.0, 110.0), 0.95),
+        ("table column", (200.0, 0.0, 300.0, 110.0), 0.95),
+        ("table row", (0.0, 0.0, 300.0, 58.0), 0.96),
+        ("table row", (0.0, 58.0, 300.0, 110.0), 0.95),
+        ("table column header", (0.0, 28.0, 300.0, 58.0), 0.94),
+    ]
+    cap_toks = [
+        ("Table 2 Structure of Dutch questionnaire", (10.0, 4.0, 260.0, 20.0)),
+        ("Dimensions", (15.0, 34.0, 85.0, 50.0)),
+        ("Scale", (130.0, 34.0, 170.0, 50.0)),
+        ("Example", (225.0, 34.0, 280.0, 50.0)),
+        ("Work", (25.0, 72.0, 65.0, 88.0)),
+        ("Pace", (135.0, 72.0, 165.0, 88.0)),
+        ("Fast?", (235.0, 72.0, 270.0, 88.0)),
+    ]
+    tbl_cap = objects_to_table(cap_objs, (300, 110), (0.0, 0.0, 300.0, 110.0), cap_toks)
+    assert tbl_cap.num_rows == 2 and tbl_cap.num_cols == 3
+
+
+def test_g5_internal_rule_glyph_safety_and_low_conf_span_thresholds():
+    from PIL import ImageDraw
+    from pdf.backends.tatr_onnx import _has_internal_rule, _passes_low_conf_span_guard
+
+    # 1. Short cell (< 18px) or partial tall glyph 'I' (< 85% cell height) does NOT kill 0.80 colspan.
+    short_img = Image.new("RGB", (200, 40), (255, 255, 255))
+    ImageDraw.Draw(short_img).line([(100, 0), (100, 16)], fill=(0, 0, 0), width=2)
+    tbl_short = objects_to_table(
+        [
+            ("table", (0.0, 0.0, 200.0, 40.0), 0.96),
+            ("table row", (0.0, 0.0, 200.0, 16.0), 0.95),
+            ("table row", (0.0, 16.0, 200.0, 40.0), 0.95),
+            ("table column", (0.0, 0.0, 100.0, 40.0), 0.95),
+            ("table column", (100.0, 0.0, 200.0, 40.0), 0.95),
+            ("table column header", (0.0, 0.0, 200.0, 16.0), 0.95),
+            ("table spanning cell", (0.0, 0.0, 200.0, 16.0), 0.80),
+        ],
+        (200, 40),
+        (0.0, 0.0, 200.0, 40.0),
+        [("I", (98.0, 2.0, 102.0, 14.0)), ("1", (40.0, 22.0, 50.0, 34.0)), ("2", (140.0, 22.0, 150.0, 34.0))],
+        crop=short_img,
+    )
+    assert {(c.row, c.col): c for c in tbl_short.cells}[(0, 0)].colspan == 2
+
+    # 2. Tall cell (h=30 >= 18px) with a thin continuous vertical stroke right at x=100 rejects 0.80 colspan,
+    # whereas a vertical stroke 9px away (> tol_x <= 6px) does NOT trigger _has_internal_rule.
+    tall_img = Image.new("RGB", (200, 60), (255, 255, 255))
+    ImageDraw.Draw(tall_img).line([(109, 0), (109, 30)], fill=(0, 0, 0), width=2)
+    import numpy as np
+
+    gray_off = np.asarray(tall_img.convert("L"), dtype=np.uint8)
+    assert _has_internal_rule(gray_off, 0.0, 0.0, 200.0, 30.0, [100.0], ()) is False
+
+    ImageDraw.Draw(tall_img).line([(100, 0), (100, 30)], fill=(0, 0, 0), width=2)
+    gray_on = np.asarray(tall_img.convert("L"), dtype=np.uint8)
+    assert _has_internal_rule(gray_on, 0.0, 0.0, 200.0, 30.0, [100.0], ()) is True
+
+    # 3. _passes_low_conf_span_guard y_gap thresholds: < 0.70*line_h keeps merged;
+    # [0.70, 0.95)*line_h rejects discrete numbers and keeps wrapped prose; >= 0.95*line_h rejects.
+    r_ivs = [(0.0, 30.0), (30.0, 60.0)]
+    c_ivs = [(0.0, 100.0), (100.0, 200.0)]
+    # line_h = 20.0; gap=10 (0.50*line_h < 0.70) -> True.
+    assert _passes_low_conf_span_guard(
+        None, r_ivs, c_ivs, [(20.0, 8.0, 80.0, 28.0), (20.0, 38.0, 80.0, 58.0)], 0, 1, 0, 0, tok_texts=["10", "20"]
+    ) is True
+    # gap=16 (0.80*line_h in [0.70, 0.95)): discrete numbers -> False; wrapped prose -> True.
+    tok_mid = [(20.0, 6.0, 80.0, 26.0), (20.0, 42.0, 80.0, 62.0)]
+    assert _passes_low_conf_span_guard(
+        None, r_ivs, [(0.0, 100.0)], tok_mid, 0, 1, 0, 0, tok_texts=["12.3", "45.6"]
+    ) is False
+    assert _passes_low_conf_span_guard(
+        None, r_ivs, [(0.0, 100.0)], tok_mid, 0, 1, 0, 0, tok_texts=["Operating", "expenses"]
+    ) is True
+    # gap=20 (1.00*line_h >= 0.95): always False.
+    assert _passes_low_conf_span_guard(
+        None, r_ivs, [(0.0, 100.0)], [(20.0, 2.0, 80.0, 22.0), (20.0, 42.0, 80.0, 62.0)], 0, 1, 0, 0, tok_texts=["Operating", "expenses"]
+    ) is False
+
+
+def test_g5_collapse_multiline_rows_rule_and_content_guards():
+    from PIL import ImageDraw
+    from pdf.backends.tatr_onnx import _collapse_multiline_rows, _crop_to_gray
+
+    # 1. 4-col table with 2 spanned cols + 2 wrapped prose cols (previously blocked by n_spanning > 2*n_multi) collapses!
+    cells_wrap = [
+        TableCell(0, 0, 2, 1, "ID-1", (0.0, 0.0, 50.0, 60.0), False),
+        TableCell(0, 1, 1, 1, "Fast vector", (50.0, 0.0, 150.0, 30.0), False),
+        TableCell(0, 2, 1, 1, "Low memory", (150.0, 0.0, 250.0, 30.0), False),
+        TableCell(0, 3, 2, 1, "OK", (250.0, 0.0, 300.0, 60.0), False),
+        TableCell(1, 1, 1, 1, "rendering mode", (50.0, 30.0, 150.0, 60.0), False),
+        TableCell(1, 2, 1, 1, "footprint here", (150.0, 30.0, 250.0, 60.0), False),
+    ]
+    collapsed, n_rows = _collapse_multiline_rows(cells_wrap, 2, 4)
+    assert n_rows == 1
+    by_rc = {(c.row, c.col): c for c in collapsed}
+    assert by_rc[(0, 1)].text == "Fast vector rendering mode"
+    assert by_rc[(0, 2)].text == "Low memory footprint here"
+
+    # 2. Internal horizontal ruling across unspanned col blocks collapse.
+    rule_img = Image.new("RGB", (300, 60), (255, 255, 255))
+    ImageDraw.Draw(rule_img).line([(50, 30), (250, 30)], fill=(0, 0, 0), width=2)
+    kept_rule, n_rule = _collapse_multiline_rows(
+        cells_wrap, 2, 4, crop_gray=_crop_to_gray(rule_img), table_bbox_pt=(0.0, 0.0, 300.0, 60.0)
+    )
+    assert n_rule == 2 and len(kept_rule) == 6
+
+    # 3. Unspanned col with discrete numeric/categorical values blocks collapse.
+    cells_num = [
+        TableCell(0, 0, 2, 1, "S1", (0.0, 0.0, 100.0, 60.0), False),
+        TableCell(0, 1, 1, 1, "10.5", (100.0, 0.0, 200.0, 30.0), False),
+        TableCell(0, 2, 2, 1, "Done", (200.0, 0.0, 300.0, 60.0), False),
+        TableCell(1, 1, 1, 1, "20.5", (100.0, 30.0, 200.0, 60.0), False),
+    ]
+    _, n_num = _collapse_multiline_rows(cells_num, 2, 3)
+    assert n_num == 2
+
+    cells_cat = [
+        TableCell(0, 0, 2, 1, "S1", (0.0, 0.0, 100.0, 60.0), False),
+        TableCell(0, 1, 1, 1, "Pass", (100.0, 0.0, 200.0, 30.0), False),
+        TableCell(0, 2, 2, 1, "Done", (200.0, 0.0, 300.0, 60.0), False),
+        TableCell(1, 1, 1, 1, "Fail", (100.0, 30.0, 200.0, 60.0), False),
+    ]
+    _, n_cat = _collapse_multiline_rows(cells_cat, 2, 3)
+    assert n_cat == 2
+
+
 def main():
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failed = 0

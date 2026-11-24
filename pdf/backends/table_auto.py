@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from PIL import Image
+import numpy as np
 
 from .._pdf_io import bbox_iou
 from ..models import BBox, ExtractedTable, Word
@@ -14,7 +15,16 @@ from ..tables import DEFAULT_TABLE_DPI, crop_page_region, ocr_crop_tokens, token
 from . import get as get_backend
 from .base import RunStats
 from .rss import peak_rss_mb
-from .tatr_onnx import _band_ink_runs, _crop_to_gray, _overlap_indices, objects_to_table
+from .tatr_onnx import (
+    DEFAULT_THRESHOLD,
+    _HEADER_RESCUE_MIN,
+    _band_ink_runs,
+    _cluster_1d_tokens,
+    _crop_to_gray,
+    _has_valid_grid,
+    _overlap_indices,
+    objects_to_table,
+)
 
 _ROW_OR_HEADER_LABELS = frozenset({"table row", "table column header", "table projected row header"})
 _MIN_TOKEN_COVERAGE = 0.95
@@ -133,28 +143,6 @@ def _split_unspaced_multicell_ocr(
     return updated_tokens if changed else None
 
 
-def _has_valid_grid(table: ExtractedTable) -> bool:
-    if table.num_rows <= 0 or table.num_cols <= 0 or not table.cells:
-        return False
-    occupied: set[tuple[int, int]] = set()
-    non_empty = 0
-    for c in table.cells:
-        if c.row < 0 or c.col < 0 or c.rowspan < 1 or c.colspan < 1:
-            return False
-        if c.row + c.rowspan > table.num_rows or c.col + c.colspan > table.num_cols:
-            return False
-        for rr in range(c.row, c.row + c.rowspan):
-            for cc in range(c.col, c.col + c.colspan):
-                if (rr, cc) in occupied:
-                    return False
-                occupied.add((rr, cc))
-        if c.text.strip():
-            non_empty += 1
-    if non_empty == 0:
-        return False
-    return len(occupied) == table.num_rows * table.num_cols
-
-
 def _matches_overlapping_cells(norm_tok: str, cells: Sequence[str]) -> bool:
     if any(norm_tok in ctext for ctext in cells):
         return True
@@ -261,11 +249,143 @@ def _row_y_spans_pt(table: ExtractedTable) -> list[tuple[float, float]]:
     return [(resolved[r], max(resolved[r], resolved[r + 1])) for r in range(n)]
 
 
+def _empty_track_fractions(table: ExtractedTable) -> tuple[float, float]:
+    if table.num_rows <= 0 or table.num_cols <= 0:
+        return 0.0, 0.0
+    nonempty_rows = {
+        r
+        for c in table.cells
+        if c.text.strip()
+        for r in range(c.row, min(table.num_rows, c.row + max(1, c.rowspan)))
+    }
+    nonempty_cols = {
+        col
+        for c in table.cells
+        if c.text.strip()
+        for col in range(c.col, min(table.num_cols, c.col + max(1, c.colspan)))
+    }
+    return 1.0 - (len(nonempty_rows) / table.num_rows), 1.0 - (len(nonempty_cols) / table.num_cols)
+
+
+def _is_undersegmented_booktabs(
+    pl_tbl: ExtractedTable,
+    tatr_tbl: ExtractedTable,
+    tokens: Sequence[tuple[str, BBox]],
+) -> bool:
+    if tatr_tbl.num_rows <= pl_tbl.num_rows or tatr_tbl.num_rows < 2 or tatr_tbl.num_cols < 2 or not tokens:
+        return False
+    pl_row_spans = _row_y_spans_pt(pl_tbl)
+    tatr_row_spans = _row_y_spans_pt(tatr_tbl)
+    for r in range(1, pl_tbl.num_rows):
+        py0, py1 = pl_row_spans[r]
+        if py1 <= py0:
+            continue
+        matched_tatr = _overlap_indices(tatr_row_spans, py0, py1, min_frac=0.5)
+        if len(matched_tatr) < 2:
+            continue
+        row_cells = sorted(
+            (c for c in pl_tbl.cells if c.row <= r < c.row + max(1, c.rowspan) and c.bbox is not None),
+            key=lambda c: c.col,
+        )
+        col_x_spans = [(c.bbox[0], c.bbox[2]) for c in row_cells if c.bbox is not None and c.bbox[2] > c.bbox[0]]
+        multi_cluster_cols = 0
+        for cx0, cx1 in col_x_spans:
+            col_toks = [
+                tb
+                for _, tb in tokens
+                if cx0 <= (tb[0] + tb[2]) * 0.5 <= cx1 and py0 <= (tb[1] + tb[3]) * 0.5 <= py1
+            ]
+            if len(col_toks) < 2:
+                continue
+            y_cls = _cluster_1d_tokens(
+                [(tb[0], tb[1] - py0, tb[2], tb[3] - py0) for tb in col_toks],
+                axis=1,
+                limit=py1 - py0,
+            )
+            if len(y_cls) < 2:
+                continue
+            matched_for_col = {
+                tr
+                for y0_rel, y1_rel, _ in y_cls
+                for tr in matched_tatr
+                if min(py0 + y1_rel, tatr_row_spans[tr][1]) - max(py0 + y0_rel, tatr_row_spans[tr][0]) > 0.0
+            }
+            if len(matched_for_col) >= 2:
+                multi_cluster_cols += 1
+        if multi_cluster_cols >= 2:
+            return True
+    return False
+
+
+def _is_row0_styled(
+    table: ExtractedTable,
+    page_words: Sequence[Word],
+    crop: Image.Image | None,
+    crop_box_pt: BBox,
+) -> bool:
+    if table.num_rows < 2:
+        return False
+    row_spans = _row_y_spans_pt(table)
+    r0_y0, r0_y1 = row_spans[0]
+    tx0, _, tx1, ty1 = table.bbox
+    if page_words:
+        tbl_words = [
+            w
+            for w in page_words
+            if tx0 - 1.0 <= (w.bbox[0] + w.bbox[2]) * 0.5 <= tx1 + 1.0
+            and r0_y0 - 1.0 <= (w.bbox[1] + w.bbox[3]) * 0.5 <= ty1 + 1.0
+        ]
+        r0_words = [w for w in tbl_words if (w.bbox[1] + w.bbox[3]) * 0.5 <= r0_y1]
+        body_words = [w for w in tbl_words if (w.bbox[1] + w.bbox[3]) * 0.5 > r0_y1]
+        if r0_words and body_words:
+            r0_bold = sum(1 for w in r0_words if w.bold) / len(r0_words)
+            body_bold = sum(1 for w in body_words if w.bold) / len(body_words)
+            if r0_bold >= 0.70 and body_bold <= 0.30:
+                return True
+
+    if crop is not None and crop.width >= 4 and crop.height >= 4:
+        sx = (crop_box_pt[2] - crop_box_pt[0]) / crop.width
+        sy = (crop_box_pt[3] - crop_box_pt[1]) / crop.height
+        if sx > 0.0 and sy > 0.0:
+            arr = np.asarray(crop.convert("RGB"), dtype=np.int16)
+            ch, cw = arr.shape[:2]
+            px0 = max(0, min(cw - 1, int(round((tx0 - crop_box_pt[0]) / sx)) + 2))
+            px1 = max(px0 + 1, min(cw, int(round((tx1 - crop_box_pt[0]) / sx)) - 2))
+            row_bgs: list[tuple[int, int, int]] = []
+            for ry0, ry1 in row_spans:
+                inset = 0.15 * max(0.0, ry1 - ry0)
+                py0 = max(0, min(ch - 1, int(round((ry0 + inset - crop_box_pt[1]) / sy))))
+                py1 = max(py0 + 1, min(ch, int(round((ry1 - inset - crop_box_pt[1]) / sy))))
+                med = np.median(arr[py0:py1, px0:px1], axis=(0, 1))
+                row_bgs.append((int(round(float(med[0]))), int(round(float(med[1]))), int(round(float(med[2])))))
+            if len(row_bgs) >= 2 and min(row_bgs[0]) < 248:
+                r0_bg = row_bgs[0]
+                body_bgs = row_bgs[1:]
+
+                def _bg_diff(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+                    return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+
+                # Exclude zebra-striped tables where row 0 matches row 2 while row 1 differs.
+                is_zebra = (
+                    len(body_bgs) >= 2
+                    and _bg_diff(r0_bg, body_bgs[1]) < 10
+                    and _bg_diff(r0_bg, body_bgs[0]) >= 10
+                    and (len(body_bgs) == 2 or _bg_diff(body_bgs[0], body_bgs[2]) < 10)
+                )
+                if not is_zebra and _bg_diff(r0_bg, body_bgs[0]) >= 10:
+                    diff_cnt = sum(1 for bg in body_bgs if _bg_diff(r0_bg, bg) >= 10)
+                    if diff_cnt > len(body_bgs) / 2:
+                        return True
+    return False
+
+
 def refine_table_headers(
     table: ExtractedTable,
     objects: Sequence[tuple[str, BBox, float]],
     crop_size: tuple[int, int],
     crop_box_pt: BBox,
+    *,
+    row0_styled: bool = False,
 ) -> ExtractedTable:
     cw, ch = float(crop_size[0]), float(crop_size[1])
     if (
@@ -281,9 +401,11 @@ def refine_table_headers(
     sy = (crop_box_pt[3] - crop_box_pt[1]) / ch
     header_rows: set[int] = set()
     proj_header_rows: set[int] = set()
-    for lbl, box, _ in objects:
+    for lbl, box, score in objects:
         if lbl == "table column header":
-            header_rows.update(_overlap_indices(row_spans, crop_box_pt[1] + box[1] * sy, crop_box_pt[1] + box[3] * sy))
+            ov = _overlap_indices(row_spans, crop_box_pt[1] + box[1] * sy, crop_box_pt[1] + box[3] * sy)
+            if score >= DEFAULT_THRESHOLD or (row0_styled and score >= _HEADER_RESCUE_MIN and 0 in ov):
+                header_rows.update(ov)
         elif lbl == "table projected row header":
             proj_header_rows.update(
                 _overlap_indices(row_spans, crop_box_pt[1] + box[1] * sy, crop_box_pt[1] + box[3] * sy)
@@ -389,18 +511,34 @@ class AutoTableExtractor:
                     tbl = tatr.extract(crop, crop_box, refined_tokens)
                 out.append(replace(tbl, source="auto_tatr"))
         else:
-            pl_tables = self._get_plumber().extract_from_page(page, table_boxes_pt)
+            plumber = self._get_plumber()
+            pl_tables = plumber.extract_from_page(page, table_boxes_pt)
+            strict_flags = getattr(plumber, "last_used_strict_lines", None)
+            cached_words: list[Word] | None = None if words is None else list(words)
             cached_tokens: list[tuple[str, BBox]] | None = None if words is None else [(w.text, w.bbox) for w in words]
+
+            def get_native_words() -> list[Word]:
+                nonlocal cached_words, cached_tokens
+                if cached_words is None:
+                    from ..text import extract_words
+
+                    cached_words = list(extract_words(page))
+                    cached_tokens = [(w.text, w.bbox) for w in cached_words]
+                return cached_words
 
             def get_native_tokens() -> list[tuple[str, BBox]]:
                 nonlocal cached_tokens
                 if cached_tokens is None:
-                    from ..text import extract_words
-
-                    cached_tokens = [(w.text, w.bbox) for w in extract_words(page)]
+                    get_native_words()
+                assert cached_tokens is not None
                 return cached_tokens
 
-            for box, pl_tbl in zip(table_boxes_pt, pl_tables):
+            for idx, (box, pl_tbl) in enumerate(zip(table_boxes_pt, pl_tables)):
+                used_strict = (
+                    bool(strict_flags[idx])
+                    if isinstance(strict_flags, Sequence) and idx < len(strict_flags)
+                    else True
+                )
                 if pl_tbl.num_rows == 0 or pl_tbl.num_cols == 0:
                     crop, crop_box = crop_page_region(page, box, dpi)
                     box_tokens = tokens_in_box(get_native_tokens(), crop_box)
@@ -446,11 +584,46 @@ class AutoTableExtractor:
                         if tatr_tbl.num_cols >= 2 and tatr_tbl.num_rows >= 2:
                             out.append(replace(tatr_tbl, source="auto_tatr"))
                         else:
-                            out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
+                            row0_styled = _is_row0_styled(pl_tbl, get_native_words(), crop, crop_box)
+                            out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box, row0_styled=row0_styled))
                     else:
-                        crop, crop_box = crop_page_region(page, pl_tbl.bbox, dpi)
+                        eval_box = (
+                            min(box[0], pl_tbl.bbox[0]),
+                            min(box[1], pl_tbl.bbox[1]),
+                            max(box[2], pl_tbl.bbox[2]),
+                            max(box[3], pl_tbl.bbox[3]),
+                        )
+                        crop, crop_box = crop_page_region(page, eval_box, dpi)
                         objects = tatr.detect_objects(crop)
-                        out.append(refine_table_headers(pl_tbl, objects, crop.size, crop_box))
+                        empty_row_frac, empty_col_frac = _empty_track_fractions(pl_tbl)
+                        overseg_candidate = (
+                            empty_row_frac >= 0.25 or empty_col_frac >= 0.25
+                        ) or (not used_strict and empty_row_frac + empty_col_frac >= 0.30)
+                        has_row_objs = any(lbl == "table row" for lbl, _, _ in objects)
+                        switched_to_tatr = False
+                        if overseg_candidate or has_row_objs:
+                            eval_tokens = tokens_in_box(get_native_tokens(), eval_box)
+                            crop_tokens = tokens_in_box(get_native_tokens(), crop_box)
+                            tatr_tbl = objects_to_table(objects, crop.size, crop_box, crop_tokens, crop=crop)
+                            tatr_valid = (
+                                tatr_tbl.num_rows >= 2
+                                and tatr_tbl.num_cols >= 2
+                                and _has_valid_grid(tatr_tbl)
+                                and _token_coverage(tatr_tbl, eval_tokens) >= 0.90
+                            )
+                            if tatr_valid:
+                                tatr_cells = tatr_tbl.num_rows * tatr_tbl.num_cols
+                                pl_cells = pl_tbl.num_rows * pl_tbl.num_cols
+                                if (overseg_candidate and tatr_cells < 0.75 * pl_cells) or _is_undersegmented_booktabs(
+                                    pl_tbl, tatr_tbl, eval_tokens
+                                ):
+                                    out.append(replace(tatr_tbl, source="auto_tatr"))
+                                    switched_to_tatr = True
+                        if not switched_to_tatr:
+                            row0_styled = _is_row0_styled(pl_tbl, get_native_words(), crop, crop_box)
+                            out.append(
+                                refine_table_headers(pl_tbl, objects, crop.size, crop_box, row0_styled=row0_styled)
+                            )
 
         self.last_stats = RunStats(
             load_sec=round(load_sec, 4),

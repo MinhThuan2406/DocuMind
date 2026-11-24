@@ -21,6 +21,7 @@ TATR_ONNX_REVISION = "76c3afa174a0f36bafa9438934f57dcdb6e486a5"
 DEFAULT_THRESHOLD = 0.60
 _SPAN_THRESHOLD = 0.72
 _SPAN_GUARD_MIN = 0.58
+_HEADER_RESCUE_MIN = 0.35
 _RESCUE_THRESHOLD = 0.30
 _SPAN_OVERLAP_FRAC = 0.55
 _LONGEST_EDGE = 800
@@ -28,6 +29,10 @@ _MAX_TATR_CONF = 0.96
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)[:, None, None]
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)[:, None, None]
 _MULTICELL_SPLIT_RE = re.compile(r"\s+|(?<=\.\.)(?=[^.\s])|(?<=…)(?=\S)")
+_NUMERIC_VALUE_RE = re.compile(r"^[-+~$€£¥]?\d[\d,./:%()-]*$")
+_CATEGORICAL_VALUES = frozenset({
+    "yes", "no", "true", "false", "pass", "fail", "ok", "ng", "n/a", "na", "none", "high", "low", "medium", "on", "off",
+})
 
 
 def _resolve_model_folder(model_path: str | Path | None, repo_id: str, revision: str) -> Path:
@@ -492,6 +497,201 @@ def _split_undersegmented_cols(
     return out_cols, out_scores, did_split
 
 
+def _cells_grid_valid(
+    cells: Sequence[TableCell],
+    num_rows: int,
+    num_cols: int,
+    *,
+    allow_empty: bool = False,
+) -> bool:
+    if num_rows <= 0 or num_cols <= 0 or not cells:
+        return False
+    occupied: set[tuple[int, int]] = set()
+    non_empty = 0
+    for c in cells:
+        if c.row < 0 or c.col < 0 or c.rowspan < 1 or c.colspan < 1:
+            return False
+        if c.row + c.rowspan > num_rows or c.col + c.colspan > num_cols:
+            return False
+        for rr in range(c.row, c.row + c.rowspan):
+            for cc in range(c.col, c.col + c.colspan):
+                if (rr, cc) in occupied:
+                    return False
+                occupied.add((rr, cc))
+        if c.text.strip():
+            non_empty += 1
+    if not allow_empty and non_empty == 0:
+        return False
+    return len(occupied) == num_rows * num_cols
+
+
+def _has_valid_grid(table: ExtractedTable) -> bool:
+    return _cells_grid_valid(table.cells, table.num_rows, table.num_cols, allow_empty=False)
+
+
+def _is_discrete_value_text(text: str) -> bool:
+    s = text.strip()
+    if not s:
+        return False
+    if _NUMERIC_VALUE_RE.fullmatch(s) or s.lower() in _CATEGORICAL_VALUES:
+        return True
+    if len(s) <= 2 and s.isalnum() and s.isupper():
+        return True
+    parts = s.split()
+    return len(parts) >= 2 and all(bool(_NUMERIC_VALUE_RE.fullmatch(p)) for p in parts)
+
+
+def _is_wrapped_prose_pair(upper_texts: Sequence[str], lower_texts: Sequence[str]) -> bool:
+    u_str = " ".join(t.strip() for t in upper_texts if t.strip()).strip()
+    l_str = " ".join(t.strip() for t in lower_texts if t.strip()).strip()
+    if not u_str or not l_str:
+        return False
+    if _is_discrete_value_text(u_str) or _is_discrete_value_text(l_str):
+        return False
+    if u_str[-1] in ".!?:;":
+        return False
+    if not (l_str[0].islower() or l_str[0] in ",;)"):
+        return False
+    return len(u_str.split()) >= 2 or u_str.endswith("-")
+
+
+def _horizontal_x_clusters(tokens: Sequence[BBox], line_h: float) -> list[tuple[float, float]]:
+    if not tokens:
+        return []
+    ordered = sorted(tokens, key=lambda b: (b[0], b[1]))
+    gap_thr = max(6.0, 0.9 * line_h)
+    clusters: list[list[float]] = []
+    for b in ordered:
+        if not clusters or b[0] - clusters[-1][1] > gap_thr or min(b[3], clusters[-1][3]) - max(b[1], clusters[-1][2]) <= 0.0:
+            clusters.append([b[0], b[2], b[1], b[3]])
+        else:
+            clusters[-1][1] = max(clusters[-1][1], b[2])
+            clusters[-1][2] = min(clusters[-1][2], b[1])
+            clusters[-1][3] = max(clusters[-1][3], b[3])
+    return [(c[0], c[1]) for c in clusters]
+
+
+def _upper_xcluster_spanned_cols(
+    ux0: float,
+    ux1: float,
+    col_intervals: Sequence[tuple[float, float]],
+    lower_cols: set[int],
+    other_xclusters: Sequence[tuple[float, float]],
+) -> list[int]:
+    uw = max(1.0, ux1 - ux0)
+    hit: list[int] = []
+    for ci, (cx0, cx1) in enumerate(col_intervals):
+        cw = max(1.0, cx1 - cx0)
+        ov = min(ux1, cx1) - max(ux0, cx0)
+        if ov >= max(2.0, min(0.15 * cw, 0.25 * uw)):
+            hit.append(ci)
+    if len(hit) < 2 or hit != list(range(hit[0], hit[-1] + 1)):
+        return []
+    if not all(ci in lower_cols for ci in hit):
+        return []
+    span_x0, span_x1 = col_intervals[hit[0]][0], col_intervals[hit[-1]][1]
+    for ox0, ox1 in other_xclusters:
+        ocx = (ox0 + ox1) * 0.5
+        if span_x0 <= ocx <= span_x1:
+            return []
+    return hit
+
+
+def _find_multitier_header_splits(
+    rtoks: Sequence[BBox],
+    ry0: float,
+    ry1: float,
+    col_intervals: Sequence[tuple[float, float]],
+    span_boxes: Sequence[BBox],
+    ch: float,
+    line_h: float,
+    header_bounds: Sequence[BBox] = (),
+) -> list[float]:
+    if len(rtoks) < 3 or len(col_intervals) < 2:
+        return []
+    row_h = ry1 - ry0
+    if row_h <= 0.0:
+        return []
+    hb_y0, hb_y1 = ry0, ry1
+    if header_bounds:
+        ov_bounds = [(max(ry0, hb[1]), min(ry1, hb[3])) for hb in header_bounds if min(ry1, hb[3]) > max(ry0, hb[1])]
+        if not ov_bounds:
+            return []
+        hb_y0 = min(lo for lo, _ in ov_bounds)
+        hb_y1 = max(hi for _, hi in ov_bounds)
+        rtoks = [b for b in rtoks if hb_y0 - 0.15 * line_h <= (b[1] + b[3]) * 0.5 <= hb_y1 + 0.15 * line_h]
+        if len(rtoks) < 3:
+            return []
+    for sb in span_boxes:
+        if (
+            min(sb[3], ry1) - max(sb[1], ry0) >= 0.25 * row_h
+            and (sb[3] - sb[1]) <= 0.85 * row_h
+            and len(_overlap_indices(col_intervals, sb[0], sb[2], 0.3)) >= 2
+        ):
+            return []
+
+    tier_cols: set[int] = set()
+    tok_cols_list: list[list[int]] = []
+    for b in rtoks:
+        bw = max(1.0, b[2] - b[0])
+        hits = [
+            ci
+            for ci, (cx0, cx1) in enumerate(col_intervals)
+            if min(b[2], cx1) - max(b[0], cx0) >= max(2.0, min(0.15 * (cx1 - cx0), 0.25 * bw))
+        ]
+        if not hits:
+            bcx = (b[0] + b[2]) * 0.5
+            hits = [ci for ci, (cx0, cx1) in enumerate(col_intervals) if cx0 <= bcx <= cx1]
+        tok_cols_list.append(hits)
+        if len(hits) >= 2:
+            tier_cols.update(hits)
+    for ci in range(len(col_intervals)):
+        if ci in tier_cols:
+            continue
+        ci_toks = [b for b, hits in zip(rtoks, tok_cols_list) if ci in hits]
+        if len(ci_toks) >= 2 and len(_cluster_1d_tokens(ci_toks, axis=1, limit=ch)) >= 2:
+            tier_cols.add(ci)
+
+    tier_toks = [b for b, hits in zip(rtoks, tok_cols_list) if any(ci in tier_cols for ci in hits)]
+    ycls = _cluster_1d_tokens(tier_toks or rtoks, axis=1, limit=ch)
+    if len(ycls) < 2:
+        return []
+
+    split_ys: list[float] = []
+    for k in range(len(ycls) - 1):
+        split_y = (ycls[k][1] + ycls[k + 1][0]) * 0.5
+        if split_y <= ry0 or split_y >= ry1:
+            continue
+        if header_bounds:
+            # Both split bands must keep >= 50% overlap with the column header box so top-edge captions do not split off.
+            if (
+                min(split_y, hb_y1) - max(ry0, hb_y0) < 0.5 * max(1.0, split_y - ry0)
+                or min(ry1, hb_y1) - max(split_y, hb_y0) < 0.5 * max(1.0, ry1 - split_y)
+            ):
+                continue
+        band_lo_y = ycls[k][0] - 0.2 * line_h
+        band_hi_y = ycls[k + 1][1] + 0.2 * line_h
+        upper_toks = [b for b in rtoks if band_lo_y <= (b[1] + b[3]) * 0.5 <= split_y]
+        lower_toks = [b for b in rtoks if split_y < (b[1] + b[3]) * 0.5 <= band_hi_y]
+        if not upper_toks or not lower_toks:
+            continue
+        lower_cols = {
+            ci
+            for b in lower_toks
+            for ci, (cx0, cx1) in enumerate(col_intervals)
+            if cx0 <= (b[0] + b[2]) * 0.5 <= cx1
+        }
+        if len(lower_cols) < 2:
+            continue
+        uxs = _horizontal_x_clusters(upper_toks, line_h)
+        if any(
+            _upper_xcluster_spanned_cols(ux0, ux1, col_intervals, lower_cols, [ox for j, ox in enumerate(uxs) if j != idx])
+            for idx, (ux0, ux1) in enumerate(uxs)
+        ):
+            split_ys.append(split_y)
+    return split_ys
+
+
 def _split_undersegmented_rows(
     row_intervals: list[tuple[float, float]],
     row_scores: list[float],
@@ -499,18 +699,81 @@ def _split_undersegmented_rows(
     tok_px: Sequence[BBox],
     ch: float,
     hdr_rows: set[int],
+    crop_gray: np.ndarray | None = None,
+    *,
+    tok_texts: Sequence[str] | None = None,
+    span_boxes: Sequence[BBox] = (),
+    col_headers: Sequence[BBox] = (),
 ) -> tuple[list[tuple[float, float]], list[float], bool]:
     if not tok_px or len(col_intervals) < 2:
         return row_intervals, row_scores, False
+    heights = sorted(max(4.0, b[3] - b[1]) for b in tok_px)
+    line_h = heights[len(heights) // 2] if heights else 12.0
+
+    # Measure inter-row whitespace from adjacent single-band rows after interval snapping.
+    row_tok_idx: list[list[int]] = []
+    row_single_bounds: list[tuple[float, float] | None] = []
+    for ry0, ry1 in row_intervals:
+        idxs = [i for i, b in enumerate(tok_px) if ry0 <= (b[1] + b[3]) * 0.5 <= ry1]
+        row_tok_idx.append(idxs)
+        if idxs:
+            rtoks = [tok_px[i] for i in idxs]
+            if len(_cluster_1d_tokens(rtoks, axis=1, limit=ch)) == 1:
+                row_single_bounds.append((min(b[1] for b in rtoks), max(b[3] for b in rtoks)))
+            else:
+                row_single_bounds.append(None)
+        else:
+            row_single_bounds.append(None)
+
+    inter_gaps = [
+        row_single_bounds[r + 1][0] - row_single_bounds[r][1]
+        for r in range(len(row_intervals) - 1)
+        if row_single_bounds[r] is not None
+        and row_single_bounds[r + 1] is not None
+        and row_single_bounds[r + 1][0] > row_single_bounds[r][1]
+    ]
+    inter_gaps.sort()
+    typical_inter_row_gap = inter_gaps[len(inter_gaps) // 2] if inter_gaps else 0.0
+
+    body_horizontally_ruled = False
+    if crop_gray is not None and len(row_intervals) >= 3:
+        crop_w = float(crop_gray.shape[1])
+        body_bounds = [
+            row_intervals[r][1]
+            for r in range(len(row_intervals) - 1)
+            if r not in hdr_rows and (r + 1) not in hdr_rows
+        ]
+        if body_bounds:
+            ruled = sum(
+                1
+                for by in body_bounds
+                if _has_internal_rule(crop_gray, 0.0, max(0.0, by - 8.0), crop_w, min(ch, by + 8.0), (), [by])
+            )
+            body_horizontally_ruled = ruled >= max(1, (len(body_bounds) + 1) // 2)
+
     out_rows: list[tuple[float, float]] = []
     out_scores: list[float] = []
     did_split = False
+    row_heights = [ry1 - ry0 for ry0, ry1 in row_intervals]
     for r_idx, ((ry0, ry1), score) in enumerate(zip(row_intervals, row_scores)):
+        idxs = row_tok_idx[r_idx]
+        rtoks = [tok_px[i] for i in idxs]
         if r_idx in hdr_rows:
+            split_ys = _find_multitier_header_splits(
+                rtoks, ry0, ry1, col_intervals, span_boxes, ch, line_h, header_bounds=col_headers
+            )
+            if split_ys:
+                pts = [ry0, *split_ys, ry1]
+                did_split = True
+                sub_score = min(score, 0.85)
+                for k in range(len(pts) - 1):
+                    out_rows.append((pts[k], pts[k + 1]))
+                    out_scores.append(sub_score)
+                continue
             out_rows.append((ry0, ry1))
             out_scores.append(score)
             continue
-        rtoks = [b for b in tok_px if ry0 <= (b[1] + b[3]) * 0.5 <= ry1]
+
         if len(rtoks) < 4:
             out_rows.append((ry0, ry1))
             out_scores.append(score)
@@ -521,7 +784,69 @@ def _split_undersegmented_rows(
                 {ci for b in rtoks for ci, (c0, c1) in enumerate(col_intervals) if c0 <= (b[0] + b[2]) * 0.5 <= c1}
             )
             req_cols = max(2, int(0.6 * active_cols))
-            if active_cols >= 2 and all(
+            other_hs = sorted(h for j, h in enumerate(row_heights) if j != r_idx and h > 0.0)
+            ref_row_h = other_hs[len(other_hs) // 2] if other_hs else 0.0
+            row_h = ry1 - ry0
+            min_gap_thr = max(0.75 * typical_inter_row_gap, 0.55 * line_h)
+
+            groups: list[list[float]] = [[ycls[0][0], ycls[0][1]]]
+            has_rule_split = False
+            crop_w = float(crop_gray.shape[1]) if crop_gray is not None else 0.0
+            for k in range(len(ycls) - 1):
+                cur_y0, cur_y1 = groups[-1][0], groups[-1][1]
+                nxt_y0, nxt_y1 = ycls[k + 1][0], ycls[k + 1][1]
+                mid_y = (cur_y1 + nxt_y0) * 0.5
+                has_rule = crop_gray is not None and _has_internal_rule(
+                    crop_gray, 0.0, ry0, crop_w, ry1, (), [mid_y]
+                )
+                can_split = has_rule
+                if has_rule:
+                    has_rule_split = True
+                if not can_split and not body_horizontally_ruled:
+                    sub_gap = nxt_y0 - cur_y1
+                    tall_enough = ref_row_h > 0.0 and row_h >= 1.75 * ref_row_h
+                    if tall_enough and sub_gap >= min_gap_thr:
+                        is_prose = False
+                        if tok_texts is not None:
+                            u_txts = [
+                                tok_texts[i]
+                                for i in idxs
+                                if cur_y0 <= (tok_px[i][1] + tok_px[i][3]) * 0.5 <= cur_y1
+                            ]
+                            l_txts = [
+                                tok_texts[i]
+                                for i in idxs
+                                if nxt_y0 <= (tok_px[i][1] + tok_px[i][3]) * 0.5 <= nxt_y1
+                            ]
+                            col_prose_hits = 0
+                            col_split_cols = 0
+                            for c0, c1 in col_intervals:
+                                cu = [
+                                    tok_texts[i]
+                                    for i in idxs
+                                    if c0 <= (tok_px[i][0] + tok_px[i][2]) * 0.5 <= c1
+                                    and cur_y0 <= (tok_px[i][1] + tok_px[i][3]) * 0.5 <= cur_y1
+                                ]
+                                cl = [
+                                    tok_texts[i]
+                                    for i in idxs
+                                    if c0 <= (tok_px[i][0] + tok_px[i][2]) * 0.5 <= c1
+                                    and nxt_y0 <= (tok_px[i][1] + tok_px[i][3]) * 0.5 <= nxt_y1
+                                ]
+                                if cu and cl:
+                                    col_split_cols += 1
+                                    if _is_wrapped_prose_pair(cu, cl):
+                                        col_prose_hits += 1
+                            if col_split_cols > 0 and col_prose_hits == col_split_cols and (u_txts and l_txts):
+                                is_prose = True
+                        can_split = not is_prose
+                if can_split:
+                    groups.append([nxt_y0, nxt_y1])
+                else:
+                    groups[-1][1] = max(cur_y1, nxt_y1)
+
+            eff_req_cols = 1 if has_rule_split else req_cols
+            if len(groups) >= 2 and active_cols >= 2 and all(
                 len(
                     {
                         ci
@@ -531,15 +856,15 @@ def _split_undersegmented_rows(
                         if c0 <= (b[0] + b[2]) * 0.5 <= c1
                     }
                 )
-                >= req_cols
-                for y0, y1, _ in ycls
+                >= eff_req_cols
+                for y0, y1 in groups
             ):
                 sub = _snap_intervals(
-                    [(y0 - ry0, y1 - ry0, 0.7) for y0, y1, _ in ycls],
+                    [(y0 - ry0, y1 - ry0, 0.7) for y0, y1 in groups],
                     ry1 - ry0,
                     [(b[1] - ry0, b[3] - ry0) for b in rtoks],
                 )
-                if len(sub) == len(ycls):
+                if len(sub) == len(groups):
                     did_split = True
                     sub_score = min(score, 0.85)
                     for s0, s1 in sub:
@@ -549,6 +874,75 @@ def _split_undersegmented_rows(
         out_rows.append((ry0, ry1))
         out_scores.append(score)
     return out_rows, out_scores, did_split
+
+
+def _synthesize_multitier_header_spans(
+    row_intervals: Sequence[tuple[float, float]],
+    row_scores: Sequence[float],
+    col_intervals: Sequence[tuple[float, float]],
+    header_rows: set[int],
+    tok_px: Sequence[BBox],
+    claimed: set[tuple[int, int]],
+) -> list[tuple[int, int, int, int, bool, float]]:
+    num_rows = len(row_intervals)
+    num_cols = len(col_intervals)
+    if num_rows < 2 or num_cols < 2 or not tok_px:
+        return []
+    hdr_end = 0
+    while hdr_end < num_rows and hdr_end in header_rows:
+        hdr_end += 1
+    if hdr_end < 2:
+        return []
+
+    heights = sorted(max(4.0, b[3] - b[1]) for b in tok_px)
+    line_h = heights[len(heights) // 2] if heights else 12.0
+    extra_specs: list[tuple[int, int, int, int, bool, float]] = []
+
+    for r_up in range(hdr_end - 1):
+        r_lo = r_up + 1
+        ry0, ry1 = row_intervals[r_up]
+        ly0, ly1 = row_intervals[r_lo]
+        upper_toks = [b for b in tok_px if ry0 <= (b[1] + b[3]) * 0.5 <= ry1]
+        lower_toks = [b for b in tok_px if ly0 <= (b[1] + b[3]) * 0.5 <= ly1]
+        lower_cols = {
+            ci
+            for b in lower_toks
+            for ci, (cx0, cx1) in enumerate(col_intervals)
+            if cx0 <= (b[0] + b[2]) * 0.5 <= cx1
+        }
+        if len(lower_cols) < 2:
+            continue
+        uxs = _horizontal_x_clusters(upper_toks, line_h)
+        for idx, (ux0, ux1) in enumerate(uxs):
+            hit = _upper_xcluster_spanned_cols(
+                ux0, ux1, col_intervals, lower_cols, [ox for j, ox in enumerate(uxs) if j != idx]
+            )
+            if not hit:
+                continue
+            c0, c1 = hit[0], hit[-1]
+            coords = [(r_up, c) for c in range(c0, c1 + 1)]
+            if any(rc in claimed for rc in coords):
+                continue
+            claimed.update(coords)
+            extra_specs.append((r_up, c0, 1, c1 - c0 + 1, False, min(row_scores[r_up], 0.85)))
+
+    hdr_y0, hdr_y1 = row_intervals[0][0], row_intervals[hdr_end - 1][1]
+    split_y0 = row_intervals[0][1]
+    for c in range(num_cols):
+        coords = [(r, c) for r in range(hdr_end)]
+        if any(rc in claimed for rc in coords):
+            continue
+        cx0, cx1 = col_intervals[c]
+        col_toks = [
+            b for b in tok_px if cx0 <= (b[0] + b[2]) * 0.5 <= cx1 and hdr_y0 <= (b[1] + b[3]) * 0.5 <= hdr_y1
+        ]
+        if not col_toks:
+            continue
+        if len(_cluster_1d_tokens(col_toks, axis=1, limit=hdr_y1)) >= 2 or min(b[1] for b in col_toks) > split_y0:
+            continue
+        claimed.update(coords)
+        extra_specs.append((0, c, hdr_end, 1, False, min(row_scores[0], 0.85)))
+    return extra_specs
 
 
 def _filter_projected_headers(
@@ -596,12 +990,87 @@ def _filter_projected_headers(
     return kept
 
 
+def _collapse_blocked_by_rules_or_content(
+    block_cells: Sequence[TableCell],
+    unspanned_cols: Sequence[int],
+    r_start: int,
+    r_end: int,
+    crop_gray: np.ndarray | None,
+    table_bbox_pt: BBox | None,
+) -> bool:
+    if crop_gray is not None and table_bbox_pt is not None:
+        ch, cw = crop_gray.shape[:2]
+        tx0, ty0, tx1, ty1 = table_bbox_pt
+        sx = (tx1 - tx0) / cw if cw > 0 else 0.0
+        sy = (ty1 - ty0) / ch if ch > 0 else 0.0
+        if sx > 0.0 and sy > 0.0:
+            for col_i in unspanned_cols:
+                col_cells = sorted(
+                    (c for c in block_cells if c.col <= col_i < c.col + c.colspan and c.bbox is not None),
+                    key=lambda c: c.row,
+                )
+                if len(col_cells) < 2:
+                    continue
+                x_lo = min(c.bbox[0] for c in col_cells if c.bbox is not None)
+                x_hi = max(c.bbox[2] for c in col_cells if c.bbox is not None)
+                y_lo = min(c.bbox[1] for c in col_cells if c.bbox is not None)
+                y_hi = max(c.bbox[3] for c in col_cells if c.bbox is not None)
+                internal_ys = [
+                    ((col_cells[m].bbox[3] + col_cells[m + 1].bbox[1]) * 0.5 - ty0) / sy
+                    for m in range(len(col_cells) - 1)
+                    if col_cells[m].bbox is not None and col_cells[m + 1].bbox is not None
+                ]
+                if internal_ys and _has_internal_rule(
+                    crop_gray,
+                    (x_lo - tx0) / sx,
+                    (y_lo - ty0) / sy,
+                    (x_hi - tx0) / sx,
+                    (y_hi - ty0) / sy,
+                    (),
+                    internal_ys,
+                ):
+                    return True
+
+    for col_i in unspanned_cols:
+        col_cells = [c for c in block_cells if c.col <= col_i < c.col + c.colspan and c.text.strip()]
+        if sum(1 for c in col_cells if _is_discrete_value_text(c.text)) >= 2:
+            return True
+
+    if len(unspanned_cols) >= 2:
+        col_is_prose = {}
+        for col_i in unspanned_cols:
+            c_cells = sorted(
+                (c for c in block_cells if c.col <= col_i < c.col + c.colspan and c.text.strip()),
+                key=lambda c: c.row,
+            )
+            col_is_prose[col_i] = len(c_cells) >= 2 and any(
+                _is_wrapped_prose_pair([c_cells[m].text], [c_cells[m + 1].text])
+                for m in range(len(c_cells) - 1)
+            )
+        if not all(col_is_prose.values()):
+            rows_with_short_items = 0
+            for rr in range(r_start, r_end + 1):
+                row_vals = [
+                    c.text.strip()
+                    for c in block_cells
+                    if c.row == rr and c.col in unspanned_cols and c.text.strip()
+                ]
+                if len(row_vals) >= 2 and all(len(v.split()) <= 2 for v in row_vals):
+                    rows_with_short_items += 1
+            if rows_with_short_items >= 2:
+                return True
+    return False
+
+
 def _collapse_multiline_rows(
     cells: list[TableCell],
     num_rows: int,
     num_cols: int,
+    *,
+    crop_gray: np.ndarray | None = None,
+    table_bbox_pt: BBox | None = None,
 ) -> tuple[tuple[TableCell, ...], int]:
-    # Collapse row blocks where most columns share a rowspan and at most two wrap across sub-rows.
+    # Collapse row blocks where spanning columns anchor unruled wrapped sub-rows.
     if num_rows < 2 or num_cols < 2:
         return tuple(cells), num_rows
     by_row: dict[int, list[TableCell]] = {}
@@ -627,17 +1096,19 @@ def _collapse_multiline_rows(
                 )
                 if len(hdr_vals) == 1 and not next(iter(hdr_vals)) and not crosses:
                     n_spanning = 0
-                    n_multi = 0
+                    unspanned_multi_cols: list[int] = []
                     for col_i in range(num_cols):
                         col_cells = [c for c in block_cells if c.col <= col_i < c.col + c.colspan]
                         if len(col_cells) == 1 and col_cells[0].row == r and col_cells[0].rowspan == k:
                             n_spanning += 1
                         elif sum(1 for c in col_cells if c.text.strip()) >= 2:
-                            n_multi += 1
+                            unspanned_multi_cols.append(col_i)
                     if (
-                        n_multi >= 1
+                        unspanned_multi_cols
                         and n_spanning >= max(2, (num_cols + 1) // 2)
-                        and (n_multi == 1 or n_spanning > 2 * n_multi)
+                        and not _collapse_blocked_by_rules_or_content(
+                            block_cells, unspanned_multi_cols, r, r_end, crop_gray, table_bbox_pt
+                        )
                     ):
                         for base in sorted(row_cells, key=lambda c: c.col):
                             if base.rowspan == k:
@@ -699,6 +1170,44 @@ def _collapse_multiline_rows(
     return tuple(out), new_r
 
 
+def _is_thin_continuous_vert_rule(ink_v: np.ndarray, sx0: int, sx1: int, height: int) -> bool:
+    if sx1 <= sx0 or height < 18:
+        return False
+    sub = ink_v[:, sx0:sx1]
+    col_fracs = sub.mean(axis=0)
+    min_run = int(0.85 * height)
+    for k in range(sx1 - sx0):
+        if float(col_fracs[k]) < 0.85:
+            continue
+        left = k
+        while left > 0 and float(col_fracs[left - 1]) >= 0.50:
+            left -= 1
+        right = k
+        while right + 1 < sx1 - sx0 and float(col_fracs[right + 1]) >= 0.50:
+            right += 1
+        if right - left + 1 > 6:
+            continue
+        # Allow a 1-px anti-aliasing break inside a continuous vertical rule stroke.
+        col = sub[:, k]
+        run = 0
+        best_run = 0
+        gap = 0
+        for px in col.tolist():
+            if px:
+                run += 1 + gap
+                gap = 0
+                if run > best_run:
+                    best_run = run
+            elif run > 0 and gap == 0:
+                gap = 1
+            else:
+                run = 0
+                gap = 0
+        if best_run >= min_run:
+            return True
+    return False
+
+
 def _has_internal_rule(
     crop_gray: np.ndarray,
     x_lo: float,
@@ -715,9 +1224,9 @@ def _has_internal_rule(
     iy1 = max(0, min(ch, int(round(y_hi))))
     if ix1 - ix0 < 4 or iy1 - iy0 < 4:
         return False
-    tol_x = max(4, min(12, int(round(0.02 * cw))))
+    tol_x = max(3, min(6, int(round(0.015 * cw))))
     tol_y = max(4, min(12, int(round(0.02 * ch))))
-    if internal_xs:
+    if internal_xs and (iy1 - iy0) >= 18:
         patch = crop_gray[iy0:iy1, ix0:ix1].astype(np.int16)
         row_bg = np.median(patch, axis=1, keepdims=True)
         ink_v = np.abs(patch - row_bg) >= 35
@@ -725,7 +1234,7 @@ def _has_internal_rule(
             cx = int(round(bx))
             sx0 = max(0, cx - tol_x - ix0)
             sx1 = min(ix1 - ix0, cx + tol_x + 1 - ix0)
-            if sx1 > sx0 and float(ink_v[:, sx0:sx1].mean(axis=0).max()) >= 0.70:
+            if _is_thin_continuous_vert_rule(ink_v, sx0, sx1, iy1 - iy0):
                 return True
     if internal_ys:
         for by in internal_ys:
@@ -758,6 +1267,8 @@ def _passes_low_conf_span_guard(
     r1: int,
     c0: int,
     c1: int,
+    *,
+    tok_texts: Sequence[str] | None = None,
 ) -> bool:
     y_lo, y_hi = row_intervals[r0][0], row_intervals[r1][1]
     x_lo, x_hi = col_intervals[c0][0], col_intervals[c1][1]
@@ -766,13 +1277,14 @@ def _passes_low_conf_span_guard(
         internal_ys = [row_intervals[r][1] for r in range(r0, r1)]
         if _has_internal_rule(crop_gray, x_lo, y_lo, x_hi, y_hi, internal_xs, internal_ys):
             return False
-    span_toks = [
-        b
-        for b in tok_px
+    span_idx = [
+        i
+        for i, b in enumerate(tok_px)
         if x_lo <= (b[0] + b[2]) * 0.5 <= x_hi and y_lo <= (b[1] + b[3]) * 0.5 <= y_hi
     ]
-    if len(span_toks) < 2:
+    if len(span_idx) < 2:
         return True
+    span_toks = [tok_px[i] for i in span_idx]
     heights = sorted(max(4.0, b[3] - b[1]) for b in span_toks)
     line_h = heights[len(heights) // 2]
     if c1 > c0:
@@ -803,152 +1315,66 @@ def _passes_low_conf_span_guard(
                     if left_cl and right_cl and (right_cl[0][0] - left_cl[-1][1]) >= min_gap:
                         return False
     if r1 > r0:
-        active_rows = sum(
-            1
+        active = [
+            [i for i in span_idx if row_intervals[r][0] <= (tok_px[i][1] + tok_px[i][3]) * 0.5 <= row_intervals[r][1]]
             for r in range(r0, r1 + 1)
-            if any(row_intervals[r][0] <= (b[1] + b[3]) * 0.5 <= row_intervals[r][1] for b in span_toks)
-        )
-        if active_rows >= 2:
-            return False
+        ]
+        active = [grp for grp in active if grp]
+        if len(active) >= 2:
+            gaps = [
+                max(0.0, min(tok_px[i][1] for i in active[k + 1]) - max(tok_px[i][3] for i in active[k]))
+                for k in range(len(active) - 1)
+            ]
+            max_gap = max(gaps)
+            if max_gap >= 0.95 * line_h:
+                return False
+            if max_gap >= 0.70 * line_h:
+                if c1 > c0:
+                    multi_col_rows = sum(
+                        1
+                        for grp in active
+                        if len(
+                            {
+                                ci
+                                for i in grp
+                                for ci in range(c0, c1 + 1)
+                                if col_intervals[ci][0] <= (tok_px[i][0] + tok_px[i][2]) * 0.5 <= col_intervals[ci][1]
+                            }
+                        )
+                        >= 2
+                    )
+                    if multi_col_rows >= 2:
+                        return False
+                if tok_texts is not None:
+                    discrete_rows = sum(
+                        1
+                        for grp in active
+                        if _is_discrete_value_text(" ".join(tok_texts[i] for i in grp))
+                    )
+                    if discrete_rows >= 2:
+                        return False
     return True
 
 
-def objects_to_table(
-    objects: Sequence[tuple[str, BBox, float]],
-    crop_size: tuple[int, int],
+def _build_raw_cells(
+    merged_specs: Sequence[tuple[int, int, int, int, bool, float]],
+    claimed: set[tuple[int, int]],
+    row_intervals: Sequence[tuple[float, float]],
+    col_intervals: Sequence[tuple[float, float]],
+    row_scores: Sequence[float],
+    col_scores: Sequence[float],
+    header_rows: set[int],
+    proj_header_rows: set[int],
+    tokens: Sequence[tuple[str, BBox]],
+    crop_gray: np.ndarray | None,
     table_bbox_pt: BBox,
-    tokens: Sequence[tuple[str, BBox]] = (),
-    *,
-    crop: Image.Image | None = None,
-) -> ExtractedTable:
-    cw, ch = float(crop_size[0]), float(crop_size[1])
-    if cw <= 0.0 or ch <= 0.0:
-        return ExtractedTable(
-            bbox=table_bbox_pt,
-            num_rows=0,
-            num_cols=0,
-            cells=(),
-            source="tatr_onnx",
-            confidence=0.0,
-        )
-    crop_gray: np.ndarray | None = None
-    if crop is not None and crop.size == (int(crop_size[0]), int(crop_size[1])):
-        crop_gray = _crop_to_gray(crop)
-
-    tx0, ty0, tx1, ty1 = table_bbox_pt
-    sx = (tx1 - tx0) / cw
-    sy = (ty1 - ty0) / ch
-    tok_px: list[BBox] = (
-        [
-            (
-                (tb[0] - tx0) / max(1e-6, sx),
-                (tb[1] - ty0) / max(1e-6, sy),
-                (tb[2] - tx0) / max(1e-6, sx),
-                (tb[3] - ty0) / max(1e-6, sy),
-            )
-            for _, tb in tokens
-        ]
-        if sx > 0.0 and sy > 0.0
-        else []
-    )
-
-    raw_rows = [(b, s) for lbl, b, s in objects if lbl == "table row"]
-    raw_cols = [(b, s) for lbl, b, s in objects if lbl == "table column"]
-    row_kept = [
-        (max(0.0, a0), min(ch, a1), s)
-        for a0, a1, s in _dedupe_1d_intervals(raw_rows, axis=1)
-        if min(ch, a1) > max(0.0, a0)
-    ]
-    col_kept = [
-        (max(0.0, a0), min(cw, a1), s)
-        for a0, a1, s in _dedupe_1d_intervals(raw_cols, axis=0)
-        if min(cw, a1) > max(0.0, a0)
-    ]
-    used_cluster_fallback = False
-    if tok_px:
-        y_clusters = _cluster_1d_tokens(tok_px, axis=1, limit=ch)
-        if not row_kept or (len(row_kept) == 1 and len(y_clusters) >= 3):
-            row_kept = y_clusters
-            used_cluster_fallback = True
-        if not col_kept and row_kept:
-            col_kept = [(0.0, cw, 0.5)]
-            used_cluster_fallback = True
-
-    row_intervals = _snap_intervals(row_kept, ch, [(b[1], b[3]) for b in tok_px])
-    col_intervals = _snap_intervals(col_kept, cw, [(b[0], b[2]) for b in tok_px], ignore_cross_spans=True)
-    row_scores = [item[2] for item in row_kept]
-    col_scores = [item[2] for item in col_kept]
-
-    col_headers = [b for lbl, b, _ in objects if lbl == "table column header"]
-    span_boxes = [
-        b
-        for lbl, b, s in objects
-        if (lbl == "table spanning cell" and s >= _SPAN_THRESHOLD) or lbl == "table projected row header"
-    ]
-    col_intervals, col_scores, did_split_cols = _split_undersegmented_cols(
-        col_intervals, col_scores, tok_px, cw, col_headers, span_boxes
-    )
-    init_header_rows: set[int] = set()
-    for hb in col_headers:
-        init_header_rows.update(_overlap_indices(row_intervals, hb[1], hb[3]))
-    row_intervals, row_scores, did_split_rows = _split_undersegmented_rows(
-        row_intervals, row_scores, col_intervals, tok_px, ch, init_header_rows
-    )
-
+    tx0: float,
+    ty0: float,
+    sx: float,
+    sy: float,
+) -> tuple[list[TableCell], int, int]:
     num_rows = len(row_intervals)
     num_cols = len(col_intervals)
-    if num_rows == 0 or num_cols == 0:
-        return ExtractedTable(
-            bbox=table_bbox_pt,
-            num_rows=0,
-            num_cols=0,
-            cells=(),
-            source="tatr_onnx",
-            confidence=0.0,
-        )
-
-    header_rows: set[int] = set()
-    for hb in col_headers:
-        header_rows.update(_overlap_indices(row_intervals, hb[1], hb[3]))
-
-    raw_proj_headers = sorted(
-        [(b, s) for lbl, b, s in objects if lbl == "table projected row header"],
-        key=lambda item: item[1],
-        reverse=True,
-    )
-    proj_headers = _filter_projected_headers(raw_proj_headers, tok_px, col_intervals, num_rows, header_rows, cw)
-    proj_header_rows: set[int] = set()
-    for pb, _ in proj_headers:
-        proj_header_rows.update(_overlap_indices(row_intervals, pb[1], pb[3]))
-
-    # Claim merged regions in descending confidence order so higher-scoring spans win overlaps.
-    spanning = sorted(
-        [(b, s, False) for lbl, b, s in objects if lbl == "table spanning cell" and s >= _SPAN_GUARD_MIN]
-        + [(b, s, True) for b, s in proj_headers],
-        key=lambda item: item[1],
-        reverse=True,
-    )
-    claimed: set[tuple[int, int]] = set()
-    merged_specs: list[tuple[int, int, int, int, bool, float]] = []
-    for box, score, is_proj in spanning:
-        min_ov = 0.5 if is_proj else _SPAN_OVERLAP_FRAC
-        rs = _overlap_indices(row_intervals, box[1], box[3], min_ov)
-        cs = _overlap_indices(col_intervals, box[0], box[2], min_ov)
-        if is_proj and len(rs) == 1 and len(cs) < num_cols and (box[2] - box[0]) >= 0.7 * cw:
-            cs = list(range(num_cols))
-        if len(rs) * len(cs) < 2:
-            continue
-        r0, r1 = min(rs), max(rs)
-        c0, c1 = min(cs), max(cs)
-        coords = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
-        if any(rc in claimed for rc in coords):
-            continue
-        if not is_proj and score < _SPAN_THRESHOLD:
-            if not _passes_low_conf_span_guard(crop_gray, row_intervals, col_intervals, tok_px, r0, r1, c0, c1):
-                continue
-        claimed.update(coords)
-        merged_specs.append((r0, c0, r1 - r0 + 1, c1 - c0 + 1, is_proj, float(score)))
-
     cell_defs: list[tuple[int, int, int, int, BBox, bool, float]] = []
     for r0, c0, rspan, cspan, is_proj, span_score in merged_specs:
         y0, y1 = row_intervals[r0][0], row_intervals[r0 + rspan - 1][1]
@@ -1025,7 +1451,218 @@ def objects_to_table(
                 confidence=cell_conf,
             )
         )
-    cells, num_rows = _collapse_multiline_rows(raw_cells, num_rows, num_cols)
+    return raw_cells, assigned_nonempty, total_nonempty
+
+
+def objects_to_table(
+    objects: Sequence[tuple[str, BBox, float]],
+    crop_size: tuple[int, int],
+    table_bbox_pt: BBox,
+    tokens: Sequence[tuple[str, BBox]] = (),
+    *,
+    crop: Image.Image | None = None,
+) -> ExtractedTable:
+    cw, ch = float(crop_size[0]), float(crop_size[1])
+    if cw <= 0.0 or ch <= 0.0:
+        return ExtractedTable(
+            bbox=table_bbox_pt,
+            num_rows=0,
+            num_cols=0,
+            cells=(),
+            source="tatr_onnx",
+            confidence=0.0,
+        )
+    crop_gray: np.ndarray | None = None
+    if crop is not None and crop.size == (int(crop_size[0]), int(crop_size[1])):
+        crop_gray = _crop_to_gray(crop)
+
+    tx0, ty0, tx1, ty1 = table_bbox_pt
+    sx = (tx1 - tx0) / cw
+    sy = (ty1 - ty0) / ch
+    tok_px: list[BBox] = (
+        [
+            (
+                (tb[0] - tx0) / max(1e-6, sx),
+                (tb[1] - ty0) / max(1e-6, sy),
+                (tb[2] - tx0) / max(1e-6, sx),
+                (tb[3] - ty0) / max(1e-6, sy),
+            )
+            for _, tb in tokens
+        ]
+        if sx > 0.0 and sy > 0.0
+        else []
+    )
+    tok_texts = [txt for txt, _ in tokens] if tok_px else None
+
+    raw_rows = [(b, s) for lbl, b, s in objects if lbl == "table row"]
+    raw_cols = [(b, s) for lbl, b, s in objects if lbl == "table column"]
+    row_kept = [
+        (max(0.0, a0), min(ch, a1), s)
+        for a0, a1, s in _dedupe_1d_intervals(raw_rows, axis=1)
+        if min(ch, a1) > max(0.0, a0)
+    ]
+    col_kept = [
+        (max(0.0, a0), min(cw, a1), s)
+        for a0, a1, s in _dedupe_1d_intervals(raw_cols, axis=0)
+        if min(cw, a1) > max(0.0, a0)
+    ]
+    used_cluster_fallback = False
+    if tok_px:
+        y_clusters = _cluster_1d_tokens(tok_px, axis=1, limit=ch)
+        if not row_kept or (len(row_kept) == 1 and len(y_clusters) >= 3):
+            row_kept = y_clusters
+            used_cluster_fallback = True
+        if not col_kept and row_kept:
+            col_kept = [(0.0, cw, 0.5)]
+            used_cluster_fallback = True
+
+    col_headers = [b for lbl, b, s in objects if lbl == "table column header" and s >= DEFAULT_THRESHOLD]
+    hdr_y_max = max((hb[3] for hb in col_headers), default=-1.0)
+    body_x_spans = [(b[0], b[2]) for b in tok_px if (b[1] + b[3]) * 0.5 > hdr_y_max]
+    col_snap_spans = body_x_spans if body_x_spans else [(b[0], b[2]) for b in tok_px]
+
+    row_intervals = _snap_intervals(row_kept, ch, [(b[1], b[3]) for b in tok_px])
+    col_intervals = _snap_intervals(col_kept, cw, col_snap_spans, ignore_cross_spans=True)
+    row_scores = [item[2] for item in row_kept]
+    col_scores = [item[2] for item in col_kept]
+    span_boxes = [
+        b
+        for lbl, b, s in objects
+        if (lbl == "table spanning cell" and s >= _SPAN_THRESHOLD) or lbl == "table projected row header"
+    ]
+    raw_span_boxes = [
+        b
+        for lbl, b, s in objects
+        if (lbl == "table spanning cell" and s >= _SPAN_GUARD_MIN) or lbl == "table projected row header"
+    ]
+    col_intervals, col_scores, did_split_cols = _split_undersegmented_cols(
+        col_intervals, col_scores, tok_px, cw, col_headers, span_boxes
+    )
+    init_header_rows: set[int] = set()
+    for hb in col_headers:
+        init_header_rows.update(_overlap_indices(row_intervals, hb[1], hb[3]))
+    row_intervals, row_scores, did_split_rows = _split_undersegmented_rows(
+        row_intervals,
+        row_scores,
+        col_intervals,
+        tok_px,
+        ch,
+        init_header_rows,
+        crop_gray=crop_gray,
+        tok_texts=tok_texts,
+        span_boxes=raw_span_boxes,
+        col_headers=col_headers,
+    )
+
+    num_rows = len(row_intervals)
+    num_cols = len(col_intervals)
+    if num_rows == 0 or num_cols == 0:
+        return ExtractedTable(
+            bbox=table_bbox_pt,
+            num_rows=0,
+            num_cols=0,
+            cells=(),
+            source="tatr_onnx",
+            confidence=0.0,
+        )
+
+    header_rows: set[int] = set()
+    for hb in col_headers:
+        header_rows.update(_overlap_indices(row_intervals, hb[1], hb[3]))
+
+    raw_proj_headers = sorted(
+        [(b, s) for lbl, b, s in objects if lbl == "table projected row header"],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    proj_headers = _filter_projected_headers(raw_proj_headers, tok_px, col_intervals, num_rows, header_rows, cw)
+    proj_header_rows: set[int] = set()
+    for pb, _ in proj_headers:
+        proj_header_rows.update(_overlap_indices(row_intervals, pb[1], pb[3]))
+
+    # Claim merged regions in descending confidence order so higher-scoring spans win overlaps.
+    spanning = sorted(
+        [(b, s, False) for lbl, b, s in objects if lbl == "table spanning cell" and s >= _SPAN_GUARD_MIN]
+        + [(b, s, True) for b, s in proj_headers],
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    claimed: set[tuple[int, int]] = set()
+    merged_specs: list[tuple[int, int, int, int, bool, float]] = []
+    for box, score, is_proj in spanning:
+        min_ov = 0.5 if is_proj else _SPAN_OVERLAP_FRAC
+        rs = _overlap_indices(row_intervals, box[1], box[3], min_ov)
+        cs = _overlap_indices(col_intervals, box[0], box[2], min_ov)
+        if is_proj and len(rs) == 1 and len(cs) < num_cols and (box[2] - box[0]) >= 0.7 * cw:
+            cs = list(range(num_cols))
+        if len(rs) * len(cs) < 2:
+            continue
+        r0, r1 = min(rs), max(rs)
+        c0, c1 = min(cs), max(cs)
+        coords = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
+        if any(rc in claimed for rc in coords):
+            continue
+        if not is_proj and score < 0.90 and crop_gray is not None:
+            y_lo, y_hi = row_intervals[r0][0], row_intervals[r1][1]
+            x_lo, x_hi = col_intervals[c0][0], col_intervals[c1][1]
+            internal_xs = [col_intervals[c][1] for c in range(c0, c1)]
+            internal_ys = [row_intervals[r][1] for r in range(r0, r1)]
+            if _has_internal_rule(crop_gray, x_lo, y_lo, x_hi, y_hi, internal_xs, internal_ys):
+                continue
+        if not is_proj and score < _SPAN_THRESHOLD:
+            if not _passes_low_conf_span_guard(
+                crop_gray, row_intervals, col_intervals, tok_px, r0, r1, c0, c1, tok_texts=tok_texts
+            ):
+                continue
+        claimed.update(coords)
+        merged_specs.append((r0, c0, r1 - r0 + 1, c1 - c0 + 1, is_proj, float(score)))
+
+    base_claimed = set(claimed)
+    base_specs = list(merged_specs)
+    hdr_specs = _synthesize_multitier_header_spans(
+        row_intervals, row_scores, col_intervals, header_rows, tok_px, claimed
+    )
+    if hdr_specs:
+        merged_specs.extend(hdr_specs)
+
+    raw_cells, assigned_nonempty, total_nonempty = _build_raw_cells(
+        merged_specs,
+        claimed,
+        row_intervals,
+        col_intervals,
+        row_scores,
+        col_scores,
+        header_rows,
+        proj_header_rows,
+        tokens,
+        crop_gray,
+        table_bbox_pt,
+        tx0,
+        ty0,
+        sx,
+        sy,
+    )
+    if hdr_specs and not _cells_grid_valid(raw_cells, num_rows, num_cols, allow_empty=True):
+        raw_cells, assigned_nonempty, total_nonempty = _build_raw_cells(
+            base_specs,
+            base_claimed,
+            row_intervals,
+            col_intervals,
+            row_scores,
+            col_scores,
+            header_rows,
+            proj_header_rows,
+            tokens,
+            crop_gray,
+            table_bbox_pt,
+            tx0,
+            ty0,
+            sx,
+            sy,
+        )
+    cells, num_rows = _collapse_multiline_rows(
+        raw_cells, num_rows, num_cols, crop_gray=crop_gray, table_bbox_pt=table_bbox_pt
+    )
 
     table_scores = [s for lbl, _, s in objects if lbl == "table"]
     raw_conf = max(table_scores) if table_scores else sum(s for _, _, s in objects) / max(1, len(objects))
@@ -1192,8 +1829,18 @@ class TatrOnnxTableExtractor:
             if x1 <= x0 or y1 <= y0:
                 continue
             item = (label, (x0, y0, x1, y1), fscore)
-            if fscore >= self.score_threshold or (
-                label == "table spanning cell" and fscore >= _SPAN_GUARD_MIN and self.score_threshold <= _SPAN_THRESHOLD
+            if (
+                fscore >= self.score_threshold
+                or (
+                    label == "table spanning cell"
+                    and fscore >= _SPAN_GUARD_MIN
+                    and self.score_threshold <= _SPAN_THRESHOLD
+                )
+                or (
+                    label == "table column header"
+                    and fscore >= _HEADER_RESCUE_MIN
+                    and self.score_threshold <= DEFAULT_THRESHOLD
+                )
             ):
                 out.append(item)
             elif label == "table row":

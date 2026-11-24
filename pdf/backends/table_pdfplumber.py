@@ -28,7 +28,7 @@ def _best_iou_table(tables: Sequence[Any], clip_bbox: BBox) -> Any | None:
     return best if best_iou >= 0.3 else None
 
 
-def _find_best_pdfplumber_table(page: Any, clip_bbox: BBox) -> Any | None:
+def _find_best_pdfplumber_table_with_mode(page: Any, clip_bbox: BBox) -> tuple[Any | None, bool]:
     bounds = page_bbox(page)
     padded = (
         clip_bbox[0] - _CROP_EXPAND_PT,
@@ -43,14 +43,18 @@ def _find_best_pdfplumber_table(page: Any, clip_bbox: BBox) -> Any | None:
         found = (target.find_tables() if settings is None else target.find_tables(table_settings=settings)) or ()
         best = _best_iou_table(found, clip_bbox) if found else None
         if best is not None:
-            return best
+            return best, settings is _STRICT_SETTINGS
     if clamped is not None:
         for settings in (_STRICT_SETTINGS, None):
             found = (page.find_tables() if settings is None else page.find_tables(table_settings=settings)) or ()
             best = _best_iou_table(found, clip_bbox) if found else None
             if best is not None:
-                return best
-    return None
+                return best, settings is _STRICT_SETTINGS
+    return None, False
+
+
+def _find_best_pdfplumber_table(page: Any, clip_bbox: BBox) -> Any | None:
+    return _find_best_pdfplumber_table_with_mode(page, clip_bbox)[0]
 
 
 def _track_bounds(starts: Sequence[float], end: float, count: int, span_start: float, span_end: float) -> list[float]:
@@ -283,6 +287,7 @@ class PdfPlumberTableExtractor:
 
     def __init__(self) -> None:
         self.last_stats: RunStats | None = None
+        self.last_used_strict_lines: list[bool] = []
 
     def extract_from_page(
         self,
@@ -299,12 +304,15 @@ class PdfPlumberTableExtractor:
         del is_raster, ocr_backend, ocr_lang, device, dpi
         t0 = time.perf_counter()
         out: list[ExtractedTable] = []
+        strict_flags: list[bool] = []
         for box in table_boxes_pt:
-            tbl = _find_best_pdfplumber_table(page, box)
+            tbl, used_strict = _find_best_pdfplumber_table_with_mode(page, box)
+            strict_flags.append(used_strict)
             if tbl is None:
                 out.append(ExtractedTable(bbox=box, num_rows=0, num_cols=0, cells=(), source="pdfplumber", confidence=0.0))
             else:
                 out.append(_convert_pdfplumber_table(tbl, box, page=page, words=words))
+        self.last_used_strict_lines = strict_flags
         self.last_stats = RunStats(
             load_sec=0.0,
             infer_sec=round(time.perf_counter() - t0, 4),
