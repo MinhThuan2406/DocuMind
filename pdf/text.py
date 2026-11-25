@@ -700,6 +700,7 @@ def _vertical_words_to_blocks(
     source: TextSource,
     confidence: float,
     median_font_size: float = 0.0,
+    label: str | None = None,
 ) -> list[TextBlock]:
     if not words:
         return []
@@ -724,11 +725,11 @@ def _vertical_words_to_blocks(
                 gap_thr = max(1.5 * ref_size, 1.2 * ref_fs)
                 gap = (prev.bbox[1] - word.bbox[3]) if is_btt else (word.bbox[1] - prev.bbox[3])
                 if gap > gap_thr:
-                    blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+                    blocks.append(_make_text_block([cur], source=source, confidence=confidence, label=label))
                     cur = [word]
                 else:
                     cur.append(word)
-            blocks.append(_make_text_block([cur], source=source, confidence=confidence))
+            blocks.append(_make_text_block([cur], source=source, confidence=confidence, label=label))
     return blocks
 
 
@@ -755,6 +756,7 @@ def _make_text_block(
     *,
     source: TextSource,
     confidence: float,
+    label: str | None = None,
 ) -> TextBlock:
     all_words = tuple(w for line in lines for w in line)
     text = "\n".join(" ".join(w.text for w in line) for line in lines)
@@ -768,6 +770,7 @@ def _make_text_block(
         source=source,
         confidence=confidence,
         words=all_words,
+        label=label,
     )
 
 
@@ -1568,6 +1571,108 @@ def xy_cut_order(
     return [pair[0] for pair in _recurse(pairs, 0)]
 
 
+def _region_words_to_blocks(
+    words: Sequence[Word],
+    regions: Sequence[Any],
+    page_rect: BBox | None,
+    *,
+    source: TextSource,
+    confidence: float,
+    median_font_size: float,
+    horiz_rules: Sequence[BBox] = (),
+) -> list[TextBlock]:
+    parsed: list[tuple[int, float, BBox, str, float]] = []
+    for idx, reg in enumerate(regions):
+        if isinstance(reg, Mapping):
+            rb = reg.get("bbox")
+            lbl = reg.get("label")
+            conf = float(reg.get("confidence", 1.0))
+        else:
+            rb = getattr(reg, "bbox", None)
+            lbl = getattr(reg, "label", None)
+            conf = float(getattr(reg, "confidence", 1.0))
+        if not rb or len(rb) != 4 or not lbl:
+            continue
+        box: BBox = (float(rb[0]), float(rb[1]), float(rb[2]), float(rb[3]))
+        area = max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+        if area <= 0.0:
+            continue
+        parsed.append((idx, area, box, str(lbl).lower(), conf))
+
+    if not parsed:
+        return order_blocks(
+            words,
+            page_rect,
+            source=source,
+            confidence=confidence,
+            horiz_rules=horiz_rules,
+        )
+
+    assigned: dict[int, list[Word]] = {r[0]: [] for r in parsed}
+    orphan_words: list[Word] = []
+    for word in words:
+        wx0, wy0, wx1, wy1 = word.bbox
+        w_area = max(0.0, wx1 - wx0) * max(0.0, wy1 - wy0)
+        cx = 0.5 * (wx0 + wx1)
+        cy = 0.5 * (wy0 + wy1)
+        best_idx: int | None = None
+        best_key: tuple[float, float, float, int] | None = None
+        for r_idx, r_area, (rx0, ry0, rx1, ry1), _lbl, r_conf in parsed:
+            center_in = rx0 <= cx <= rx1 and ry0 <= cy <= ry1
+            if w_area > 0.0:
+                ix = max(0.0, min(wx1, rx1) - max(wx0, rx0))
+                iy = max(0.0, min(wy1, ry1) - max(wy0, ry0))
+                ioa = (ix * iy) / w_area
+                if ioa < 0.50 and not center_in:
+                    continue
+            elif not center_in:
+                continue
+            else:
+                ioa = 1.0
+            key = (r_area, -ioa, -r_conf, r_idx)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_idx = r_idx
+        if best_idx is None:
+            orphan_words.append(word)
+        else:
+            assigned[best_idx].append(word)
+
+    blocks: list[TextBlock] = []
+    for r_idx, _area, _box, r_label, _conf in parsed:
+        reg_words = assigned[r_idx]
+        if not reg_words:
+            continue
+        h_words, v_words = _partition_orientation(reg_words)
+        if h_words:
+            raw_lines = cluster_by_overlap(h_words, lambda w: (w.bbox[1], w.bbox[3]), lambda w: w.bbox[0])
+            lines = [sorted(ln, key=lambda w: w.bbox[0]) for ln in raw_lines]
+            lines.sort(key=lambda ln: (min(w.bbox[1] for w in ln), ln[0].bbox[0]))
+            blocks.append(_make_text_block(lines, source=source, confidence=confidence, label=r_label))
+        if v_words:
+            blocks.extend(
+                _vertical_words_to_blocks(
+                    v_words,
+                    source=source,
+                    confidence=confidence,
+                    median_font_size=median_font_size,
+                    label=r_label,
+                )
+            )
+
+    if orphan_words:
+        blocks.extend(
+            order_blocks(
+                orphan_words,
+                page_rect,
+                source=source,
+                confidence=confidence,
+                horiz_rules=horiz_rules,
+            )
+        )
+    return xy_cut_order(blocks, lambda b: b.bbox, page_rect=page_rect, font_size=median_font_size)
+
+
 def order_blocks(
     words: Sequence[Word],
     page_rect: BBox | None = None,
@@ -1575,10 +1680,21 @@ def order_blocks(
     source: TextSource = "text_layer",
     confidence: float = 1.0,
     horiz_rules: Sequence[BBox] = (),
+    regions: Sequence[Any] | None = None,
 ) -> list[TextBlock]:
     if not words:
         return []
     median_fs = _median_font_size(words, page_rect)
+    if regions:
+        return _region_words_to_blocks(
+            words,
+            regions,
+            page_rect,
+            source=source,
+            confidence=confidence,
+            median_font_size=median_fs,
+            horiz_rules=horiz_rules,
+        )
     horiz_words, vert_words = _partition_orientation(words)
     raw_lines = _words_to_raw_lines(horiz_words, median_font_size=median_fs)
     segments = _merge_line_segments_horizontally(

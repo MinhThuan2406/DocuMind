@@ -346,6 +346,7 @@ def assemble_page(
     figures: Sequence[FigureBox] = (),
     raster_page: RasterPage | None = None,
     *,
+    semantic_regions: Sequence[SemanticRegion] | None = None,
     horiz_rules: Sequence[BBox] = (),
     vector_boxes: Sequence[BBox] = (),
 ) -> list[AssembledItem]:
@@ -358,7 +359,12 @@ def assemble_page(
 
     kept_figures = filter_overlapping_figures(figures)
     body_words, box_words = _assign_words_to_boxes(words, kept_figures)
-    body_blocks = order_blocks(body_words, page_rect, horiz_rules=horiz_rules)
+    body_blocks = order_blocks(
+        body_words,
+        page_rect,
+        horiz_rules=horiz_rules,
+        regions=semantic_regions,
+    )
 
     top_nodes: list[tuple[str, BBox, TextBlock | tuple[int, FigureBox]]] = [
         ("text", blk.bbox, blk) for blk in body_blocks

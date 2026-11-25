@@ -350,7 +350,7 @@ def extract_ir(
     device: str = "auto",
     min_font_size: float = 0.0,
     structure: bool = True,
-    semantic_layout: Literal["auto", "always", "off"] = "auto",
+    semantic_layout: Literal["auto", "always", "off"] = "always",
 ) -> dict[str, Any]:
     if semantic_layout not in ("auto", "always", "off"):
         raise ValueError(f"invalid semantic_layout: {semantic_layout!r}; expected 'auto', 'always', or 'off'")
@@ -401,7 +401,7 @@ def extract_ir(
             if not _uses_ocr_fallback(p, ocr) and p.kind != "raster"
         ]
         if semantic_layout == "always":
-            candidate_pages = non_raster_pages if (figures or tables or formulas or structure) else []
+            candidate_pages = non_raster_pages if (figures or tables or formulas) else []
         elif semantic_layout == "off":
             candidate_pages = [
                 p.page
@@ -428,7 +428,7 @@ def extract_ir(
                 "pdfium_doc": ctx.pdfium,
                 "pdf_hash": ctx.pdf_hash,
                 "warnings_out": warnings,
-                "semantic_regions_out": semantic_regions if (semantic_layout != "off" and (structure or formulas)) else None,
+                "semantic_regions_out": semantic_regions if semantic_layout != "off" else None,
                 "page_boxes": {p: page_boxes[p] for p in candidate_pages},
             }
             if semantic_layout == "always":
@@ -567,6 +567,7 @@ def extract_ir(
                 page_boxes[prof.page],
                 figures_by_page.get(prof.page, ()),
                 raster_by_page.get(prof.page),
+                semantic_regions=semantic_regions.get(prof.page) if semantic_layout != "off" else None,
                 horiz_rules=horiz_rules,
                 vector_boxes=vector_boxes,
             )

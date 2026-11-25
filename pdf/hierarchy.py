@@ -2129,7 +2129,7 @@ def apply_structure(
                 and eid not in toc_elem_ids
                 and elem.get("page") not in toc_pages
                 and meta.get("role") is None
-                and meta.get("layout_label") is None
+                and meta.get("layout_label") in (None, "text")
                 and _is_native_list_item(elem.get("text", ""))
             ):
                 meta["layout_label"] = "list_item"

@@ -22,7 +22,18 @@ _RAW_PICTURE_FALLBACK_MIN_SCORE = 0.70
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SEMANTIC_LABELS = frozenset(
-    {"title", "section_header", "caption", "footnote", "list_item", "formula", "code", "page_header", "page_footer"}
+    {
+        "text",
+        "title",
+        "section_header",
+        "caption",
+        "footnote",
+        "list_item",
+        "formula",
+        "code",
+        "page_header",
+        "page_footer",
+    }
 )
 
 

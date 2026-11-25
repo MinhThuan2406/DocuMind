@@ -146,8 +146,13 @@ def test_extract_ir_detects_figures_only_on_candidate_pages():
             _save_pdf(mixed, with_diagram_page=True)
             _save_pdf(text_only, with_diagram_page=False)
             ir = ir_mod.extract_ir(mixed, figures=True, ocr=False)
-            assert seen == [[2]]
+            assert seen == [[1, 2]]
             ir_mod.extract_ir(text_only, figures=True, ocr=False)
+            assert seen == [[1, 2], [1]]
+            seen.clear()
+            ir_mod.extract_ir(mixed, figures=True, ocr=False, semantic_layout="auto")
+            assert seen == [[2]]
+            ir_mod.extract_ir(text_only, figures=True, ocr=False, semantic_layout="auto")
             assert seen == [[2]]
     finally:
         figures_mod.detect_figures = orig_detect
@@ -950,6 +955,93 @@ def test_extract_ir_semantic_layout_modes_and_validation():
             assert all(e["metadata"].get("layout_label") is None for e in ir_off["elements"])
         finally:
             figures_mod._REPO_ROOT = orig_root
+
+
+def test_heron_regions_override_text_merging_and_split_paragraphs():
+    import pdf.figures as figures_mod
+    from pdf.backends import PageLayout, RunStats
+
+    # Tightly spaced block paragraphs + formula without spacing would merge under heuristic order_blocks,
+    # but Heron semantic regions ("text", "formula", "list_item") keep every block strictly separated.
+    tight_words = [
+        Word("First", (50.0, 100.0, 82.0, 110.0), 10.0, False),
+        Word("paragraph", (86.0, 100.0, 148.0, 110.0), 10.0, False),
+        Word("ends", (152.0, 100.0, 182.0, 110.0), 10.0, False),
+        Word("near", (186.0, 100.0, 214.0, 110.0), 10.0, False),
+        Word("right.", (218.0, 100.0, 480.0, 110.0), 10.0, False),
+        Word("Second", (50.0, 114.0, 95.0, 124.0), 10.0, False),
+        Word("paragraph", (99.0, 114.0, 160.0, 124.0), 10.0, False),
+        Word("starts.", (164.0, 114.0, 205.0, 124.0), 10.0, False),
+        Word("E", (80.0, 128.0, 88.0, 138.0), 10.0, False),
+        Word("=", (92.0, 128.0, 100.0, 138.0), 10.0, False),
+        Word("mc^2", (104.0, 128.0, 134.0, 138.0), 10.0, False),
+        Word("OrphanToken", (50.0, 200.0, 125.0, 210.0), 10.0, False),
+    ]
+    prof = PageProfile(1, "native", len(tight_words), 0.1, 0.0, False, figure_candidate=False)
+    # Without regions, tight spacing merges the first two separate paragraphs into one block.
+    heuristic_items = assemble_page(prof, tight_words, (0.0, 0.0, 595.0, 842.0))
+    assert "First paragraph ends near right." in heuristic_items[0].text
+    assert "Second paragraph starts." in heuristic_items[0].text
+
+    regions = [
+        SemanticRegion((45.0, 98.0, 485.0, 112.0), "text", 0.91),
+        SemanticRegion((45.0, 112.5, 220.0, 126.0), "text", 0.89),
+        SemanticRegion((75.0, 126.5, 140.0, 140.0), "formula", 0.94),
+    ]
+    heron_items = assemble_page(prof, tight_words, (0.0, 0.0, 595.0, 842.0), semantic_regions=regions)
+    assert [(it.text, it.label) for it in heron_items] == [
+        ("First paragraph ends near right.", "text"),
+        ("Second paragraph starts.", "text"),
+        ("E = mc^2", "formula"),
+        ("OrphanToken", None),
+    ], [(it.text, it.label) for it in heron_items]
+
+    # End-to-end default extract_ir (semantic_layout="always") runs layout on plain text pages automatically.
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "always_default.pdf"
+        b = TestPdfBuilder()
+        p = b.new_page(width=600, height=800)
+        p.insert_text((50, 100), "First paragraph line one", fontsize=11)
+        p.insert_text((50, 115), "Second paragraph line two", fontsize=11)
+        b.save(pdf_path)
+
+        class _SplitTextBackend:
+            name = "split_text_mock"
+            revision = "st1"
+            cache_dpi = 150
+            last_stats: RunStats | None = None
+
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            def analyze(self, _pdf_path, pages):
+                self.pages.extend(pages)
+                self.last_stats = RunStats(infer_sec=0.01, pages=len(pages), in_process=True)
+                return {
+                    pno: PageLayout(
+                        items=[
+                            {"order": 0, "label": "text", "bbox": [45.0, 86.0, 300.0, 104.0], "text": "", "score": 0.91},
+                            {"order": 1, "label": "text", "bbox": [45.0, 104.5, 300.0, 120.0], "text": "", "score": 0.90},
+                        ],
+                        frame=(600.0, 800.0),
+                    )
+                    for pno in pages
+                }
+
+        orig_root = figures_mod._REPO_ROOT
+        figures_mod._REPO_ROOT = Path(tmp) / "cache_root"
+        try:
+            backend = _SplitTextBackend()
+            ir = ir_mod.extract_ir(pdf_path, layout=backend, ocr=False)
+        finally:
+            figures_mod._REPO_ROOT = orig_root
+
+        assert backend.pages == [1]
+        texts = [(e["text"], e["metadata"].get("layout_label")) for e in ir["elements"]]
+        assert texts == [
+            ("First paragraph line one", "text"),
+            ("Second paragraph line two", "text"),
+        ], texts
 
 
 def main():

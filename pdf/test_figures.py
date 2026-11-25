@@ -669,8 +669,8 @@ def test_detect_figures_exports_semantic_regions_out():
         assert 1 in sem_out
         assert all(isinstance(r, SemanticRegion) for r in sem_out[1])
         labels = [r.label for r in sem_out[1]]
-        assert set(labels) == {"title", "section_header", "caption", "footnote", "list_item", "formula", "code"}
-        assert len(labels) == 7
+        assert set(labels) == {"text", "title", "section_header", "caption", "footnote", "list_item", "formula", "code"}
+        assert len(labels) == 8
         title_reg = [r for r in sem_out[1] if r.label == "title"][0]
         assert title_reg.bbox == (30.0, 15.0, 300.0, 40.0)
         assert title_reg.confidence == 0.92
