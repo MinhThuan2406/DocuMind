@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "documind-docling-plugins"
+version = "0.1.0"
+description = "Experimental Docling OCR, layout, and table-structure plugins for DocuMind."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "docling>=2.135,<3",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+doclayout-yolo = [
+    "doclayout-yolo @ git+https://github.com/opendatalab/DocLayout-YOLO.git@release-v2",
+]
+easyocr = [
+    "easyocr",
+]
+rapidocr = [
+    "rapidocr==3.10.0",
+    "onnxruntime-gpu",
+]
+surya = [
+    "docling-surya==0.1.0",
+    "surya-ocr==0.17.0",
+]
+pp-doclayout-v3 = [
+    "paddleocr==3.7.0",
+]
+rapid-table = [
+    "rapid-table==3.0.2",
+    "rapidocr==3.10.0",
+    "onnxruntime-gpu",
+]
+
+[project.entry-points."docling"]
+documind_plugins = "factories"
+
+[tool.setuptools]
+py-modules = ["factories"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "_doclayout_yolo*",
+    "_pp_doclayout_v3*",
+    "_rapid_table*",
+]

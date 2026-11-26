@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Research datasets (keep only the dataset catalog)
+research/dataset/**
+!research/dataset/info.xlsx
+
+# Kaggle upload bundle
+research/docling.zip
+
+# Benchmark prediction & ground-truth JSON/JSONL files
+research/benchmark/**/*.json
+research/benchmark/**/*.jsonl
