@@ -149,9 +149,16 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments & secrets
 .env
+.env.*
+!.env.example
+!.env.template
 .envrc
+*.pem
+*.key
+*credentials*.json
+*service-account*.json
 .venv
 env/
 venv/
@@ -218,3 +225,22 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project datasets, IR caches & generated outputs
+datasets/
+outputs/
+.ir_cache/
+cache/
+cache_*/
+
+# Office lock files, OS & tool temporary artifacts
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
+Desktop.ini
+.playwright-mcp/
+.agent
+docs/
+diagrams/
+feat/
