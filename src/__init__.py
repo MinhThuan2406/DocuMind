@@ -1,4 +1,6 @@
 from src.adapters.base import BaseDocumentAdapter
+from src.adapters.docx_adapter import DocxAdapter
+from src.adapters.xlsx_adapter import XlsxAdapter
 from src.models.ir import (
     Diagram,
     DiagramEdge,
@@ -16,6 +18,8 @@ from src.models.ir import (
 
 __all__ = [
     "BaseDocumentAdapter",
+    "DocxAdapter",
+    "XlsxAdapter",
     "Diagram",
     "DiagramEdge",
     "DiagramNode",
