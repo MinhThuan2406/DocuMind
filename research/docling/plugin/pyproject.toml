@@ -13,25 +13,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ocr = [
-    "paddleocr==3.7.0",
-    "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-win_amd64.whl",
-    # "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-linux_x86_64.whl",
-]
-layout = [
+doclayout-yolo = [
     "doclayout-yolo @ git+https://github.com/opendatalab/DocLayout-YOLO.git@release-v2",
 ]
-table = [
-    "rapid-table==3.0.2",
-    "rapidocr==3.10.0",
+easyocr = [
+    "easyocr",
 ]
-all = [
+rapidocr = [
+    "rapidocr==3.10.0",
+    "onnxruntime-gpu",
+]
+surya = [
+    "docling-surya==0.1.0",
+    "surya-ocr==0.17.0",
+]
+pp-doclayout-v3 = [
     "paddleocr==3.7.0",
-    "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-win_amd64.whl",
-    # "paddlepaddle-gpu @ https://www.paddlepaddle.org.cn/packages/stable/cu118/paddlepaddle_gpu-3.0.0-cp311-cp311-linux_x86_64.whl",
-    "doclayout-yolo @ git+https://github.com/opendatalab/DocLayout-YOLO.git@release-v2",
+]
+rapid-table = [
     "rapid-table==3.0.2",
     "rapidocr==3.10.0",
+    "onnxruntime-gpu",
 ]
 
 [project.entry-points."docling"]
@@ -42,4 +44,8 @@ py-modules = ["factories"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["_paddle_ocr*", "_doclayout_yolo*", "_rapid_table*"]
+include = [
+    "_doclayout_yolo*",
+    "_pp_doclayout_v3*",
+    "_rapid_table*",
+]

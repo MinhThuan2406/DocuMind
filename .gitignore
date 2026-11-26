@@ -225,3 +225,7 @@ research/dataset/**
 
 # Kaggle upload bundle
 research/docling.zip
+
+# Benchmark prediction & ground-truth JSON/JSONL files
+research/benchmark/**/*.json
+research/benchmark/**/*.jsonl

@@ -9,6 +9,16 @@
 | Layout model | `docling-layout-heron` | `DocLayout-YOLO release-v2` |
 | Table-structure model | `TableFormer` | `RapidTable SLANet-plus` |
 
+### Hướng tiếp cận đánh giá tuần tự
+
+Đánh giá và lựa chọn từng thành phần theo thứ tự phụ thuộc:
+
+```text
+Layout → OCR → Table Structure
+```
+
+Ở mỗi bước, chỉ thay đổi một thành phần và giữ lại model có kết quả tốt hơn làm baseline cho bước tiếp theo.
+
 ## Table of Contents
 
 - [Text Recognition](#text-recognition)

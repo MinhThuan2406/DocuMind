@@ -7,7 +7,7 @@ from docling.datamodel.document import ConversionResult
 from docling.models.base_layout_model import BaseLayoutModel
 from docling.utils.profiling import TimeRecorder
 
-from .mapping import detections_to_clusters
+from .mapping import detections_to_clusters, get_unmapped_labels
 from .options import DocLayoutYoloOptions
 
 
@@ -21,6 +21,7 @@ class DocLayoutYoloModel(BaseLayoutModel):
         **_: object,
     ) -> None:
         self.options = options
+        self.scale = 1.0
         try:
             from ultralytics import YOLO
         except ImportError as exc:
@@ -51,6 +52,12 @@ class DocLayoutYoloModel(BaseLayoutModel):
             )
 
         self.model = YOLO(source)
+        unmapped_labels = get_unmapped_labels(self.model.names)
+        if unmapped_labels:
+            raise RuntimeError(
+                "DocLayout-YOLO emitted labels without a Docling mapping: "
+                + ", ".join(unmapped_labels)
+            )
 
     @classmethod
     def get_options_type(cls) -> type[DocLayoutYoloOptions]:
@@ -65,7 +72,7 @@ class DocLayoutYoloModel(BaseLayoutModel):
             if not page._backend.is_valid() or page.size is None:
                 predictions.append(page.predictions.layout or LayoutPrediction())
                 continue
-            image = page.get_image(scale=1.0)
+            image = page.get_image(scale=self.scale)
             if image is None:
                 predictions.append(LayoutPrediction())
                 continue

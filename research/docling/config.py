@@ -6,7 +6,7 @@ from docling.datamodel.pipeline_options import (
     PdfPipelineOptions,
 )
 from _doclayout_yolo import DocLayoutYoloOptions
-from _paddle_ocr import PaddleOcrOptions
+from _pp_ocrv6_medium import PaddleOcrOptions
 from _rapid_table import RapidTableOptions
 
 
@@ -41,7 +41,7 @@ layout_options = DocLayoutYoloOptions(
 # %% RapidTable plugin
 table_options = RapidTableOptions(
     scale=2.0,
-    use_ocr=True,
+    use_ocr=False,
 )
 
 
@@ -59,7 +59,7 @@ heading_options = HeadingHierarchyOptions(
 # %% PdfPipelineOptions
 pdf_options = PdfPipelineOptions(
     # Runtime & security
-    document_timeout=None,
+    document_timeout=180,
     accelerator_options=accelerator_options,
     enable_remote_services=False,
     allow_external_plugins=True,
